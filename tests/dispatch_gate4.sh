@@ -128,6 +128,29 @@ check("an approval from THIS instance matches", inst["instance_id"] == d.instanc
 check("a copied/foreign approval's instance_id does NOT match (→ rejected in preflight)",
       "f0f0"*8 != inst["instance_id"])
 
+# --- assurance metrics (read-only scorecard) -------------------------------------------------
+import io, contextlib
+mtmp = pathlib.Path(tempfile.mkdtemp())
+d.ATTEMPTS = mtmp / "attempts"; d.STATE = mtmp / "state"; d.ESCALATIONS = mtmp / "escalations"
+d.SPECS = mtmp / "specs"
+for p in (d.ATTEMPTS, d.STATE, d.ESCALATIONS, d.SPECS): p.mkdir(parents=True, exist_ok=True)
+# one clean straight-through spec, one that needed a remediation then passed
+(d.SPECS/"SPEC-M1.yaml").write_text("id: SPEC-M1\nrisk_class: low\n")
+(d.SPECS/"SPEC-M2.yaml").write_text("id: SPEC-M2\nrisk_class: low\n")
+a1=d.ATTEMPTS/"SPEC-M1"/"1"; a1.mkdir(parents=True)
+(a1/"result.json").write_text(json.dumps({"status":"passed_pr_opened","error_class":None,"merged":True}))
+(a1/"review.json").write_text(json.dumps({"verdict":"PASS"}))
+b1=d.ATTEMPTS/"SPEC-M2"/"1"; b1.mkdir(parents=True); (b1/"result.json").write_text(json.dumps({"status":"failed_test","error_class":"test"}))
+b2=d.ATTEMPTS/"SPEC-M2"/"2"; b2.mkdir(parents=True); (b2/"result.json").write_text(json.dumps({"status":"passed_pr_opened","error_class":None,"merged":False}))
+buf=io.StringIO()
+with contextlib.redirect_stdout(buf): d.cmd_metrics()
+m=json.loads(buf.getvalue())
+check("metrics: 2 specs, 3 attempts", m["specs_with_attempts"]==2 and m["total_attempts"]==3)
+check("metrics: straight-through 50% (M1 only)", m["straight_through_rate_pct"]==50.0)
+check("metrics: needed_remediation 50% (M2)", m["needed_remediation_pct"]==50.0)
+check("metrics: merged 50% (M1)", m["merged_pct"]==50.0)
+check("metrics: counts a test failure", m["failure_error_classes"].get("test")==1)
+
 # --- integrate helpers -----------------------------------------------------------------------
 order_specs = {"SPEC-A": [], "SPEC-B": ["SPEC-A"], "SPEC-C": ["SPEC-B"]}
 d.load_spec = lambda sid: {"depends_on": order_specs[sid]}  # stub only for _topo_specs
