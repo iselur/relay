@@ -1,0 +1,24 @@
+id: SPEC-012
+title: Add a squeeze-spaces shell helper
+risk_class: low
+depends_on: []
+objective: >
+  A reusable Bash function squeeze exists at scripts/lib/squeeze.sh that collapses each run of
+  consecutive ASCII spaces in its first argument to a single space. D5 isolated-pipeline E2E.
+in_scope:
+  - scripts/lib/**
+  - tests/squeeze.sh
+out_of_scope:
+  - .github/**
+  - specs/**
+  - .orchestrator/**
+acceptance_criteria:
+  - "scripts/lib/squeeze.sh defines a function squeeze that collapses runs of spaces to one."
+  - "squeeze 'a   b  c' prints 'a b c'."
+  - "squeeze '' prints an empty string."
+  - "tests/squeeze.sh sources the helper, asserts those cases, and exits 0 when all pass."
+test_command: "bash tests/squeeze.sh"
+hard_ceiling_hours: 2
+needs_network: false
+context:
+  - tests/trim.sh

@@ -1,0 +1,12 @@
+{
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/squeeze.sh"
+  ],
+  "changed": [
+    "scripts/lib/squeeze.sh",
+    "tests/squeeze.sh"
+  ],
+  "out_of_scope": [],
+  "result": "PASS"
+}
