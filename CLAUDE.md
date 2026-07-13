@@ -91,7 +91,19 @@ evidence paths. **"Should work" is never evidence.**
 - Every launch, even one that crashes at startup, leaves a durable record.
 - Nothing activates with failing or partial tests. CI + branch protection are the hard merge gate.
 - Workers run with a scrubbed env, network off, sandboxed; only the orchestrator holds GitHub/SSH
-  credentials and pushes/opens PRs (D11). `needs_network:true` is refused until the D5 endgame.
+  credentials and pushes/opens PRs (D11).
+- **Worker isolation is D5, LANDED (not deferred).** The worker AND the gate `test_command` (both
+  run worker-produced code) execute as the dedicated `codex-worker` UID in hardened `systemd-run
+  --uid` system services: `/home/val` is inaccessible (DAC + `InaccessiblePaths`), writes are
+  confined to the worktree (`ProtectSystem=strict`+`ReadWritePaths`), and the test phase has
+  `PrivateNetwork=yes`. This is what actually closes risk 13-B — on this host Codex's sandbox can't
+  restrict reads (Landlock), so DAC is the boundary. The reviewer runs with ALL tools denied (no
+  Read/Grep/Glob) — it judges only the spec+diff+evidence it is handed. Setup:
+  `scripts/setup-worker-user.sh`; proof: `tests/worker_isolation.sh`. Residual (deferred): the
+  worker's own copied Codex token is readable to its own model-commands, which keep network —
+  closing that needs per-attempt UIDs or a credential broker. **`needs_network:true` stays refused
+  until that step.** If `isolation_available()` is false (fresh box / CI), the dispatcher falls
+  back to same-user launch and records `isolation:false` so provenance never overstates the boundary.
 - **Parallelism (Gate 3 part 3): `MAX_PARALLEL=2`.** The slot claim is atomic (`claim_slot`, under
   the STATE lock): at most 2 live attempts, at most one live attempt per spec. Each attempt has a
   unique branch/worktree. **Stale base is refused, never hand-rebased:** if the base branch advanced

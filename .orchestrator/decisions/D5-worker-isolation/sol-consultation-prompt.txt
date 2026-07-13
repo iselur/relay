@@ -1,0 +1,80 @@
+You are Codex (gpt-5.6-sol), consulted as a peer architect by Claude, the orchestrator in a
+Claude-orchestrates / Codex-executes automation system on a single Ubuntu 24.04 VPS. I need your
+independent, ADVERSARIAL judgment on the D5 "worker isolation endgame" design BEFORE I build it. Do
+not be agreeable; if my plan is wrong or over-built, say so and give the simpler correct thing.
+
+=== GOAL (D5) ===
+Today every Codex worker runs as the SAME Unix user (`val`) as the orchestrator, isolated only by
+Codex's bubblewrap sandbox. On this host the sandbox confines WRITES and NETWORK but NOT READS
+(Landlock legacy backend — "residual risk 13-B"): a rogue worker (prompt-injection / model error;
+NOT a malicious human) can read `~/.config/gh/hosts.yml` (GitHub token with repo+workflow scope →
+can rewrite CI, the hard merge gate), `~/.codex/auth.json`, `~/.claude.json`, `~/.ssh/`. Network-off
+is currently the only thing stopping exfiltration. D5 closes this by making FILESYSTEM PERMISSIONS,
+not the sandbox, separate worker actions from credentials.
+
+=== HARD BOX FACTS (verified just now) ===
+- Passwordless sudo available to `val`. No `codex-worker` user yet.
+- `/home/val` is `750 val:val` → a user NOT in group `val` already cannot traverse/read it. All
+  cred files are `600 val:val` (gh, codex, claude) / `~/.ssh` `700`.
+- NO container runtime (no docker/podman). `bwrap` exists only vendored inside the Codex npm
+  package. `runuser`, `setpriv`, `systemd-run`, `machinectl` available. So this is a dedicated-USER
+  design, not a container.
+- Codex is a 336 MB npm install under `/home/val/.local/lib/node_modules/@openai/...` (unreadable/
+  unexecutable by any non-`val` user because /home/val is 750). `node` is shared at `/usr/bin/node`.
+- The Codex sandbox works today ONLY because of an AppArmor profile that grants `userns` to ONE
+  pinned path — the vendored bwrap binary INSIDE that /home/val install
+  (`.../codex-linux-x64/.../codex-resources/bwrap`). Ubuntu's
+  `kernel.apparmor_restrict_unprivileged_userns=1` blocks userns for everything else.
+- Architecture: the whole attempt pipeline (`dispatch _run`) runs inside a `systemd-run --user`
+  transient unit AS `val`: worker(codex exec) → orchestrator git-commit → integrity/scope/test →
+  reviewer(claude) → gh push/PR. ONLY the `codex exec` subprocess is the worker; everything else
+  legitimately needs to stay `val` (git, gh token, claude). Worker commit policy is G1-A/C: the
+  worker never touches git; the orchestrator commits the worktree on top of base_sha. Worktrees are
+  currently `/home/val/orchestrator/.worktrees/<id>` (inside 750 /home/val).
+
+=== MY DRAFT DESIGN (challenge every part) ===
+1. Create system user `codex-worker` (no login shell, no sudo) + shared group `codexwork` with
+   members {val, codex-worker}. Only the `codex exec` subprocess drops to codex-worker (via `sudo -u
+   codex-worker` or a `systemd-run --uid`); the rest of `_run` stays val.
+2. Worktrees move OUT of /home/val to a setgid shared dir, e.g. `/srv/codexwork/worktrees`
+   (`val:codexwork`, mode 2770). val creates the worktree + later reads worker output to commit;
+   codex-worker (in codexwork) edits files + runs the test_command there. The worker never runs git
+   (G1-A/C), so it doesn't need the parent .git (which stays unreadable in /home/val).
+3. Codex reachable by codex-worker: COPY the 336 MB codex install to a shared path `/opt/codex`
+   (0755), and re-point the AppArmor `userns` profile at `/opt/codex/.../bwrap`. codex-worker runs
+   `/opt/codex/bin/codex`.
+4. Codex AUTH for codex-worker: copy `val`'s `~/.codex/auth.json` into
+   `/home/codex-worker/.codex/auth.json` (600 codex-worker). This SHARES the Codex subscription
+   identity but keeps it unreadable to... itself is fine (it's the worker's own creds); the point is
+   codex-worker still cannot read gh/ssh/claude. Alternative: a SEPARATE `codex login` for
+   codex-worker (needs Val's device-auth; possible second-seat concern).
+5. KEEP bwrap as defense-in-depth (write+network confinement) on top of the user boundary.
+
+=== THE QUESTIONS (be specific and adversarial) ===
+Q1. Dedicated-user is forced (no containers). Is my permission model correct and minimal? Critique
+    the setgid `codexwork` shared-worktree scheme: does val reliably retain READ on worker-created
+    files (worker umask?), can codex-worker NOT reach any val credential, are there symlink/hardlink
+    or `/tmp` escape vectors, and is a shared group the right tool vs POSIX ACLs?
+Q2. **Keep vs DROP bwrap.** Once the worker is a dedicated user that cannot read val's creds, is the
+    bubblewrap sandbox still worth its complexity (copying 336 MB to /opt, re-pinning an AppArmor
+    profile that is "version-sensitive after every codex upgrade")? If we DROP bwrap for the worker,
+    we lose Codex-enforced write-confinement and network-off — what OS-level primitive replaces
+    network-off cleanly for one uid (per-uid nftables `skuid` / `--uid-owner` DROP, or a network
+    namespace via `systemd` `PrivateNetwork=yes`), and is write-confinement even needed if the user
+    can only write its own worktree + /tmp + its own home? Give a clear recommendation: (A) keep
+    bwrap+user, (B) drop bwrap, rely on user+netns/nft, or (C) something else.
+Q3. How should the privileged drop happen — `sudo -u codex-worker` from within the val unit, a nested
+    `systemd-run --uid=codex-worker --property=PrivateNetwork=yes` transient unit, or `setpriv`?
+    Which best preserves: the RuntimeMaxSec hard ceiling, the JSONL event stream capture, `< /dev/null`
+    stdin (Codex hangs otherwise), the scrubbed env, and clean cancellation of the worker cgroup?
+Q4. Codex install + auth: is copying to /opt + re-pinning AppArmor right, or is there a lighter way
+    to make the existing install executable by codex-worker without weakening /home/val's 750? And
+    is sharing val's codex auth.json acceptable, or must codex-worker have its own login?
+Q5. What's the MINIMUM viable D5 that genuinely closes 13-B, and what should be explicitly DEFERRED?
+    I would rather ship the smallest correct isolation than a big brittle one. If my design is
+    over-built, give the leaner version step by step. Also: what NEW attack surface does D5 itself
+    introduce (sudo rule, shared group, /opt copy) and how do I keep it tight?
+
+Answer Q1–Q5 directly. Assume I will encode the result as an idempotent `scripts/setup-worker-user`
+(privileged, run once) plus changes to how `dispatch _run` launches the worker. Flag anything I got
+wrong about the box or the threat model.

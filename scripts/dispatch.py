@@ -436,6 +436,112 @@ def parse_attempt_id(attempt_id: str) -> tuple[str, int]:
     return m.group(1), int(m.group(2))
 
 
+# ----------------------------------------------------- D5 worker isolation ----
+# The worker AND the gate test run worker-produced code. Run both as a dedicated `codex-worker`
+# UID in hardened transient SYSTEM services so FILESYSTEM PERMISSIONS separate them from val's
+# credentials (risk 13-B: this host's Landlock backend can't restrict reads, so DAC is the boundary,
+# not Codex's sandbox). Setup: scripts/setup-worker-user.sh. Proven by tests/worker_isolation.sh.
+WORKER_USER = "codex-worker"
+WORKER_HOME = Path("/home/codex-worker")
+ISO_WORKTREES = Path("/srv/codexwork/worktrees")
+CODEX_PKG = Path("/home/val/.local/lib/node_modules/@openai/codex")  # bind-mounted RO to /opt/codex
+
+
+def isolation_available() -> bool:
+    """D5 is ON iff the dedicated user + shared worktree root exist and we can sudo non-interactively.
+    OFF (fresh box / CI) falls back to same-user launch so the dispatcher still runs — but a launch
+    then records isolation:false so the provenance never overstates the boundary."""
+    try:
+        import pwd
+        pwd.getpwnam(WORKER_USER)
+    except Exception:
+        return False
+    return ISO_WORKTREES.exists() and run(["sudo", "-n", "true"]).returncode == 0
+
+
+def worktree_root() -> Path:
+    return ISO_WORKTREES if isolation_available() else WORKTREES
+
+
+def grant_worker_acl(wt: Path) -> None:
+    """Let codex-worker read/write the worktree and val read worker-created files (independent of
+    val's session groups). Deny the worker the .git pointer (belt; its target is in /home/val)."""
+    run(["setfacl", "-R", "-m", f"u:{WORKER_USER}:rwX", "-m", "u:val:rwX", str(wt)])
+    run(["setfacl", "-R", "-d", "-m", f"u:{WORKER_USER}:rwX", "-d", "-m", "u:val:rwX", str(wt)])
+    if (wt / ".git").exists():
+        run(["setfacl", "-x", f"u:{WORKER_USER}", str(wt / ".git")])
+
+
+def isolated_run(unit, argv, cwd, rw_paths, private_network, ceiling_s, stdout, stderr,
+                 binds=None, env_extra=None):
+    """Run argv as codex-worker in a hardened transient SYSTEM service; block for completion.
+    Writes are confined to rw_paths; /home/val is inaccessible; the gate test passes
+    private_network=True (untrusted code, no API needed). The service is a system unit (own cgroup,
+    own RuntimeMaxSec) — store `unit` so cancel/health can stop it independently of the outer unit."""
+    # NOTE: no ProtectHome — it would tmpfs-hide the worker's OWN CODEX_HOME (auth). /home/val is
+    # blocked explicitly by InaccessiblePaths + DAC; the worker's own home stays accessible.
+    props = ["--property=ProtectSystem=strict",
+             "--property=InaccessiblePaths=/home/val", "--property=PrivateTmp=yes",
+             "--property=NoNewPrivileges=yes", "--property=RestrictSUIDSGID=yes",
+             "--property=UMask=0007", f"--property=RuntimeMaxSec={ceiling_s}"]
+    for p in rw_paths:
+        props.append(f"--property=ReadWritePaths={p}")
+    for src, dst in (binds or []):
+        props.append(f"--property=BindReadOnlyPaths={src}:{dst}")
+    if private_network:
+        props.append("--property=PrivateNetwork=yes")
+    if cwd:
+        props.append(f"--property=WorkingDirectory={cwd}")
+    envs = {"HOME": str(WORKER_HOME), "PATH": "/usr/bin:/bin",
+            "CODEX_HOME": str(WORKER_HOME / ".codex"), "TERM": "dumb", "LANG": "C.UTF-8",
+            **(env_extra or {})}
+    setenvs = [f"--setenv={k}={v}" for k, v in envs.items()]
+    cmd = ["sudo", "-n", "systemd-run", f"--uid={WORKER_USER}", f"--gid={WORKER_USER}",
+           "--pipe", "--wait", "--quiet", "--collect", f"--unit={unit}", *props, *setenvs,
+           "--", *argv]
+    with open(os.devnull) as devnull:
+        return subprocess.run(cmd, stdin=devnull, stdout=stdout, stderr=stderr)
+
+
+def last_agent_message(events_path: Path) -> str:
+    """Recover the worker's final message from the JSONL stream (isolated workers can't write the
+    evidence dir under /home/val, so --output-last-message is unavailable)."""
+    msg = ""
+    try:
+        for line in events_path.read_text().splitlines():
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            it = e.get("item") or {}
+            if it.get("type") == "agent_message" and it.get("text"):
+                msg = it["text"]
+    except Exception:
+        pass
+    return msg
+
+
+def validate_worktree_safe(wt: Path) -> list[str]:
+    """Before the orchestrator (val) touches worker output: reject unsafe filesystem entries a
+    hostile patch could plant — symlinks, FIFOs, sockets, devices — so no later val-context step
+    follows a link into val's files. Skips .git. Returns a list of offending repo-relative paths."""
+    bad = []
+    for p in wt.rglob("*"):
+        rel = p.relative_to(wt)
+        if rel.parts and rel.parts[0] == ".git":
+            continue
+        try:
+            st = p.lstat()
+        except OSError:
+            continue
+        import stat as _stat
+        m = st.st_mode
+        if _stat.S_ISLNK(m) or _stat.S_ISFIFO(m) or _stat.S_ISSOCK(m) \
+                or _stat.S_ISBLK(m) or _stat.S_ISCHR(m):
+            bad.append(str(rel))
+    return bad
+
+
 # =============================================================== launch =======
 def cmd_launch(spec_id: str) -> None:
     ctx = preflight(spec_id)
@@ -463,10 +569,13 @@ def cmd_launch(spec_id: str) -> None:
         git("fetch", "--quiet", "origin", approval.get("base_branch", "integration"))
         base_sha = git("rev-parse", f"origin/{approval.get('base_branch', 'integration')}")
         branch = f"codex/{attempt_id}"
-        wt = WORKTREES / attempt_id
+        iso = isolation_available()
+        wt = worktree_root() / attempt_id
         if wt.exists():
             die(f"worktree {wt} already exists (attempt not unique?)", 9)
         git("worktree", "add", "--quiet", "-b", branch, str(wt), base_sha)
+        if iso:
+            grant_worker_acl(wt)   # D5: worker (codex-worker) rwx; val reads output; .git denied
     except SystemExit:
         write_state(spec_id, {**read_state(spec_id), "status": "error_launch",
                               "error_class": ERR_LAUNCH,
@@ -486,7 +595,9 @@ def cmd_launch(spec_id: str) -> None:
         "reviewer_model": approval.get("reviewer_model", "claude-fable-5"),
         "reviewer_effort": approval.get("reviewer_effort", "high"),
         "test_command": spec["test_command"], "approved_scope": approval["approved_scope"],
-        "hard_ceiling_hours": ceiling_h, "remediation": remediation, "created": now(),
+        "hard_ceiling_hours": ceiling_h, "remediation": remediation,
+        "isolation": iso, "worker_unit": f"codex-worker-{attempt_id}",
+        "test_unit": f"codex-test-{attempt_id}", "created": now(),
     }, indent=2))
 
     unit = unit_name(spec_id, n)
@@ -524,7 +635,9 @@ def _run(attempt_id: str) -> None:
             "attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
             "spec_digest": lc["spec_digest"], "base_sha": lc["base_sha"],
             "worker_model": lc["worker_model"], "reviewer_model": lc["reviewer_model"],
-            "sandbox_mode": "workspace-write", "network": "off", "env_scrubbed": True,
+            "isolation": ("D5: codex-worker uid, systemd-hardened, /home/val inaccessible, test "
+                          "phase network-off" if lc.get("isolation") else "same-user (val) fallback, "
+                          "codex bwrap sandbox"),
             "test_command": lc["test_command"], "status": status,
             "error_class": err_class, "commit_policy": "orchestrator-commits (G1-A/C)",
             "finished": now(), **extra,
@@ -575,29 +688,45 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
         )
     (raw / "worker-prompt.txt").write_text(prompt)
 
-    scrubbed = {
-        "HOME": os.environ.get("HOME", "/home/val"), "USER": "val", "LOGNAME": "val",
-        "PATH": "/home/val/.local/bin:/usr/bin:/bin", "CODEX_HOME": "/home/val/.codex",
-        "TERM": "dumb", "LANG": "C.UTF-8",
-    }
-    worker_cmd = [
-        "codex", "exec", "--cd", str(wt), "--sandbox", "workspace-write",
-        "-m", lc["worker_model"], "-c", f"model_reasoning_effort={lc['worker_effort']}",
-        # Fast mode (Val, 2026-07-13): priority service tier. Faster wall-clock at the SAME model
-        # and reasoning depth — a speed tier, not a quality/reasoning downgrade. Global default for
-        # every Codex invocation. The real config key is `service_tier` (NOT `model_service_tier`,
-        # which --strict-config rejects).
-        "-c", "service_tier=priority",
-        "--json", "--output-last-message", str(raw / "worker-last-message.txt"), prompt,
-    ]
-    with open(raw / "events.jsonl", "w") as ev, open(raw / "worker-stderr.txt", "w") as er, \
-            open(os.devnull) as devnull:
-        wc = subprocess.run(worker_cmd, env=scrubbed, stdin=devnull, stdout=ev, stderr=er)
+    iso = lc.get("isolation", False)
+    ceiling_s = int(float(lc.get("hard_ceiling_hours", DEFAULT_CEILING_HOURS)) * 3600)
+    # Codex flags common to both paths. Fast mode (priority service tier): faster wall-clock at the
+    # SAME model + reasoning depth. `service_tier` is the real key (`model_service_tier` is rejected).
+    codex_args = ["exec", "--cd", str(wt),
+                  "-m", lc["worker_model"], "-c", f"model_reasoning_effort={lc['worker_effort']}",
+                  "-c", "service_tier=priority", "--skip-git-repo-check", "--json"]
+    with open(raw / "events.jsonl", "w") as ev, open(raw / "worker-stderr.txt", "w") as er:
+        if iso:
+            # D5: worker runs as codex-worker in a hardened system service. Codex's own sandbox is
+            # OFF (-s danger-full-access) because it won't construct under the bind-mounted UID;
+            # ProtectSystem=strict + ReadWritePaths confine writes and InaccessiblePaths=/home/val
+            # + DAC confine reads. --output-last-message is dropped (worker can't write /home/val);
+            # the final message is recovered from the JSONL stream.
+            argv = ["/usr/bin/node", "/opt/codex/bin/codex.js", *codex_args,
+                    "-s", "danger-full-access", prompt]
+            wc = isolated_run(
+                lc["worker_unit"], argv, cwd=str(wt),
+                rw_paths=[str(wt), str(WORKER_HOME / ".codex")],
+                private_network=False, ceiling_s=ceiling_s, stdout=ev, stderr=er,
+                binds=[(str(CODEX_PKG), "/opt/codex")])
+        else:
+            # Fallback (fresh box / CI): same-user launch with Codex's bwrap sandbox.
+            scrubbed = {
+                "HOME": os.environ.get("HOME", "/home/val"), "USER": "val", "LOGNAME": "val",
+                "PATH": "/home/val/.local/bin:/usr/bin:/bin", "CODEX_HOME": "/home/val/.codex",
+                "TERM": "dumb", "LANG": "C.UTF-8",
+            }
+            worker_cmd = ["codex", *codex_args, "--sandbox", "workspace-write",
+                          "--output-last-message", str(raw / "worker-last-message.txt"), prompt]
+            with open(os.devnull) as devnull:
+                wc = subprocess.run(worker_cmd, env=scrubbed, stdin=devnull, stdout=ev, stderr=er)
 
     stderr_txt = (raw / "worker-stderr.txt").read_text()
-    last_message = ""
-    if (raw / "worker-last-message.txt").exists():
-        last_message = (raw / "worker-last-message.txt").read_text()
+    if iso:
+        last_message = last_agent_message(raw / "events.jsonl")
+    else:
+        last_message = (raw / "worker-last-message.txt").read_text() \
+            if (raw / "worker-last-message.txt").exists() else ""
 
     # policy-note item 2: worker signalled the spec is unworkable. Old approval is void; a spec
     # revision + new approval digest is required. Terminal, but NOT a worker failure.
@@ -617,6 +746,14 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                           "after capacity returns. Never hand-finish this worktree.")
         finish("failed_worker_error", ec, worker_exit=wc.returncode,
                detail=f"worker error class={ec}")
+
+    # --- D5 path-safety gate: reject planted symlinks/special files BEFORE any val-context step
+    # touches worker output (no later val process should be able to follow a link into val's files).
+    unsafe = validate_worktree_safe(wt)
+    if unsafe:
+        finish("failed_scope", ERR_SCOPE, worker_exit=wc.returncode,
+               detail=f"unsafe filesystem entries planted by worker (symlink/fifo/socket/device): "
+                      f"{unsafe[:20]}")
 
     # --- decision G1-A/C: ORCHESTRATOR commits the worktree state --------------
     changed = git("status", "--porcelain=v2", "--untracked-files=all", cwd=wt)
@@ -649,10 +786,22 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
         finish("failed_scope", ERR_SCOPE, worker_commit=worker_commit, scope=scope)
 
     # --- step 7: test ----------------------------------------------------------
-    tc = run(["bash", "-c", lc["test_command"]], cwd=str(wt))
-    (att / "test.log").write_text((tc.stdout or "") + (tc.stderr or ""))
-    if tc.returncode != 0:
-        finish("failed_test", ERR_TEST, worker_commit=worker_commit, test_exit=tc.returncode)
+    # The test_command runs WORKER-PRODUCED code — the real exfiltration path (SOL, D5). Under D5 it
+    # runs as codex-worker with PrivateNetwork=yes (no API needed) and /home/val inaccessible, so a
+    # malicious test can neither read val's creds nor phone home. Otherwise it runs as val (fallback).
+    if iso:
+        with open(att / "test.log", "w") as tl:
+            tcp = isolated_run(
+                lc["test_unit"], ["bash", "-c", lc["test_command"]], cwd=str(wt),
+                rw_paths=[str(wt)], private_network=True, ceiling_s=ceiling_s,
+                stdout=tl, stderr=subprocess.STDOUT)
+        test_rc = tcp.returncode
+    else:
+        tc = run(["bash", "-c", lc["test_command"]], cwd=str(wt))
+        (att / "test.log").write_text((tc.stdout or "") + (tc.stderr or ""))
+        test_rc = tc.returncode
+    if test_rc != 0:
+        finish("failed_test", ERR_TEST, worker_commit=worker_commit, test_exit=test_rc)
 
     # --- step 8: reviewer (bound, fail-closed) --------------------------------
     verdict, vraw = review(att, spec_id, lc, worker_commit)
@@ -810,13 +959,16 @@ def review(att: Path, spec_id: str, lc: dict, wc: str):
     )
     (att / "raw" / "review-request.txt").write_text(req)
     schema_obj = json.loads(VERDICT_SCHEMA.read_text())
+    # D5: the reviewer is a Claude process running as val, judging WORKER-CONTROLLED diff text — a
+    # confused-deputy risk (SOL). It gets the full spec + diff + evidence in the prompt and needs NO
+    # host filesystem access, so ALL tools (incl. Read/Grep/Glob) are denied: a prompt-injected
+    # reviewer cannot browse val's files. Nothing to inspect beyond what the orchestrator provided.
     cmd = [
         "claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema_obj),
         "--model", lc["reviewer_model"].replace("claude-fable-5", "fable"),
         "--effort", lc["reviewer_effort"],
-        "--allowedTools", "Read", "Grep", "Glob",
-        "--disallowedTools", "Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch",
-        "Task", "--permission-mode", "manual",
+        "--disallowedTools", "Read", "Grep", "Glob", "Bash", "Write", "Edit", "NotebookEdit",
+        "WebFetch", "WebSearch", "Task", "--permission-mode", "manual",
     ]
     cp = run(cmd, input=req)
     (att / "raw" / "review-envelope.json").write_text(cp.stdout or "")
@@ -913,10 +1065,18 @@ def cmd_await(attempt_id: str, interval: int = 5, max_wait: int = 8 * 3600) -> N
 
 
 # =============================================================== cancel =======
+def stop_worker_units(attempt_id: str) -> None:
+    """D5: the worker/test run in transient SYSTEM units (own cgroups, NOT under the outer --user
+    unit), so cancellation must stop them explicitly — first, before the outer unit."""
+    for u in (f"codex-worker-{attempt_id}", f"codex-test-{attempt_id}"):
+        run(["sudo", "-n", "systemctl", "stop", u])
+
+
 def cmd_cancel(attempt_id: str) -> None:
     spec_id, n = parse_attempt_id(attempt_id)
     unit = unit_name(spec_id, n)
-    cp = run(["systemctl", "--user", "stop", unit])
+    stop_worker_units(attempt_id)                    # child system units first
+    cp = run(["systemctl", "--user", "stop", unit])  # then the outer pipeline unit
     st = read_state(spec_id) or {}
     if st.get("attempt_id") == attempt_id and st.get("status") in LIVE:
         write_state(spec_id, {**st, "status": "interrupted", "error_class": "cancelled",
@@ -995,6 +1155,7 @@ def cmd_health(attempt_id: str, inactivity_min: int = HEALTH_INACTIVITY_MIN) -> 
             if consecutive_dead >= 2:
                 health = "confirmed_hang"  # two consecutive dead checks → cancel
                 action = "cancelled"
+                stop_worker_units(attempt_id)                 # D5 child system units first
                 run(["systemctl", "--user", "stop", unit])
                 st = read_state(spec_id) or {}
                 if st.get("attempt_id") == attempt_id and st.get("status") in LIVE:
@@ -1300,9 +1461,9 @@ def cmd_integrate(attempt_ids: list[str]) -> None:
                                     "escalation": str(path)}
             print(json.dumps(report, indent=2))
             sys.exit(21)
-        wt = WORKTREES / aid
-        if wt.exists():
-            run(["git", "worktree", "remove", "--force", str(wt)], cwd=str(ROOT))
+        for wt in (ISO_WORKTREES / aid, WORKTREES / aid):   # D5 worktrees live under /srv now
+            if wt.exists():
+                run(["git", "worktree", "remove", "--force", str(wt)], cwd=str(ROOT))
         run(["git", "branch", "-D", f"codex/{aid}"], cwd=str(ROOT))
         run(["git", "push", "-q", "origin", "--delete", f"codex/{aid}"], cwd=str(ROOT))
         report["integrated"].append(aid)
