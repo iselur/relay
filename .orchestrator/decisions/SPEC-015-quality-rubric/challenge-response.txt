@@ -1,0 +1,15 @@
+- `test_command` runs only `tests/dispatch_gate4.sh`, contradicting “full existing suite stays green.” Require `./scripts/test`.
+- Metrics eligibility is ambiguous. Count only `schema_version: "3"` verdicts with a fully schema-valid quality block; never count v2 files merely containing a `quality` key.
+- Malformed/corrupt JSON, partial quality blocks, wrong types, and out-of-range values lack defined metrics behavior. Require graceful skip/report and no crash or partial counting.
+- Missing quality in a v3 file must be treated as malformed, not silently classified as historical v2.
+- Define `quality_scored_attempts` as attempts, not dimensions, and require all three valid dimensions before incrementing. Specify zero-data output and averaging/rounding format.
+- Metrics tests should include PASS and FAIL v3 reviews, multiple attempts, malformed v3, corrupt JSON, and a v2 file with a poisoned `quality` key.
+- “All existing v2 constraints preserved” needs a regression matrix: representative previously invalid verdicts must remain rejected after adding a valid quality block. Otherwise schema conditionals or `required` lists can be accidentally weakened.
+- Test explicit schema-version mismatches: v2 plus quality rejected for current validation; v3 without quality rejected.
+- Score boundary tests omit strings, `null`, booleans, non-integral numbers, missing dimensions/evidence, and unexpected properties. Dimension objects also need explicit `additionalProperties: false`.
+- `minLength: 1` accepts whitespace-only evidence, contradicting “concrete cited evidence.” Require at least one non-whitespace character and define what qualifies as a citation.
+- A score-1 PASS test proves only validation acceptance, not the perverse-target invariant. Require differential end-to-end tests showing identical gate, remediation, and merge-eligibility outcomes for otherwise identical score-1 and score-5 verdicts.
+- Prompt preservation is untested. Assert the existing binary rubric remains intact, schema version 3 is requested, and no wording suggests scores influence PASS/FAIL.
+- “Trends them” is unmet by aggregate averages alone; either define an actual temporal/per-attempt trend output or narrow the objective to aggregation.
+
+CHALLENGE: FINDINGS

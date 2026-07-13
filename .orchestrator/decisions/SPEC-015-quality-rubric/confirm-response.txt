@@ -1,0 +1,1 @@
+VERDICT: BLOCK — “future attempts only” is not specified or tested; globally switching validation to schema v3 can fail in-flight v2 attempts after deployment. Require version pinning or an explicit drain/cutover invariant.

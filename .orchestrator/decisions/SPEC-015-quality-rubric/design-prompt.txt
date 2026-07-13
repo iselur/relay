@@ -1,0 +1,25 @@
+You are SOL doing an adversarial DESIGN review (high-assurance lane, trust-critical change) — the
+reviewer verdict schema + reviewer prompt + verdict validation are trust-critical (they decide what
+merges). Review the DESIGN below; attack it; end with "VERDICT: PASS" or "VERDICT: BLOCK" + material
+findings with fixes. Terse.
+
+System context: trust-first orchestrator; independent Claude reviewer (`claude -p`, schema-bound, no
+filesystem tools) judges spec+diff+evidence; dispatcher validates the verdict FAIL-CLOSED against
+scripts/verdict.schema.json v2 (per-criterion MET/UNMET + evidence, scope/regression/security, reasons;
+PASS with empty reasons or any UNMET criterion rejected). Merge gate is binary and must stay binary.
+
+DESIGN: extend to schema v3 with a required advisory `quality` block — maintainability, design_fit,
+test_quality, each {score: integer 1..5, evidence: non-empty string}. Reviewer prompt updated to score
+them with cited evidence and told the verdict itself must still be decided ONLY by the binary rubric.
+Dispatcher: binary-gate validation unchanged; missing/invalid quality block rejected (schema);
+NO code path gates on score values. `dispatch metrics` trends quality_avg_by_dimension +
+quality_scored_attempts; v2 historical review.json files skipped gracefully. Anti-gaming invariant
+encoded as a test: an all-scores-1 PASS verdict is ACCEPTED (quality never gates).
+
+Questions: (1) Does requiring the quality block risk NEW fail-closed rejections that brick the pipeline
+(e.g. reviewer model omits it) — and is that acceptable fail-closed behavior or an availability
+footgun? (2) Are 3 dimensions x 1-5 with evidence the right shape, or is there a better minimal design
+(e.g. enum labels vs numbers, fewer/more dimensions)? (3) Any way this advisory channel later leaks
+into gating pressure, and a guard for it? (4) Implementation is by a sandboxed Codex worker editing
+dispatch.py (trust-critical) under scope+test+independent-Claude-review+human approval — any residual
+risk specific to THIS change?

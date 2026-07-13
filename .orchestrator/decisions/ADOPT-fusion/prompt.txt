@@ -1,0 +1,57 @@
+Review a competitor's agentic-coding architecture against ours, HOLISTICALLY, and decide what (if
+anything) we should learn or adopt. Form your OWN independent view of the whole comparison — do not
+just react to a pre-made list. Be decisive and adversarial; recommend adopting ONLY what genuinely
+fits our design and constraints. Concise.
+
+=== THE COMPETITOR: Cognition "Devin Fusion" (from Joon Lee's post + cognition.com/blog/devin-fusion) ===
+A hybrid-model harness for agentic coding, framed primarily as a COST/economics architecture:
+- Two fully-capable agents run together. A frontier "LEAD" agent owns the session — it talks to the
+  user, plans, reviews the work, and commits — and delegates bounded sub-work via a plain-language
+  "handoff brief" to a cheaper "SIDEKICK" agent that runs in its own cached context (code exploration,
+  running tests, formatting) and reports back.
+- They SWITCH MODELS at context-compaction boundaries (compaction busts the cache anyway, so model
+  switching is "free").
+- Claims: frontier-level quality at ~35% lower cost (on their FrontierCode benchmark, which scores code
+  QUALITY, not just correctness); "88% of merged PRs driven entirely by the automated Fusion router."
+- Review is done by the SAME lead agent that did/commits the work (self-review).
+- The specific post is titled "Making Fable Cheaper Than Opus": running Anthropic's Fable 5 as the lead
+  costs less overall than Opus despite ~2x/token, because the sidekick absorbs cheap work.
+
+=== OUR SYSTEM (Claude-orchestrates / Codex-executes, one VPS) ===
+- Schema-validated specs → human-approved (approval bound to spec digest + per-instance id) → dispatch
+  ONE Codex worker per spec.
+- Worker = `codex exec` (OpenAI Codex CLI) run as a dedicated non-root `codex-worker` UID in a hardened
+  `systemd-run` transient unit: operator home inaccessible (DAC + InaccessiblePaths), writes confined to
+  a per-attempt git worktree (ProtectSystem=strict + ReadWritePaths), TEST phase runs PrivateNetwork=yes.
+  Credential isolation by filesystem perms, not by trusting a model sandbox. We do NOT control Codex's
+  INTERNAL agent loop — we invoke `codex exec -m <model> --sandbox … <prompt>` and it runs its own loop;
+  we only choose model + sandbox + flags. Worker model: gpt-5.6-sol, reasoning=high, service_tier=priority.
+- Orchestrator (a Claude session, NOT the worker) commits the worktree, then DETERMINISTIC fail-closed
+  gates: integrity preconditions, NUL-safe scope check, exact test_command exit 0, then an INDEPENDENT
+  Claude reviewer (`claude -p`, schema-bound PASS/FAIL bound to the exact diff, NO filesystem tools —
+  confused-deputy fix).
+- Then push + draft PR; base-checked fail-closed auto-merge to `integration` under a scoped autonomy
+  grant; `main` permanently human-only. Bounded remediation (per-risk-class limits + escalation records),
+  recovery drills + reconcile, MAX_PARALLEL with a stale-base guard, health monitoring.
+- "Dual-validated planning": non-trivial decisions get independent adversarial review; idea-stage work
+  gets full independent research by BOTH Claude and Codex.
+- Philosophy: agents inside deterministic, observable, LEAST-PRIVILEGE systems; provenance + evidence;
+  every gate fail-closed. We optimize TRUST/auditability. Billing is FLAT-RATE SUBSCRIPTION (Claude Max
+  + ChatGPT/Codex plan), NOT per-token.
+
+=== DELIVER (your own holistic judgment) ===
+1. Read the two architectures as wholes. What is each actually optimizing for, and are those goals
+   even comparable? (E.g., does a COST architecture matter to a flat-rate-subscription system where
+   $/token ≈ 0 marginal? Attack the premise.)
+2. Independently identify what — across the ENTIRE Fusion approach, not any pre-made shortlist — is
+   genuinely worth learning or adopting for us, if anything. Also name what we do that's clearly better
+   and should NOT be traded away.
+3. Where our two designs are weakest, and whether Fusion suggests a fix.
+4. VERDICT: a decisive, prioritized recommendation — "adopt X, Y" (with a concrete minimal
+   implementation note + the risk for each) or "adopt nothing, here's why." Be willing to conclude that
+   most/all of it is irrelevant to a trust-first, subscription-billed system.
+
+(Non-exhaustive aside, to CHALLENGE not to anchor: a prior quick pass of mine floated four possible
+adoptions — a cheaper "sidekick" tier for low-judgment sub-work, model-switch-at-compaction, a
+reviewer code-QUALITY score beyond binary PASS/FAIL, and publishing an autonomy KPI. Treat that as a
+weak prior to argue with, not the agenda; go wider or narrower as your own analysis dictates.)

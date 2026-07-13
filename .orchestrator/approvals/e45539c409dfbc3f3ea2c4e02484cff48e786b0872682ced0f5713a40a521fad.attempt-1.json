@@ -1,0 +1,9 @@
+{
+  "approver": "val",
+  "attempt": 1,
+  "timestamp": "2026-07-13T21:21:12Z",
+  "spec_id": "SPEC-015",
+  "spec_digest": "e45539c409dfbc3f3ea2c4e02484cff48e786b0872682ced0f5713a40a521fad",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "note": "per-dispatch approval for high-risk attempt 1"
+}

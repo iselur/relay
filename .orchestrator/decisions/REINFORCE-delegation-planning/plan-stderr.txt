@@ -1,0 +1,144 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /home/val/orchestrator
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 019f5d5f-739a-77d1-b3cc-c0093c1c90cd
+--------
+user
+You are SOL (gpt-5.6). DRAFT a rigorous, decision-complete plan (this planning task is itself
+delegated to you by design). You are the PLANNER; Claude will review/authorize, not rewrite. Be
+concrete and mechanism-oriented. ~700-1000 words.
+
+=== SYSTEM (context) ===
+A trust-first agentic orchestrator on one VPS. Claude orchestrates; Codex (`codex exec`, gpt-5.6-sol)
+executes specs in hardened sandboxes behind deterministic fail-closed gates + an independent Claude
+reviewer + human-only `main`. A "delegate-first execution split" policy was ratified TODAY (three
+lanes: ordinary delegated / high-assurance delegated / control-plane authorization-only). Research and
+consults already run on Codex. Billing is flat-rate for both vendors; the scarce resources are QUOTA
+and operator trust.
+
+=== THE PROBLEM (operator, with usage screenshots) ===
+Despite the ratified policy, the split is STILL lopsided: Codex weekly quota 95% REMAINING; Claude
+session 46% used, weekly ~20-22%. The operator trusts both vendors EQUALLY ("both top — not one better
+than the other") and wants:
+(RULE 1) MORE AGGRESSIVE DELEGATION — Codex should carry far more of the total work.
+(RULE 2) STRICT PLANNING — "models with detailed rigorous plan > models with no plan"; plan creation
+for EVERY task should itself be OUTSOURCED TO CODEX; no substantive task proceeds planless.
+He observes neither rule is "much in place yet" — i.e., policy text exists but does not change
+behavior. Twice already a policy/memory note failed to alter the actual split.
+
+=== WHAT STILL CONSUMES CLAUDE (honest accounting) ===
+(a) The orchestrator session itself: analysis, spec drafting, decision records, user-facing text.
+(b) The independent reviewer (claude -p per attempt) — cross-vendor independence, intentionally Claude.
+(c) Historical: research fan-outs as Claude subagents (now policy-forbidden but habit-prone).
+Claude-session behavior is guided by CLAUDE.md (loaded every session) — rules there DO bind future
+sessions, but only if they are OPERATIONAL (checklists/reflexes/mechanical steps), not aspirational.
+
+=== DELIVER: a decision-complete plan to make BOTH rules ACTUALLY BINDING ===
+Address: (1) concrete enforcement MECHANISMS, not exhortations — what forces delegation/planning at
+task intake? Think: mandatory first-action reflexes in CLAUDE.md, a low-friction consult wrapper
+script, artifacts that must exist before work may proceed (e.g. no dispatch/no control-plane change
+without a Codex-drafted plan file), delegation checkpoints in the session ritual, measurable signals
+(risk-weighted work-class report already exists as scripts/delegation_report.py).
+(2) The Codex-plans-everything workflow: who drafts, who challenges, who authorizes; how plan files
+are stored/versioned (.orchestrator/decisions/ vs specs/); how to keep it LOW-LATENCY for small tasks
+(a planless fast-path must be narrow and explicit — define it).
+(3) What must NOT be delegated (respect the ratified three-lane policy; reviewer stays Claude).
+(4) Failure modes: ceremony bloat slowing everything; plan-theater (plans written but ignored);
+consult quota contention with running workers; Codex drafting plans that Claude rubber-stamps
+(correlated blind spots — where does adversarial challenge fit?).
+(5) Ordered rollout steps + validation criteria (how do we KNOW the split moved — target signals on
+the delegation report?) + rollback.
+Format: sections matching (1)-(5), then "PLAN COMPLETE".
+warning: Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.
+codex
+I’ll inspect the binding project guidance and the existing delegation-report/decision machinery, then draft the requested decision-complete plan grounded in what the repo can actually enforce.
+codex
+The first read hit the workspace’s network-namespace sandbox restriction before executing. I’m retrying with a non-login shell and narrower read-only commands; no repository changes are needed for this planning task.
+codex
+## (1) Enforcement mechanisms at task intake
+
+Make delegation and planning an intake state machine, not a preference. Add a mandatory “first-action reflex” to `CLAUDE.md`:
+
+1. Classify the request as non-substantive, ordinary delegated, high-assurance delegated, or control-plane.
+2. For every substantive request, invoke the Codex planning wrapper before analysis, drafting, editing, research, or implementation.
+3. Record the returned plan ID and lane.
+4. Challenge and authorize the plan.
+5. Delegate execution to Codex unless the lane explicitly reserves the action.
+6. At completion, compare the delivered work with the authorized plan and record deviations.
+
+Create `scripts/codex-plan`, a low-friction wrapper around detached `codex exec -c service_tier=priority`. It accepts the task, constraints, proposed lane, affected paths, and acceptance criteria; emits a structured plan artifact plus JSON event stream; and recovers the last `agent_message` if the normal output file is absent. It must follow the existing no-minute-timeout rule. A `--small` mode changes expected plan length, not the requirement to plan.
+
+Enforce prerequisites mechanically:
+
+- `scripts/dispatch.py` rejects a spec without an authorized Codex-authored `plan_ref` and matching plan digest.
+- CI rejects changes to control-plane paths—dispatcher, gates, schemas, workflows, `CLAUDE.md`, isolation, approval logic, or delegation policy—unless the change references an authorized decision record and plan.
+- The session ritual requires Claude to state internally: lane, plan ID, delegated executor, and reserved Claude action before substantive work.
+- `scripts/delegation_report.py` ingests plan, authorization, dispatch, execution, review, and exception events. Unclassified work counts as Claude work, preventing favorable reporting through omission.
+- Any bypass requires a human-created, reasoned, expiring exception artifact. Claude cannot self-grant one.
+
+Add two checkpoints to `CLAUDE.md`: before execution, “Is Codex carrying every delegable step?”; before responding, “Did execution follow the authorized plan, and are deviations recorded?”
+
+## (2) Codex-plans-everything workflow
+
+The ownership chain is:
+
+**Codex drafts → Claude challenges → Codex disposes/revises → Claude authorizes → Codex executes → deterministic gates test → Claude independently reviews → human merges or performs reserved action.**
+
+Claude’s challenge must identify at least one of: unsupported assumption, missing failure mode, scope ambiguity, insufficient test, or reason none applies. “Looks good” is not a valid challenge. Codex then returns a disposition: revise, reject with evidence, or accept and amend. Authorization records the final digest, so later silent plan edits invalidate dispatch.
+
+Store artifacts according to purpose:
+
+- `.orchestrator/plans/PLAN-NNN.md`: tracked source plan for every substantive task, with task, lane, author, assumptions, ordered actions, tests, rollback, challenge, disposition, authorization, and final status.
+- `specs/SPEC-NNN.yaml`: executable contract for dispatched work, referencing the authorized plan and digest. Approved specs remain immutable.
+- `.orchestrator/decisions/ADR-NNN.md`: durable control-plane or policy decision, referencing the plan; it records the authority decision, not a duplicate implementation plan.
+- Per-attempt evidence records the plan/spec digests actually used.
+
+The only planless fast path is a request that is both read-only and non-substantive: greetings, clarification questions, locating a known file, reporting already-observed status, or a single deterministic lookup requiring no interpretation. It cannot edit state, recommend a decision, synthesize research, draft user-facing substantive text, diagnose a problem, or trigger external action. If uncertain, plan. Tiny corrections use `codex-plan --small`, producing a five-field micro-plan: objective, scope, action, verification, rollback.
+
+## (3) Work that must not be delegated
+
+Codex should perform planning, research, spec drafting, implementation, testing, analysis, and first drafts of substantive user-facing material.
+
+Reserved actions remain reserved:
+
+- Claude challenges and authorizes plans; it does not create the initial substantive plan.
+- The independent per-attempt reviewer remains Claude.
+- Humans approve policy exceptions, privileged setup, destructive or irreversible external actions, credential use requiring operator presence, promotion from `integration` to `main`, and final trust decisions.
+- Control-plane work is still planned and executed by Codex, but authorization remains Claude/human-only.
+- Deterministic gates remain code, not model judgment.
+
+Claude may edit Codex-produced prose during authorization or delivery, but a rewrite large enough to change reasoning becomes a new task requiring another Codex plan.
+
+## (4) Failure-mode controls
+
+Ceremony bloat is controlled through micro-plans, wrapper-generated metadata, template reuse, and one-command challenge/revision continuation. Measure planning latency; do not remove planning merely because it exposes task volume.
+
+Plan theater is controlled by digest binding and completion reconciliation. Every completion records `followed`, `authorized deviation`, or `unauthorized deviation`. Repeated unauthorized deviations fail the process review even when tests pass.
+
+Quota contention is managed with separate scheduler classes and weekly reserves: initially reserve 15% of Codex quota for planning/consults, 70% for workers, and 15% contingency. Planning receives low-latency queue priority but cannot preempt an active worker. Below 20% weekly quota remaining, admit only micro-plans and high-assurance work unless the human reallocates reserves.
+
+Rubber-stamping is controlled by the mandatory written challenge and Codex disposition. For high-assurance tasks, require a second, fresh-context Codex plan critique before Claude authorization. The later Claude attempt review remains independent and must not reuse the planning authorization as evidence of correctness.
+
+## (5) Rollout, validation, and rollback
+
+1. Establish a seven-day baseline from the existing delegation report: risk-weighted work by lane/vendor, plan coverage, exceptions, planning latency, and Claude work categories.
+2. Add plan schema/template, wrapper, event records, and micro-plan mode.
+3. Update `CLAUDE.md` with the intake state machine and checkpoints.
+4. Add dispatch and CI fail-closed checks.
+5. Pilot on five ordinary and two high-assurance tasks; inspect artifacts and false blocks.
+6. Enable enforcement for all substantive work, then review metrics weekly for four weeks.
+
+Acceptance targets by week two: 100% substantive-task plan coverage; 100% plans initially drafted by Codex; at least 90% of delegable risk-weighted work performed by Codex; 100% of ordinary/high-assurance execution delegated; and at least 75% of total risk-weighted work assigned to Codex after including Claude review and authorization. Exceptions must remain below 5% and all must be human-approved and unexpired.
+
+Rollback is component-level: if automation blocks legitimate work, disable the faulty gate through a human-approved, time-boxed exception while retaining manual detached Codex planning and artifact creation. Preserve all evidence, fix the mechanism, replay affected tasks, and re-enable the gate. Do not roll back to discretionary or planless execution.
+
+PLAN COMPLETE
+tokens used
+8,785

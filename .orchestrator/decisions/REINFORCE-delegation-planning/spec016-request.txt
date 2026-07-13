@@ -1,0 +1,30 @@
+You are SOL. DRAFT a spec YAML for our orchestrator (you are the spec author; Claude only
+validates/authorizes). Output ONLY the YAML, no prose, matching this schema: required fields id,
+title, risk_class, objective, in_scope, acceptance_criteria (testable statements), test_command;
+optional depends_on, out_of_scope, hard_ceiling_hours, needs_network, context.
+
+Task: implement `scripts/codex-plan` — a low-friction wrapper making Codex-drafted planning one
+command, per the REINFORCE-delegation-planning plan. Requirements to encode as acceptance criteria:
+- A bash (or python, your choice) executable scripts/codex-plan that takes a task statement (arg or
+  stdin) plus optional flags --small (micro-plan: objective/scope/action/verification/rollback),
+  --context <file> (repeatable, appended to the prompt), and --out <dir> (default
+  .orchestrator/plans/).
+- It allocates the next PLAN-NNN id by scanning the out dir, writes PLAN-NNN.md containing YAML
+  frontmatter (id, created UTC timestamp, author model, status: draft, task: first 200 chars) + the
+  full Codex-drafted plan body, and prints the path + id.
+- It invokes `codex exec -m gpt-5.6-sol -c model_reasoning_effort=high -c service_tier=priority
+  --sandbox read-only --skip-git-repo-check` DETACHED-SAFE: stdin from /dev/null, NO minute-scale
+  timeout imposed by the wrapper (long runs must be allowed), raw stdout/stderr captured beside the
+  plan file for provenance.
+- Prompt template embedded in the wrapper instructs the model to produce a decision-complete plan
+  (decision+non-goals, assumptions/evidence, alternatives, affected boundaries, failure modes,
+  ordered steps, validation criteria, rollback) or, with --small, the five-field micro-plan.
+- If codex exits non-zero or produces empty output, the wrapper exits non-zero, writes NO PLAN-NNN.md
+  (no half-artifacts), and leaves the raw logs for diagnosis.
+- A test tests/codex_plan.sh that stubs the codex binary via PATH (never calls the real one),
+  asserting: id allocation increments; frontmatter well-formed; --small changes the prompt; failure
+  path creates no plan file and exits non-zero; --context files appear in the prompt passed to the
+  stub. Must run green in CI (no codex, no network).
+- in_scope: scripts/codex-plan, tests/codex_plan.sh. It must NOT touch scripts/dispatch.py.
+- risk_class: low (standalone helper; not in any trust closure). test_command: bash tests/codex_plan.sh.
+Use id SPEC-016.

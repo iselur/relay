@@ -1,0 +1,20 @@
+{
+  "approver": "val (explicit per-dispatch approval via AskUserQuestion, 2026-07-13; high-assurance lane, dual-validated: SOL PASS after 2 BLOCK rounds)",
+  "timestamp": "2026-07-13T21:21:12Z",
+  "spec_id": "SPEC-015",
+  "spec_digest": "e45539c409dfbc3f3ea2c4e02484cff48e786b0872682ced0f5713a40a521fad",
+  "spec_digest_method": "sha256(specs/SPEC-015.yaml)",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "risk_class": "high",
+  "approved_scope": [
+    "scripts/verdict.schema.json",
+    "scripts/dispatch.py",
+    "tests/dispatch_gate4.sh"
+  ],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "Reviewer verdict v3 (advisory quality dimensions). Decision record: .orchestrator/decisions/SPEC-015-quality-rubric/."
+}

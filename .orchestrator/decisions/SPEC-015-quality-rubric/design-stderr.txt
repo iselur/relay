@@ -1,0 +1,55 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /home/val/orchestrator
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 019f5d4f-f928-7ba1-90aa-fb6942cffc8f
+--------
+user
+You are SOL doing an adversarial DESIGN review (high-assurance lane, trust-critical change) — the
+reviewer verdict schema + reviewer prompt + verdict validation are trust-critical (they decide what
+merges). Review the DESIGN below; attack it; end with "VERDICT: PASS" or "VERDICT: BLOCK" + material
+findings with fixes. Terse.
+
+System context: trust-first orchestrator; independent Claude reviewer (`claude -p`, schema-bound, no
+filesystem tools) judges spec+diff+evidence; dispatcher validates the verdict FAIL-CLOSED against
+scripts/verdict.schema.json v2 (per-criterion MET/UNMET + evidence, scope/regression/security, reasons;
+PASS with empty reasons or any UNMET criterion rejected). Merge gate is binary and must stay binary.
+
+DESIGN: extend to schema v3 with a required advisory `quality` block — maintainability, design_fit,
+test_quality, each {score: integer 1..5, evidence: non-empty string}. Reviewer prompt updated to score
+them with cited evidence and told the verdict itself must still be decided ONLY by the binary rubric.
+Dispatcher: binary-gate validation unchanged; missing/invalid quality block rejected (schema);
+NO code path gates on score values. `dispatch metrics` trends quality_avg_by_dimension +
+quality_scored_attempts; v2 historical review.json files skipped gracefully. Anti-gaming invariant
+encoded as a test: an all-scores-1 PASS verdict is ACCEPTED (quality never gates).
+
+Questions: (1) Does requiring the quality block risk NEW fail-closed rejections that brick the pipeline
+(e.g. reviewer model omits it) — and is that acceptable fail-closed behavior or an availability
+footgun? (2) Are 3 dimensions x 1-5 with evidence the right shape, or is there a better minimal design
+(e.g. enum labels vs numbers, fewer/more dimensions)? (3) Any way this advisory channel later leaks
+into gating pressure, and a guard for it? (4) Implementation is by a sandboxed Codex worker editing
+dispatch.py (trust-critical) under scope+test+independent-Claude-review+human approval — any residual
+risk specific to THIS change?
+warning: Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.
+codex
+Requiring `quality` makes it part of the acceptance gate structurally, despite being semantically advisory. That is acceptable fail-closed behavior only if explicitly acknowledged, deployed atomically with the v3 prompt/schema, and covered by retry/fallback behavior. “Quality never gates” is inaccurate; valid presence gates, scores do not.
+
+Material findings:
+
+- The same reviewer producing binary judgment and quality scores creates anchoring/halo risk. Prompt wording cannot ensure the scores do not influence the verdict. Fix: obtain quality in a second pass after freezing the binary verdict, ideally a separate invocation; otherwise document this residual coupling.
+- One all-scores-1 test is insufficient. Add metamorphic tests proving that, for identical binary fields, every valid score/evidence combination yields the same gate result. Keep gate evaluation in a function whose inputs exclude `quality`.
+- Protect deployment/versioning: require an explicit `schema_version: 3`, atomically update prompt/schema/parser, distinguish historical v2 from malformed current output, and prove in-flight/retry behavior. Never silently treat a current missing block as historical v2.
+- Scores are ordinal; averaging 1–5 implies questionable precision. Prefer anchored enums such as `POOR|ADEQUATE|GOOD|EXCELLENT`, or define behavioral anchors for every numeric score. Three dimensions are a reasonable minimal set, but `maintainability` and `design_fit` need non-overlapping definitions.
+- Require evidence containing non-whitespace text and ideally a concrete diff/test citation. A bare `minLength: 1` accepts whitespace and boilerplate.
+- Future leakage remains possible through thresholds, ranking, dashboards, or human approval pressure. Add a policy/test forbidding quality-derived merge eligibility, exit status, retry, prioritization, or reviewer verdict; label metrics advisory and emit dimension distributions plus coverage, not only averages.
+- A sandboxed worker does not remove insider-style logic risk in `dispatch.py`. Require focused tests for schema downgrade/confusion, malformed quality, v2 metrics handling, score invariance, and unchanged binary rejection cases; independently inspect the exact gate diff.
+
+VERDICT: BLOCK
+tokens used
+4,313

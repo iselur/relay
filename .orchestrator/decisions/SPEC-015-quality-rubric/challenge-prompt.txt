@@ -1,0 +1,53 @@
+You are a fresh, context-isolated spec critic (pre-dispatch spec challenge). Your ONLY job: find what
+this spec MISSES — abuse cases, gaming vectors, and missing invariant-level acceptance tests — before
+it is dispatched to an implementation worker. Do NOT implement. Terse bullets; end with
+"CHALLENGE: CLEAN" or "CHALLENGE: FINDINGS" + your findings.
+
+Context: a trust-first agentic-coding orchestrator. An independent Claude reviewer (schema-bound
+`claude -p`, no filesystem tools) returns a PASS/FAIL verdict validated fail-closed against
+scripts/verdict.schema.json (v2: per-criterion MET/UNMET + evidence, scope/regression/security
+findings, reasons; PASS with empty reasons or any UNMET criterion is rejected). The spec below adds
+ADVISORY quality scores (v3). Hard invariant: the merge gate stays binary; quality scores must NEVER
+become a merge/gating input (perverse-target rule). The implementation worker is a sandboxed Codex
+agent whose changes are gated by scope check + this test suite + independent Claude review.
+
+Attack surface to consider: schema loosening (could the v3 change accidentally weaken v2's fail-closed
+constraints?), reviewer prompt drift (could the new instructions dilute the binary rubric?), validation
+bypass (a verdict that satisfies the schema but games the dispatcher), metrics poisoning (historical v2
+files, malformed quality blocks), and anything in the acceptance criteria that is vague enough for a
+lazy-but-passing implementation.
+
+=== SPEC ===
+id: SPEC-015
+title: Reviewer verdict v3 — advisory quality dimensions (gate stays binary)
+risk_class: high
+depends_on: []
+objective: >
+  Extend the reviewer rubric with graded QUALITY dimensions while keeping the merge gate strictly
+  binary and fail-closed (ADOPT-fusion improvement #2, second half). The reviewer must score
+  maintainability, design_fit, and test_quality (integers 1-5, each with cited evidence) in every
+  verdict; the dispatcher records and trends them via `dispatch metrics`; NOTHING gates on them —
+  quality scores are an operator trend signal, never a merge input (perverse-target invariant,
+  CLAUDE.md "Execution split" #4 logic applies).
+in_scope:
+  - scripts/verdict.schema.json
+  - scripts/dispatch.py
+  - tests/dispatch_gate4.sh
+out_of_scope:
+  - scripts/lib/**
+  - .orchestrator/**
+  - .github/**
+  - specs/**
+  - CLAUDE.md
+acceptance_criteria:
+  - "scripts/verdict.schema.json becomes schema_version const '3': adds a required 'quality' object (additionalProperties false) with required members maintainability, design_fit, test_quality, each an object requiring integer score 1..5 and a non-empty evidence string. All existing v2 required fields and constraints are preserved unchanged."
+  - "The reviewer prompt in scripts/dispatch.py instructs the reviewer to score the three quality dimensions with concrete cited evidence, and states explicitly that quality scores are advisory: the PASS/FAIL verdict must be decided ONLY by the acceptance criteria, scope, regression, and security rubric, exactly as before."
+  - "The dispatcher's fail-closed verdict validation is unchanged for the binary gate (PASS with empty reasons or any UNMET criterion still rejected) and additionally rejects a verdict that is missing the quality block or violates its schema; no dispatcher code path makes a merge, remediation, or gating decision based on quality score values."
+  - "cmd_metrics additionally reports quality_avg_by_dimension (mean score per dimension across attempts whose review.json contains a v3 quality block) and quality_scored_attempts (count); attempts with v2 review.json files (no quality block) are skipped gracefully — metrics must not crash or miscount on historical evidence."
+  - "tests/dispatch_gate4.sh gains assertions that: a v3 verdict with all quality scores equal to 1 but verdict PASS and all criteria MET is ACCEPTED by the verdict validation (proving quality never gates); a verdict missing the quality block is REJECTED; a score of 0 or 6 is REJECTED; and metrics averages v3 quality blocks while skipping v2 files. Full existing suite stays green."
+test_command: "bash tests/dispatch_gate4.sh"
+hard_ceiling_hours: 2
+needs_network: false
+context:
+  - scripts/verdict.schema.json
+  - tests/dispatch_gate4.sh

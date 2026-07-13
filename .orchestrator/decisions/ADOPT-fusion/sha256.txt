@@ -1,0 +1,4 @@
+553f93edaf772a85ff7d624802f53d27b8ee65f60338bab1daeb2c3b88eafea7  .orchestrator/decisions/ADOPT-fusion/prompt.txt
+bfadb59053de1943c64db3d2a9243be064ab46320c286cad56fdf612081adb8f  .orchestrator/decisions/ADOPT-fusion/sol-response.txt
+585e507befdb06fb53df148cb099b04736f10aa3542f03e34c90a1034a8be73d  .orchestrator/decisions/ADOPT-fusion/fable-response.jsonl
+95e0dac501268428dc2c07f67751e8dc3cc8e12f0a9ac2894e84cb3332fa6e98  .orchestrator/decisions/ADOPT-fusion/DECISION.md

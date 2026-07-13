@@ -1,0 +1,12 @@
+You are SOL. Final confirmation round. Your one residual blocker on "reviewer verdict v3" was:
+"future attempts only is not specified or tested; globally switching validation to schema v3 can fail
+in-flight v2 attempts after deployment. Require version pinning or an explicit drain/cutover invariant."
+
+The spec now adds a VERSION PINNING acceptance criterion: cmd_launch snapshots the current
+verdict.schema.json into the attempt's evidence directory at launch; verdict validation for that
+attempt uses the pinned snapshot when present (repo-schema fallback only for pre-pinning historical
+attempts). Each attempt's prompt+schema pair is therefore atomic per-attempt; an in-flight attempt
+launched before the upgrade is never validated against the newer schema. A dedicated test proves an
+attempt pinned with v2 validates a v2 verdict even when the repo schema is v3.
+
+Does this clear the block? Terse: "VERDICT: PASS" or "VERDICT: BLOCK" + residual only.

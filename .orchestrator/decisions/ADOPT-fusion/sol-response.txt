@@ -1,0 +1,51 @@
+## Judgment
+
+Do **not** adopt Devin Fusion’s execution architecture. It solves an economic problem we largely do not have, while introducing routing errors, concurrent-agent races, weaker provenance, and self-review into a trust-first system.
+
+The transferable lesson is about **evaluation**, not model routing.
+
+### What each system optimizes
+
+Fusion optimizes intelligence-per-dollar inside one agent session. Its frontier lead conserves expensive tokens by delegating mechanical work and switching models when cache economics are favorable. Cognition reports a 35% average cost reduction, but also shows a hard UI task losing **27 quality points** after bad delegation. “Free” switching means no additional cache miss—not no information loss, behavioral discontinuity, or classifier risk. [Cognition’s Fusion post](https://cognition.com/blog/devin-fusion)
+
+Ours optimizes bounded authority, reproducibility, and recoverability across the delivery lifecycle. The model is deliberately not the security boundary or final authority.
+
+These objectives are only weakly comparable. Under flat-rate subscriptions, tokens have near-zero marginal dollar cost. Quotas, latency, and VPS capacity still matter, but Fusion has not shown improvement on those—and two concurrent agents may consume more of all three. Its headline economics therefore do not justify architectural complexity here.
+
+The “88% of merged PRs” figure is especially weak: it is an internal router-usage statistic, without denominators by risk, escaped-defect rate, human effort, reversions, or external validation. It is not an autonomy or trust metric.
+
+### What we should preserve
+
+Our design is clearly stronger in the areas that matter:
+
+- Independent, cross-model review rather than the authoring lead reviewing itself.
+- Immutable, digest-bound human approval instead of mutable plain-language handoffs.
+- OS-enforced least privilege, credential separation, network isolation, and confined writes.
+- Deterministic fail-closed integrity, scope, test, and stale-base gates.
+- Exact-diff evidence, bounded remediation, recovery/reconciliation, and human-only promotion to `main`.
+
+A Fusion sidekick working concurrently in one worktree would create race and attribution problems; separate worktrees would create merge and reconciliation problems. Either choice enlarges the attack surface and evidence model. Do not trade away the current single-writer boundary.
+
+### Where each is weakest
+
+Fusion’s weakness is **assurance**: one lead plans, delegates, interprets the sidekick, reviews, and commits. Routing mistakes become common-mode failures, and average benchmark quality conceals precisely the tail failures our system is designed to contain.
+
+Our weakness is **semantic gate depth**. Exact tests prove only what the approved test command covers, while one binary LLM verdict gives poor calibration and little longitudinal evidence. The opaque Codex internal loop is another limitation, but Fusion does not fix it safely; it merely adds another opaque loop and a classifier.
+
+Cognition’s broader FrontierCode work is useful here: it evaluates mergeability across correctness, regression safety, meaningful tests, scope, conventions, and maintainability, including “reverse-classical” tests that must fail on the unpatched base. [FrontierCode methodology](https://cognition.com/blog/frontier-code)
+
+## Prioritized recommendation
+
+1. **Adopt a structured quality rubric, not a quality score.**  
+   Extend the independent reviewer schema with fixed criterion verdicts and evidence: behavioral/spec compliance, regression risk, test adequacy, security, design/conventions, and maintainability. Keep the overall gate binary and fail-closed, mechanically derived from blocking findings.  
+   **Risk:** rubric gaming and false precision. Mitigate with evidence citations and periodic human calibration. A scalar 0–100 score should remain advisory telemetry, if collected at all.
+
+2. **Add an optional regression-proof gate.**  
+   For suitable specs, approve and digest-bind a command that must fail against the base and pass against the candidate. This proves that new tests detect the intended defect rather than merely passing.  
+   **Risk:** unsuitable for some refactors or new interfaces. Make it explicit and optional; never infer the command automatically.
+
+3. **Measure assurance, not “autonomy.”**  
+   Derive an internal scorecard from existing evidence: straight-through integration rate by risk class, remediation/escalation rate, escaped defects or reversions, reviewer calibration, recovery-drill success, and wall time. Do not publish a vanity autonomy percentage until the denominator and post-merge outcomes are meaningful.  
+   **Risk:** Goodharting; retain risk stratification and raw counts.
+
+Reject for now: cheaper sidekick, compaction-time model switching, self-review, and the 88%-style KPI. Reconsider model routing only if measured subscription quotas or latency become a real bottleneck and Codex exposes a controllable, auditable interface. Fusion’s economics are not presently worth weakening our trust architecture.

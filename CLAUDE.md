@@ -67,6 +67,49 @@ stays network-off** (`needs_network:true` still REFUSED) until the D5 credential
 UID / credential broker) is closed — enabling network there reopens token exfiltration and is a separate
 Critical decision, not a free flag. See [[delegate-heavy-work-to-codex]], dual-validated-planning above.
 
+## Planning-first — Codex drafts every plan (intake state machine)
+
+Ratified by the operator 2026-07-13 ("models with detailed rigorous plan > models with no plan";
+"outsource plan creation for each task to Codex"). Codex-drafted plan: `PLAN-001`
+(`.orchestrator/plans/`), challenged + authorized with amendments
+(`.orchestrator/decisions/REINFORCE-delegation-planning/`). The operator trusts both vendors equally;
+Claude quota is the scarce one — so Claude AUTHORIZES, Codex AUTHORS.
+
+**Mandatory intake reflex for EVERY substantive task (state machine, not a preference):**
+1. Classify: fast-path / ordinary delegated / high-assurance delegated / control-plane.
+2. If substantive: get a **Codex-drafted plan FIRST** (`scripts/codex-plan`, or a detached
+   `codex exec --sandbox read-only` consult until SPEC-016 lands) — before analysis, drafting,
+   research, or implementation by Claude. `--small` micro-plans
+   (objective/scope/action/verification/rollback) for tiny tasks — plan length scales, the
+   requirement doesn't.
+3. Claude CHALLENGES the plan in writing — must name ≥1 concrete objection (unsupported assumption,
+   missing failure mode, scope ambiguity, insufficient validation) or state why none applies;
+   "looks good" is not a challenge. High-assurance plans additionally get a second, fresh-context
+   Codex critique before authorization.
+4. Claude AUTHORIZES (recorded in the PLAN file with dispositions); silent post-authorization plan
+   edits void the authorization.
+5. Codex EXECUTES everything delegable; Claude does only reserved actions (challenge/authorize,
+   independent per-attempt review, final synthesis, dual-vendor reconciliation, user dialogue).
+6. At completion, reconcile delivered work vs authorized plan: followed / authorized deviation /
+   unauthorized deviation — recorded. Repeated unauthorized deviations fail process review even with
+   green tests.
+
+**Fast path (the ONLY planless work):** read-only and non-substantive — greetings, clarifications,
+status of already-observed work, a single deterministic lookup, or conversational
+explanation/assessment answerable from existing session context with **no new research, no state
+change, and no durable recommendation**. If uncertain → plan. Anything that edits state, produces an
+artifact, synthesizes new research, or recommends a decision is substantive.
+
+**Artifacts:** plans live in `.orchestrator/plans/PLAN-NNN.md` (tracked; frontmatter + plan +
+challenge + dispositions + authorization). Specs cite their plan. Decision records
+(`.orchestrator/decisions/`) record authority, not duplicate plans. Follow-up (high-assurance,
+grandfathering SPEC-001..015): a required `plan_ref` spec-schema field.
+
+**Anti-Goodhart (REBALANCE invariant 4 applies):** delegation/plan-coverage numbers are weekly review
+SIGNALS discussed with the operator (first review 2026-07-20) — never automated targets; unclassified
+work counts as CLAUDE work in the report so omission can't flatter the split. Planning consults never
+preempt an active worker. Numeric quota reserves deferred until a real quota signal exists.
+
 ## Session-start ritual (Gate 3)
 
 Run **`./scripts/dispatch reconcile`** first thing. It reads `.orchestrator/state/*.json`, inspects

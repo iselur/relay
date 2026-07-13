@@ -1,0 +1,9 @@
+{
+  "spec_id": "SPEC-015",
+  "reason": "integrate stopped at SPEC-015-1: merge refused/failed (rc=12)",
+  "evidence": {
+    "stderr": "dispatch: risk_class high not in grant; refuse.",
+    "integrated_so_far": []
+  },
+  "created": "2026-07-13T21:29:05Z"
+}

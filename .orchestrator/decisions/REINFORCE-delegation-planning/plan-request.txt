@@ -1,0 +1,45 @@
+You are SOL (gpt-5.6). DRAFT a rigorous, decision-complete plan (this planning task is itself
+delegated to you by design). You are the PLANNER; Claude will review/authorize, not rewrite. Be
+concrete and mechanism-oriented. ~700-1000 words.
+
+=== SYSTEM (context) ===
+A trust-first agentic orchestrator on one VPS. Claude orchestrates; Codex (`codex exec`, gpt-5.6-sol)
+executes specs in hardened sandboxes behind deterministic fail-closed gates + an independent Claude
+reviewer + human-only `main`. A "delegate-first execution split" policy was ratified TODAY (three
+lanes: ordinary delegated / high-assurance delegated / control-plane authorization-only). Research and
+consults already run on Codex. Billing is flat-rate for both vendors; the scarce resources are QUOTA
+and operator trust.
+
+=== THE PROBLEM (operator, with usage screenshots) ===
+Despite the ratified policy, the split is STILL lopsided: Codex weekly quota 95% REMAINING; Claude
+session 46% used, weekly ~20-22%. The operator trusts both vendors EQUALLY ("both top — not one better
+than the other") and wants:
+(RULE 1) MORE AGGRESSIVE DELEGATION — Codex should carry far more of the total work.
+(RULE 2) STRICT PLANNING — "models with detailed rigorous plan > models with no plan"; plan creation
+for EVERY task should itself be OUTSOURCED TO CODEX; no substantive task proceeds planless.
+He observes neither rule is "much in place yet" — i.e., policy text exists but does not change
+behavior. Twice already a policy/memory note failed to alter the actual split.
+
+=== WHAT STILL CONSUMES CLAUDE (honest accounting) ===
+(a) The orchestrator session itself: analysis, spec drafting, decision records, user-facing text.
+(b) The independent reviewer (claude -p per attempt) — cross-vendor independence, intentionally Claude.
+(c) Historical: research fan-outs as Claude subagents (now policy-forbidden but habit-prone).
+Claude-session behavior is guided by CLAUDE.md (loaded every session) — rules there DO bind future
+sessions, but only if they are OPERATIONAL (checklists/reflexes/mechanical steps), not aspirational.
+
+=== DELIVER: a decision-complete plan to make BOTH rules ACTUALLY BINDING ===
+Address: (1) concrete enforcement MECHANISMS, not exhortations — what forces delegation/planning at
+task intake? Think: mandatory first-action reflexes in CLAUDE.md, a low-friction consult wrapper
+script, artifacts that must exist before work may proceed (e.g. no dispatch/no control-plane change
+without a Codex-drafted plan file), delegation checkpoints in the session ritual, measurable signals
+(risk-weighted work-class report already exists as scripts/delegation_report.py).
+(2) The Codex-plans-everything workflow: who drafts, who challenges, who authorizes; how plan files
+are stored/versioned (.orchestrator/decisions/ vs specs/); how to keep it LOW-LATENCY for small tasks
+(a planless fast-path must be narrow and explicit — define it).
+(3) What must NOT be delegated (respect the ratified three-lane policy; reviewer stays Claude).
+(4) Failure modes: ceremony bloat slowing everything; plan-theater (plans written but ignored);
+consult quota contention with running workers; Codex drafting plans that Claude rubber-stamps
+(correlated blind spots — where does adversarial challenge fit?).
+(5) Ordered rollout steps + validation criteria (how do we KNOW the split moved — target signals on
+the delegation report?) + rollback.
+Format: sections matching (1)-(5), then "PLAN COMPLETE".
