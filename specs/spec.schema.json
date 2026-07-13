@@ -42,6 +42,17 @@
       "minLength": 1,
       "description": "Exact command; must exit 0."
     },
+    "regression_command": {
+      "type": "string",
+      "minLength": 1,
+      "description": "OPTIONAL regression-proof gate (holistic-review #1). An explicit, human-authored command that must FAIL against the base (with regression_test_paths overlaid) and PASS against the candidate — proving the change's new test actually catches the intended defect, not a vacuous pass. Never auto-inferred. Requires regression_test_paths."
+    },
+    "regression_test_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": [],
+      "description": "Paths (files the regression_command needs — the new/changed tests + helpers, NOT the production fix) checked out from the candidate onto the base worktree, so the base run fails for the right reason rather than a missing file."
+    },
     "hard_ceiling_hours": {
       "type": "number",
       "exclusiveMinimum": 0,

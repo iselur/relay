@@ -68,14 +68,15 @@ DEFAULT_CEILING_HOURS = 2.0
 # Only MERIT failures count toward the limit — interrupted/stale_base/error_launch are
 # infrastructure outcomes and re-launch fresh without consuming remediation budget.
 REMEDIATION_LIMITS = {"low": 5, "default": 3, "high": 1}
-MERIT_FAILURES = {"failed_test", "failed_review", "failed_scope", "failed_integrity"}
+MERIT_FAILURES = {"failed_test", "failed_review", "failed_scope", "failed_integrity",
+                  "failed_regression"}
 ESCALATIONS = ORCH / "escalations"
 
 # Terminal vs live attempt statuses.
 TERMINAL = {
     "passed_pr_opened", "failed_worker_error", "failed_integrity",
     "failed_scope", "failed_test", "failed_review", "interrupted", "error_launch",
-    "spec_blocked", "stale_base", "failed_remediation_exhausted",
+    "spec_blocked", "stale_base", "failed_remediation_exhausted", "failed_regression",
 }
 LIVE = {"launching", "running"}
 
@@ -90,6 +91,11 @@ ERR_SCOPE = "scope"
 ERR_REVIEW = "review"
 ERR_WORKER = "worker_nonzero"
 ERR_LAUNCH = "launch"
+# Holistic-review takeaway #1 (SOL, 2026-07-13): an OPTIONAL regression-proof gate. A spec may declare
+# a `regression_command` (+ `regression_test_paths`); the gate proves the change's new test actually
+# CATCHES the intended defect — it must FAIL on the base (with the candidate's tests overlaid, so it
+# fails for the right reason, not a missing file) and PASS on the candidate. A merit failure.
+ERR_REGRESSION = "regression"
 # Gate 3 part 3: the base branch advanced while this attempt ran (a sibling attempt integrated).
 # The attempt was reviewed/tested against a base that is no longer the branch tip; integrating it
 # would land a combination no gate ever saw. Terminal, not a merit failure: re-launch a fresh
@@ -204,6 +210,9 @@ def validate_spec(spec_id: str) -> tuple[dict, list[str]]:
               for e in Draft202012Validator(schema).iter_errors(spec)]
     if spec.get("id") != spec_id:
         errors.append(f"id field '{spec.get('id')}' != filename stem '{spec_id}'")
+    if spec.get("regression_command") and not spec.get("regression_test_paths"):
+        errors.append("regression_command requires non-empty regression_test_paths (the test files to "
+                      "overlay onto the base, so the base run fails for the right reason).")
     return spec, errors
 
 
@@ -610,6 +619,70 @@ def validate_worktree_safe(wt: Path) -> list[str]:
     return bad
 
 
+def run_regression_gate(lc, wt, worker_commit, att, iso, ceiling_s) -> dict:
+    """Prove the change's new test actually CATCHES the intended defect (holistic-review #1, SOL).
+
+    A test that passes on the candidate proves nothing about whether it would have failed on the bug
+    it claims to fix. So: run the human-authored `regression_command` against a throwaway worktree at
+    the base commit with the candidate's `regression_test_paths` overlaid — it MUST fail there (the
+    fix is absent) — and against the candidate — it MUST pass. Overlaying the test files is what makes
+    the base failure meaningful: it fails because the assertion is unmet, not because the test file is
+    missing. Runs worker-authored code → isolated exactly like the test phase (network off).
+    Returns a result dict; result=="PASS" iff base FAILS and candidate PASSES."""
+    cmd = lc["regression_command"]
+    paths = lc.get("regression_test_paths", [])
+    base_sha = lc["base_sha"]
+    attempt_id = lc["attempt_id"]
+    base_wt = worktree_root() / f"{attempt_id}-regbase"
+    res = {"command": cmd, "test_paths": paths, "base_sha": base_sha,
+           "worker_commit": worker_commit, "isolation": iso,
+           "base_exit": None, "candidate_exit": None, "result": "FAIL", "reason": ""}
+
+    def _run_in(unit, cwd, log_path):
+        if iso:
+            with open(log_path, "w") as lg:
+                cp = isolated_run(unit, ["bash", "-c", cmd], cwd=str(cwd),
+                                  rw_paths=[str(cwd)], private_network=True, ceiling_s=ceiling_s,
+                                  stdout=lg, stderr=subprocess.STDOUT)
+            return cp.returncode
+        cp = run(["bash", "-c", cmd], cwd=str(cwd))
+        Path(log_path).write_text((cp.stdout or "") + (cp.stderr or ""))
+        return cp.returncode
+
+    if base_wt.exists():
+        run(["git", "worktree", "remove", "--force", str(base_wt)])
+    try:
+        git("worktree", "add", "--quiet", "--detach", str(base_wt), base_sha)
+        # Overlay the candidate's test files onto the base so the base run fails for the RIGHT reason.
+        try:
+            git("checkout", worker_commit, "--", *paths, cwd=base_wt)
+        except SystemExit:
+            res["reason"] = (f"could not overlay regression_test_paths {paths} from the candidate onto "
+                             f"the base — check the paths exist in the change.")
+            return res
+        if iso:
+            grant_worker_acl(base_wt)
+        res["base_exit"] = _run_in(f"codex-regbase-{attempt_id}", base_wt,
+                                   att / "regression-base.log")
+        res["candidate_exit"] = _run_in(f"codex-regcand-{attempt_id}", wt,
+                                        att / "regression-candidate.log")
+    finally:
+        if base_wt.exists():
+            run(["git", "worktree", "remove", "--force", str(base_wt)])
+
+    if res["base_exit"] == 0:
+        res["reason"] = ("vacuous regression proof: regression_command PASSED on the base — the test "
+                         "does not catch the intended defect (it would have passed before the fix).")
+    elif res["candidate_exit"] != 0:
+        res["reason"] = (f"regression_command FAILED on the candidate (exit {res['candidate_exit']}) — "
+                         f"the change does not satisfy its own regression test.")
+    else:
+        res["result"] = "PASS"
+        res["reason"] = ("fails on base, passes on candidate — the new test provably catches the "
+                         "intended defect.")
+    return res
+
+
 # =============================================================== launch =======
 def cmd_launch(spec_id: str) -> None:
     ctx = preflight(spec_id)
@@ -663,6 +736,8 @@ def cmd_launch(spec_id: str) -> None:
         "reviewer_model": approval.get("reviewer_model", "claude-fable-5"),
         "reviewer_effort": approval.get("reviewer_effort", "high"),
         "test_command": spec["test_command"], "approved_scope": approval["approved_scope"],
+        "regression_command": spec.get("regression_command"),
+        "regression_test_paths": spec.get("regression_test_paths", []),
         "hard_ceiling_hours": ceiling_h, "remediation": remediation,
         "isolation": iso, "worker_unit": f"codex-worker-{attempt_id}",
         "test_unit": f"codex-test-{attempt_id}", "created": now(),
@@ -870,6 +945,17 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
         test_rc = tc.returncode
     if test_rc != 0:
         finish("failed_test", ERR_TEST, worker_commit=worker_commit, test_exit=test_rc)
+
+    # --- step 7.5: OPTIONAL regression-proof gate (holistic-review #1) ----------
+    # Prove the change's new test actually CATCHES the intended defect: the human-authored
+    # regression_command must FAIL on the base (with the candidate's test files overlaid, so it fails
+    # for the right reason) and PASS on the candidate. A vacuous test (passes on base too) is a merit
+    # failure. Runs worker-authored code → isolated (network off) like the test phase.
+    if lc.get("regression_command"):
+        reg = run_regression_gate(lc, wt, worker_commit, att, iso, ceiling_s)
+        atomic_write(att / "regression.json", json.dumps(reg, indent=2))
+        if reg["result"] != "PASS":
+            finish("failed_regression", ERR_REGRESSION, worker_commit=worker_commit, regression=reg)
 
     # --- step 8: reviewer (bound, fail-closed) --------------------------------
     verdict, vraw = review(att, spec_id, lc, worker_commit)

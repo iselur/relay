@@ -151,6 +151,69 @@ check("metrics: needed_remediation 50% (M2)", m["needed_remediation_pct"]==50.0)
 check("metrics: merged 50% (M1)", m["merged_pct"]==50.0)
 check("metrics: counts a test failure", m["failure_error_classes"].get("test")==1)
 
+# --- regression-proof gate (holistic-review #1) ----------------------------------------------
+# Real run_regression_gate against a temp repo: base has a buggy add(), candidate fixes it; the
+# regression test asserts add(2,2)==4. Overlaying the test onto the base must make the base FAIL
+# and the candidate PASS. iso is False in this harness so it uses the plain-run path.
+rtmp = pathlib.Path(tempfile.mkdtemp())
+rrepo = rtmp / "r"; sh("git", "init", "-qb", "main", str(rrepo), cwd=rtmp)
+sh("git", "config", "user.email", "t@t", cwd=rrepo); sh("git", "config", "user.name", "t", cwd=rrepo)
+(rrepo/"calc.py").write_text("def add(a, b):\n    return a - b  # bug\n")
+sh("git", "add", "-A", cwd=rrepo); sh("git", "commit", "-qm", "base(buggy)", cwd=rrepo)
+rbase = subprocess.run(["git","rev-parse","HEAD"], cwd=str(rrepo), capture_output=True, text=True).stdout.strip()
+# candidate: fix + a regression test that catches the bug
+(rrepo/"calc.py").write_text("def add(a, b):\n    return a + b\n")
+(rrepo/"test_reg.py").write_text("from calc import add\nassert add(2, 2) == 4\nprint('ok')\n")
+sh("git", "add", "-A", cwd=rrepo); sh("git", "commit", "-qm", "fix+test", cwd=rrepo)
+rcand = subprocess.run(["git","rev-parse","HEAD"], cwd=str(rrepo), capture_output=True, text=True).stdout.strip()
+# point the module's worktree_root at rtmp so the throwaway base worktree lands beside the repo,
+# and check out the candidate as the "candidate worktree".
+rcand_wt = rtmp / "SPEC-R01-1"
+sh("git", "worktree", "add", "--quiet", "--detach", str(rcand_wt), rcand, cwd=rrepo)
+_orig_wtr = d.worktree_root; d.worktree_root = lambda: rtmp
+# git()'s default cwd=ROOT is bound at import, so redirect git()/run() at the temp repo for this block
+# (production is unaffected — there ROOT already IS the orchestrator repo the worktrees belong to).
+_orig_git = d.git; _orig_run = d.run
+def _tgit(*a, **k): k.setdefault("cwd", rrepo); return _orig_git(*a, **k)
+def _trun(cmd, **k):
+    if cmd[:2] == ["git", "worktree"]: k.setdefault("cwd", str(rrepo))
+    return _orig_run(cmd, **k)
+d.git = _tgit; d.run = _trun
+ratt = rtmp / "att"; ratt.mkdir()
+lc = {"regression_command": "python3 test_reg.py", "regression_test_paths": ["test_reg.py"],
+      "base_sha": rbase, "attempt_id": "SPEC-R01-1"}
+reg = d.run_regression_gate(lc, rcand_wt, rcand, ratt, iso=False, ceiling_s=60)
+check("regression gate: PASS when test fails on base + passes on candidate", reg["result"] == "PASS")
+check("regression gate: base run failed (caught the bug)", reg["base_exit"] != 0)
+check("regression gate: candidate run passed", reg["candidate_exit"] == 0)
+check("regression gate: cleaned up its base worktree", not (rtmp / "SPEC-R01-1-regbase").exists())
+# vacuous case: a test that passes on the base too (asserts nothing about the fix) -> FAIL
+(rcand_wt/"test_vac.py").write_text("assert 1 == 1\nprint('ok')\n")
+sh("git", "add", "-A", cwd=rcand_wt); sh("git", "commit", "-qm", "vac", cwd=rcand_wt)
+rcand2 = subprocess.run(["git","rev-parse","HEAD"], cwd=str(rcand_wt), capture_output=True, text=True).stdout.strip()
+lc2 = {"regression_command": "python3 test_vac.py", "regression_test_paths": ["test_vac.py"],
+       "base_sha": rbase, "attempt_id": "SPEC-R01-1"}
+reg2 = d.run_regression_gate(lc2, rcand_wt, rcand2, ratt, iso=False, ceiling_s=60)
+check("regression gate: vacuous test (passes on base too) -> FAIL", reg2["result"] == "FAIL" and reg2["base_exit"] == 0)
+d.worktree_root = _orig_wtr; d.git = _orig_git; d.run = _orig_run
+
+# regression_command without regression_test_paths -> validate_spec cross-field error
+vtmp = pathlib.Path(tempfile.mkdtemp())
+d.SPECS = vtmp; d.spec_path = lambda sid: vtmp / f"{sid}.yaml"
+(vtmp/"SPEC-901.yaml").write_text(
+    "id: SPEC-901\ntitle: t\nrisk_class: low\nobjective: o\n"
+    "in_scope: ['a/**']\nacceptance_criteria: ['c']\ntest_command: 'true'\n"
+    "regression_command: 'pytest'\n")  # no regression_test_paths
+_, verrs = d.validate_spec("SPEC-901")
+check("validate_spec: regression_command without regression_test_paths -> error",
+      any("regression_test_paths" in e for e in verrs))
+(vtmp/"SPEC-902.yaml").write_text(
+    "id: SPEC-902\ntitle: t\nrisk_class: low\nobjective: o\n"
+    "in_scope: ['a/**']\nacceptance_criteria: ['c']\ntest_command: 'true'\n"
+    "regression_command: 'pytest'\nregression_test_paths: ['test_x.py']\n")
+_, verrs2 = d.validate_spec("SPEC-902")
+check("validate_spec: regression_command WITH regression_test_paths -> valid", verrs2 == [])
+
 # --- integrate helpers -----------------------------------------------------------------------
 order_specs = {"SPEC-A": [], "SPEC-B": ["SPEC-A"], "SPEC-C": ["SPEC-B"]}
 d.load_spec = lambda sid: {"depends_on": order_specs[sid]}  # stub only for _topo_specs
