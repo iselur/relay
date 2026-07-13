@@ -1,0 +1,56 @@
+You are Codex (gpt-5.6-sol), consulted as a peer architect by Claude, the orchestrator in a
+Claude-orchestrates / Codex-executes automation system. ADVERSARIAL judgment wanted — do not be
+agreeable. Fittingly, this consult is ABOUT the requirement to run consults: Val wants to codify
+"prepare detailed holistic plans, validated by BOTH Claude and Codex SOL, before acting" as a
+durable rule, and has chosen the trigger "everything non-trivial." Help make that rule correct and
+not self-defeating.
+
+=== CONTEXT ===
+- The system already has this as a PRACTICE (not a written rule): every load-bearing decision so far
+  — the brief itself, the policy-note, and decisions G1-A (commit model), G4-A (approval gate /
+  autonomy), D5 (worker isolation) — was drafted by Claude and adversarially reviewed by you (SOL),
+  reaching a joint validated decision recorded under .orchestrator/decisions/<id>/ (prompt +
+  response + sha256). It has caught real errors (e.g. you found the test_command exfil hole in D5;
+  Claude found your read-restriction assumption was false on this host).
+- Existing WRITTEN "Planning policy" (CLAUDE.md / policy-note item 2) governs the WORKER/EXECUTION
+  layer and says the OPPOSITE for that layer, deliberately: "Orchestrator: no separate plan
+  documents, no plan ceremony for routine actions"; "Plans are never cross-reviewed — only specs
+  (intent) and diffs (outcome)"; "No plan-conformance gate anywhere." Rationale there: the worker's
+  implementation checklist must NOT be cross-reviewed (confirmation-bias) and the binding artifacts
+  are spec + approved scope + test_command, not a plan.
+- Tension to resolve: the new rule is about a DIFFERENT layer (architecture / governance / security
+  / research-and-review deliverables), yet a careless reader could think it contradicts the worker-
+  layer "no ceremony / no cross-review" policy. The codification must separate the two layers cleanly.
+- Competing goal: Val ALSO just asked for FAST autonomous development ("I don't want to be bound...
+  fast development with you working autonomously"). A SOL round-trip costs minutes + Codex quota
+  (one shared constrained resource, also used for the actual workers) and adds latency. "Everything
+  non-trivial gets a dual-validated holistic plan before acting" could throttle throughput and burn
+  the same quota the workers need.
+
+=== VAL'S DECISION (to be honored, but make it correct) ===
+1. Codify the requirement as a CLAUDE.md invariant.
+2. Trigger = "everything non-trivial" (his words), NOT just load-bearing decisions.
+
+=== QUESTIONS (be specific, adversarial, and concrete) ===
+Q1. Is "everything non-trivial" the right trigger, or will it bottleneck the fast-dev goal and
+    exhaust shared Codex quota? Steelman it AND attack it. If it needs refining, propose the precise
+    line — a crisp, testable definition of "non-trivial" that a future session applies the same way
+    every time (not vibes). What is explicitly EXEMPT (routine spec/helper work already gated by
+    spec-approval + reviewer + CI)?
+Q2. Should there be TIERS rather than one bar? e.g. (a) lightweight: Claude writes a plan, SOL does
+    ONE adversarial pass; (b) heavy: full joint iteration for irreversible/security/policy work.
+    Or is a single rule cleaner? Recommend concretely.
+Q3. How do we keep this from becoming the very "plan ceremony" the worker-layer policy warns
+    against? What makes a "detailed holistic plan" worth the round-trip vs theater — what must it
+    contain, and when is SOL's pass genuinely additive vs rubber-stamp?
+Q4. Quota/latency: SOL consults compete with worker dispatches for the same Codex subscription.
+    How should the rule handle that — serialize, cap, degrade gracefully under quota pressure, skip
+    SOL when unavailable (and record that), etc.?
+Q5. Give the EXACT CLAUDE.md wording you'd endorse (a tight invariant block), layer-separated from
+    the worker-execution planning policy, encoding your answers to Q1–Q4. Also state what should be
+    recorded per decision and where (.orchestrator/decisions/<id>/), and how this interacts with the
+    existing "no plan-conformance gate on the worker pipeline" rule (which must remain intact).
+
+Answer Q1–Q5 directly. If Val's "everything non-trivial" is genuinely unwise, say so plainly and
+give the better rule — I will surface your reasoning to Val rather than silently override or blindly
+implement.

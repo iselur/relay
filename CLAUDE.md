@@ -67,6 +67,66 @@ evidence paths. **"Should work" is never evidence.**
   blocks until an independent Codex reviewer verdict when quota returns.
 - Codex quota is ONE shared constrained resource (implementation + any future spec reviews).
 
+## Dual-validated planning (control-plane / decision layer)
+
+Governs the DECISION layer, not worker implementation; does NOT add a plan-conformance gate to the
+worker pipeline (the Planning policy below stays fully intact). Ratified by Val + validated with SOL,
+2026-07-13 (`.orchestrator/decisions/PLAN-dual-validation/`).
+
+**Rule:** before a non-trivial control-plane action or a durable recommendation, Claude prepares a
+decision-complete plan and obtains explicit validation from BOTH Claude and Codex SOL on the SAME
+plan revision. Read-only discovery, disposable experiments, and drafting may happen first.
+
+**Non-trivial if ANY holds** (uncertain → treat as non-trivial; complexity / duration / file-count
+alone never count):
+1. creates/changes a durable policy, invariant, architectural precedent, shared contract/schema, or
+   mechanism meant for reuse across jobs/specs;
+2. changes trust/security boundaries, credentials, isolation, approval/autonomy, gate behavior,
+   evidence integrity, protected branch/release behavior, or recovery semantics;
+3. a destructive / irreversible / production-facing / novel external side effect not already
+   authorized by an established workflow;
+4. affects behavior beyond one approved spec's allowed paths + acceptance/test scope;
+5. a research/review deliverable that recommends or authorizes any of the above.
+
+**Worked examples (Val, 2026-07-13):** a new **business idea / research** deliverable → the
+*recommendation* is non-trivial (dual-validated); the read-only investigation feeding it is exempt.
+A **high-level spec / requirements set for a new feature, or a non-trivial bug fix** → non-trivial,
+dual-validated at the requirements/design level. The routine low-level specs that then implement
+already-decided intent → exempt (gated by approval + reviewer + CI).
+
+**Exempt (unless a trigger fires):** read-only diagnostics/status; clerical no-semantic changes;
+routine spec drafting that instantiates already-decided intent via established mechanisms; routine
+dispatch/monitor/retry/PR mechanics; worker/helper implementation bounded by an approved
+spec+scope+test+review+CI. Worker checklists are NEVER cross-reviewed.
+
+**Two tiers:** *Standard* (non-trivial, not Critical) → ONE adversarial SOL pass returning explicit
+**PASS/BLOCK** that addresses the strongest counterargument, questionable assumptions, failure
+modes, and validation gaps; Claude records a disposition per material finding; a BLOCK — or a
+material change to approach/scope/risk/validation/rollback after PASS — requires resubmission.
+*Critical* (governing policy/invariants, trust/security boundaries, approval/autonomy, gates/evidence
+integrity, protected branch/release, multi-job shared contracts, or irreversible/production
+consequences) → Claude+SOL iterate on the SAME revision until both explicitly report no unresolved
+blocker; unresolved disagreement goes to Val, never silently resolved.
+
+**Decision-complete plan** (what earns the round-trip): decision + non-goals; current-state evidence
++ assumptions; alternatives + why this one; affected boundaries/consumers; failure modes + blast
+radius; ordered steps; validation criteria; rollback / irreversibility; open questions. "N/A,
+because…" is fine — "detailed" means decision-complete, not long. Review ONE coherent decision;
+don't split to evade review or bundle unrelated decisions to amortize it.
+
+**Quota/availability:** consults and workers share ONE Codex budget. One initial consult per
+decision; never interrupt a running worker to consult; run detached with no minute-scale timeout. If
+SOL or quota is unavailable the decision stays **PENDING** (exempt work continues) — skipping SOL is
+non-compliant, never a silent Claude-only fallback. Only Val may authorize a scoped, recorded waiver
+(rationale/scope/expiry); emergency pre-validation action is limited to minimum reversible
+containment of active harm.
+
+**Record** each reviewed decision under `.orchestrator/decisions/<id>/`: trigger classification +
+tier, plan/revision digest, consult prompt + full SOL response (+ raw-stream sha256), Claude's
+disposition, explicit Claude + SOL verdicts, model/commit ids, any waiver/unresolved issue. Any
+binding requirement the plan creates MUST be encoded in governing policy or an approved spec before
+dispatch — workers are judged only by spec/scope/tests/diff/review/CI, never by conformance to a plan.
+
 ## Planning policy (policy-note item 2)
 
 - **Workers** get the fixed preamble in `scripts/dispatch.py` (inspect-before-editing; a concise
