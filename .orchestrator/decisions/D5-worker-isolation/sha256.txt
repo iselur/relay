@@ -1,0 +1,4 @@
+5af5dea01203492e0971b643c15b9b0be9c0b15840f614b8066486698d856c25  .orchestrator/decisions/D5-worker-isolation/sol-consultation-prompt.txt
+d6cc0e651e1c6b5717c7dfa14510e01519997722aeb07ebfafc491c2c9f3d0dc  .orchestrator/decisions/D5-worker-isolation/sol-response.txt
+417e094dfcf1972768235e6440f7229e7645010b5c40554a96d3c4df83291fb0  .orchestrator/decisions/D5-worker-isolation/sol-events.jsonl
+# note: sol-events.jsonl is intentionally untracked (gitignored); its hash above documents the local artifact.

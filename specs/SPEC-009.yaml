@@ -1,0 +1,26 @@
+id: SPEC-009
+title: Add a capitalize shell helper
+risk_class: low
+depends_on: []
+objective: >
+  A reusable Bash function capitalize exists at scripts/lib/capitalize.sh that prints its first
+  argument with its first ASCII letter uppercased and the rest unchanged. Gate 4 happy-path
+  pipeline test fixture.
+in_scope:
+  - scripts/lib/**
+  - tests/capitalize.sh
+out_of_scope:
+  - .github/**
+  - specs/**
+  - .orchestrator/**
+acceptance_criteria:
+  - "scripts/lib/capitalize.sh defines a function capitalize that prints its first argument with the first character uppercased (ASCII), rest unchanged."
+  - "capitalize 'hello world' prints 'Hello world'."
+  - "capitalize '' prints an empty string."
+  - "capitalize '9lives' prints '9lives' (non-letter first char unchanged)."
+  - "tests/capitalize.sh sources the helper, asserts those cases, and exits 0 when all pass."
+test_command: "bash tests/capitalize.sh"
+hard_ceiling_hours: 2
+needs_network: false
+context:
+  - tests/upper.sh

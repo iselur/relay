@@ -1,0 +1,4 @@
+9711e5251946187b33d65cdb6f06439db81a2539f985b08726b144ef5baf58cc  .orchestrator/decisions/G4-A-approval-gate/sol-consultation-prompt.txt
+75f1160d08288438bce1fac4ebd9fd0d798f32bcfcbbf0f46ff257e4c9df130f  .orchestrator/decisions/G4-A-approval-gate/sol-response.txt
+accc4781c7f871c806bd07c6b8c71cfcb22f96966c0f9877815c020210bc95ef  .orchestrator/decisions/G4-A-approval-gate/sol-events.jsonl
+# note: sol-events.jsonl is intentionally untracked (gitignored); its hash above documents the local artifact.

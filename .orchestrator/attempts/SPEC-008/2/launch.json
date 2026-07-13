@@ -1,0 +1,21 @@
+{
+  "attempt_id": "SPEC-008-2",
+  "spec_id": "SPEC-008",
+  "attempt": 2,
+  "spec_digest": "e813a8d2137d75bdf1bd44e5a56177608b83affb6506d502685aa036c174a911",
+  "base_sha": "3d7506e8145ef4f80c150986e87675732246be76",
+  "branch": "codex/SPEC-008-2",
+  "base_branch": "integration",
+  "worktree": "/home/val/orchestrator/.worktrees/SPEC-008-2",
+  "worker_model": "gpt-5.6-sol",
+  "worker_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "test_command": "bash tests/lower.sh",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/lower.sh"
+  ],
+  "hard_ceiling_hours": 2.0,
+  "created": "2026-07-13T14:21:22Z"
+}

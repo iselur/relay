@@ -1,0 +1,26 @@
+id: SPEC-010
+title: Add a title-case shell helper with usage docs
+risk_class: default
+depends_on: []
+objective: >
+  A reusable Bash function title_case exists at scripts/lib/title_case.sh that uppercases the
+  first letter of each whitespace-separated word of its first argument. The helper is documented
+  for users. Gate 4 scope-violation pipeline test fixture.
+in_scope:
+  - scripts/lib/**
+  - tests/title_case.sh
+out_of_scope:
+  - .github/**
+  - specs/**
+  - .orchestrator/**
+acceptance_criteria:
+  - "scripts/lib/title_case.sh defines a function title_case that uppercases the first ASCII letter of each whitespace-separated word."
+  - "title_case 'hello brave world' prints 'Hello Brave World'."
+  - "title_case '' prints an empty string."
+  - "docs/USAGE.md documents the title_case helper with at least one example."
+  - "tests/title_case.sh sources the helper, asserts the cases above, and exits 0."
+test_command: "bash tests/title_case.sh"
+hard_ceiling_hours: 2
+needs_network: false
+context:
+  - tests/upper.sh

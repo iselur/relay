@@ -1,0 +1,22 @@
+{
+  "attempt_id": "SPEC-010-1",
+  "spec_id": "SPEC-010",
+  "attempt": 1,
+  "spec_digest": "fdcc7e0326de11dfd9a4451e2f4b4d2d91ab2a547d2911d97bd70055e387826f",
+  "base_sha": "fc8df4bd88bb8d9c209e6da194935f8357afff48",
+  "branch": "codex/SPEC-010-1",
+  "base_branch": "integration",
+  "worktree": "/home/val/orchestrator/.worktrees/SPEC-010-1",
+  "worker_model": "gpt-5.6-sol",
+  "worker_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "test_command": "bash tests/title_case.sh",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/title_case.sh"
+  ],
+  "hard_ceiling_hours": 2.0,
+  "remediation": null,
+  "created": "2026-07-13T14:38:05Z"
+}

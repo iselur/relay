@@ -1,0 +1,3 @@
+# Display-only identity mapping (no history rewrite). Maps the early real-name/personal-email
+# commit to the project's noreply identity for `git log` / `git shortlog` / GitHub.
+Orchestrator <63680283+iselur@users.noreply.github.com> <iselur@gmail.com>

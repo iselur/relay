@@ -1,0 +1,18 @@
+{
+  "approver": "orchestrator-on-behalf-of-val (Level 1.5 plan-scoped grant; Gate 4 pipeline-test fixture)",
+  "timestamp": "2026-07-13T14:34:12Z",
+  "spec_id": "SPEC-009",
+  "spec_digest": "bf6292bdf3245017c1807a28faa9ac761fb583e7c5aa89c76ba19b7e0176da3d",
+  "spec_digest_method": "sha256(specs/SPEC-009.yaml)",
+  "risk_class": "low",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/capitalize.sh"
+  ],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "Gate 4 happy-path pipeline test"
+}

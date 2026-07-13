@@ -1,0 +1,37 @@
+{
+  "verdict": "PASS",
+  "criteria": [
+    {
+      "criterion": "scripts/lib/squeeze.sh defines a function squeeze that collapses runs of spaces to one.",
+      "result": "MET",
+      "evidence": "scripts/lib/squeeze.sh:3-6 defines `squeeze() { printf '%s' \"${1-}\" | LC_ALL=C tr -s ' '; printf '\\n'; }` \u2014 `tr -s ' '` squeezes each run of consecutive ASCII spaces in $1 to a single space."
+    },
+    {
+      "criterion": "squeeze 'a   b  c' prints 'a b c'.",
+      "result": "MET",
+      "evidence": "tests/squeeze.sh:20 `assert_squeeze 'a   b  c' 'a b c'` compares $(squeeze \"$input\") to the expected string; orchestrator evidence shows `bash tests/squeeze.sh` exited 0, so this assertion passed."
+    },
+    {
+      "criterion": "squeeze '' prints an empty string.",
+      "result": "MET",
+      "evidence": "tests/squeeze.sh:21 `assert_squeeze '' ''`; with empty input `printf '%s' \"\" | tr -s ' '` emits nothing and only the trailing newline is printed (stripped by command substitution), and the test run exited 0."
+    },
+    {
+      "criterion": "tests/squeeze.sh sources the helper, asserts those cases, and exits 0 when all pass.",
+      "result": "MET",
+      "evidence": "tests/squeeze.sh:5 `source scripts/lib/squeeze.sh`; lines 20-21 assert both spec cases; `set -euo pipefail` (line 2) makes any failed assertion (return 1 at scripts/lib level) abort non-zero, and the last command succeeding yields exit 0 \u2014 confirmed by orchestrator: `bash tests/squeeze.sh exited 0`."
+    }
+  ],
+  "scope_finding": "Only two new files touched: scripts/lib/squeeze.sh (in scope: scripts/lib/**) and tests/squeeze.sh (in scope: tests/squeeze.sh). No out-of-scope paths (.github/**, specs/**, .orchestrator/**) appear in the diff; orchestrator scope check is PASS.",
+  "regression_finding": "None observed \u2014 the diff adds two new files and modifies nothing existing, so no prior behavior can regress. Minor note (non-blocking): squeeze emits a trailing newline, consistent with 'prints' semantics.",
+  "security_findings": "None observed \u2014 no secrets, no network access (needs_network: false respected), no credential access; shell usage is safe (quoted \"${1-}\", LC_ALL=C tr on a fixed literal argument, no eval or dynamic command construction).",
+  "reasons": [
+    "All four acceptance criteria are MET with direct evidence in the diff and the orchestrator-run test command exiting 0.",
+    "Changed paths are exactly the two in-scope files; integrity and scope checks both PASS.",
+    "No security or regression concerns: new self-contained files, safe quoting, no network or secret usage."
+  ],
+  "spec_digest": "ff357b3a63cbf8df0aeed88cb96dd22c8308c0fe5159b3c9021615d20b4de948",
+  "base_sha": "099e0dc80f16964793363ea69c07d9f2c1462e31",
+  "worker_commit": "19ec0936767d4e029f74bec590bf78785838b7f1",
+  "schema_version": "2"
+}

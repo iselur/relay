@@ -1,0 +1,1 @@
+{"approved_scope":["scripts/lib/**","tests/slugify.sh"],"changed":["scripts/lib/slugify.sh","tests/slugify.sh"],"out_of_scope":0,"result":"PASS"}

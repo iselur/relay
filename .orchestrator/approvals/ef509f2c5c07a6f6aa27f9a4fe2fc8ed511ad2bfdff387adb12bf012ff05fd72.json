@@ -1,0 +1,17 @@
+{
+  "approver": "orchestrator-on-behalf-of-val (Level 1.5 plan-scoped grant; Gate 4 pipeline-test fixture)",
+  "timestamp": "2026-07-13T14:34:12Z",
+  "spec_id": "SPEC-011",
+  "spec_digest": "ef509f2c5c07a6f6aa27f9a4fe2fc8ed511ad2bfdff387adb12bf012ff05fd72",
+  "spec_digest_method": "sha256(specs/SPEC-011.yaml)",
+  "risk_class": "high",
+  "approved_scope": [
+    "scripts/lib/**"
+  ],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "Gate 4 high-risk refusal fixture (per-dispatch approval demo)"
+}

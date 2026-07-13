@@ -1,0 +1,12 @@
+{
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/lower.sh"
+  ],
+  "changed": [
+    "scripts/lib/lower.sh",
+    "tests/lower.sh"
+  ],
+  "out_of_scope": [],
+  "result": "PASS"
+}

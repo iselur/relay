@@ -1,0 +1,5 @@
+6c639f4c5e1f8ad13671fcaf6de6855bcb35a56dbeef8b98dd1323110349724d  .orchestrator/decisions/SHARE-public-template/sol-consultation-prompt.txt
+2e6a858ad122bdee9382eb82ed9212c45032ade1277145b958fa85be23a13997  .orchestrator/decisions/SHARE-public-template/sol-response.txt
+36e477dce8f30a3d7de4ee9d3cb7e644e47be8df0331a2960669a9fdcf83d2f8  .orchestrator/decisions/SHARE-public-template/sol-events.jsonl
+bb9fbb873faabaf14d91a76c5b03830210c592e60ccdb1e556f71e83db285806  .orchestrator/decisions/SHARE-public-template/DECISION.md
+# note: sol-events.jsonl is intentionally untracked (gitignored); its hash above documents the local artifact.

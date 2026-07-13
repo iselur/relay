@@ -1,0 +1,18 @@
+{
+  "approver": "orchestrator-on-behalf-of-val (Level 1.5 plan-scoped grant; Gate 4 pipeline-test fixture)",
+  "timestamp": "2026-07-13T14:34:12Z",
+  "spec_id": "SPEC-010",
+  "spec_digest": "fdcc7e0326de11dfd9a4451e2f4b4d2d91ab2a547d2911d97bd70055e387826f",
+  "spec_digest_method": "sha256(specs/SPEC-010.yaml)",
+  "risk_class": "default",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/title_case.sh"
+  ],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "Gate 4 scope-violation pipeline test (docs/USAGE.md is deliberately OUT of the approved scope)"
+}

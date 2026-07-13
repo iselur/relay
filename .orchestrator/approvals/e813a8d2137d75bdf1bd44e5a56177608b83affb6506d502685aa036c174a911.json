@@ -1,0 +1,18 @@
+{
+  "approver": "val",
+  "timestamp": "2026-07-13T14:18:52Z",
+  "spec_id": "SPEC-008",
+  "spec_digest": "e813a8d2137d75bdf1bd44e5a56177608b83affb6506d502685aa036c174a911",
+  "spec_digest_method": "sha256(specs/SPEC-008.yaml)",
+  "risk_class": "low",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/lower.sh"
+  ],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "SPEC-008 approved explicitly by Val via remote control 2026-07-13 as one of the two MAX_PARALLEL=2 end-to-end fixtures (independent of its sibling). Recorded by the orchestrator on Val's instruction."
+}

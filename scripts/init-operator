@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# init-operator — make a fresh copy of this repo safe for a NEW operator (SOL-validated, SHARE
+# decision). Safe by default: refuses to run against the original template remote, generates a fresh
+# per-instance identity, sets a repo-local git identity only, leaves autonomy DISABLED, and clears
+# the example operator runtime state. It never touches your global git config or your home.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+ORCH="$ROOT/.orchestrator"
+
+# 1. Guard: never wipe the canonical template repo's state.
+ORIGIN="$(git remote get-url origin 2>/dev/null || echo '')"
+if printf '%s' "$ORIGIN" | grep -qiE "iselur/orchestrator"; then
+  if [ "${1:-}" != "--force-dev" ]; then
+    echo "refuse: origin looks like the canonical template ($ORIGIN)." >&2
+    echo "Run init-operator on YOUR OWN repo (created via 'Use this template'), not the template." >&2
+    echo "(override with --force-dev only if you really mean this repo.)" >&2
+    exit 1
+  fi
+fi
+
+echo "== init-operator for $ORIGIN"
+
+# 2. Fresh per-instance identity (gitignored → never travels with a clone; makes copied approvals
+#    fail closed on this instance).
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$ORIGIN" <<'PY'
+import json, os, secrets, sys, datetime
+orch=os.path.join(os.getcwd(),".orchestrator"); os.makedirs(orch, exist_ok=True)
+inst={"instance_id":secrets.token_hex(16),"repo":sys.argv[1],
+      "created":datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+open(os.path.join(orch,"instance.json"),"w").write(json.dumps(inst,indent=2)+"\n")
+print("  instance:", inst["instance_id"][:16])
+PY
+fi
+
+# 3. Autonomy OFF by default: ensure no local override exists (the tracked AUTONOMY.json ships
+#    disabled). You opt in later by creating .orchestrator/AUTONOMY.local.json yourself.
+rm -f "$ORCH/AUTONOMY.local.json"
+echo "  autonomy: disabled (no local override)"
+
+# 4. Clear the example operator runtime state (leave example specs UNAPPROVED, keep decisions as docs).
+rm -rf "$ORCH/state" "$ORCH/attempts" "$ORCH/escalations" "$ORCH/approvals" 2>/dev/null || true
+mkdir -p "$ORCH/approvals" "$ORCH/state"
+rm -f "$ORCH/HALT"
+rm -rf "$ROOT/.worktrees" 2>/dev/null || true
+echo "  cleared approvals/attempts/state/escalations (example specs remain, unapproved)"
+
+# 5. Repo-LOCAL git identity only (never global). Default to the gh-authenticated user if available.
+GHUSER="$(gh api user --jq .login 2>/dev/null || echo '')"
+if [ -n "$GHUSER" ]; then
+  git config --local user.name  "$GHUSER (orchestrator)"
+  git config --local user.email "${GHUSER}@users.noreply.github.com"
+  echo "  git identity (repo-local): $GHUSER (orchestrator) <${GHUSER}@users.noreply.github.com>"
+else
+  echo "  NOTE: set a repo-local git identity: git config --local user.name/user.email"
+fi
+
+# 6. Ensure an integration branch exists (template copies may be default-branch-only).
+git fetch --quiet origin 2>/dev/null || true
+if ! git show-ref --verify --quiet refs/heads/integration && \
+   ! git ls-remote --exit-code --heads origin integration >/dev/null 2>&1; then
+  git branch integration 2>/dev/null && git push -u origin integration 2>/dev/null \
+    && echo "  created integration from the default branch" \
+    || echo "  NOTE: create an 'integration' branch and protect it (see BOOTSTRAP.md)"
+fi
+
+cat <<'NEXT'
+
+DONE. Next (see BOOTSTRAP.md):
+  1. Protect main + integration (ruleset: require 'ci', require PRs, block force-push/deletion).
+  2. Authenticate gh / codex / claude (interactive).
+  3. Run scripts/setup-worker-user.sh, then bash tests/worker_isolation.sh (must all pass).
+  4. Write + approve a spec, dispatch it, and merge the PR yourself.
+Autonomy stays OFF until you deliberately create .orchestrator/AUTONOMY.local.json.
+NEXT

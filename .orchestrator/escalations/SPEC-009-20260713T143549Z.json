@@ -1,0 +1,9 @@
+{
+  "spec_id": "SPEC-009",
+  "reason": "integrate stopped at SPEC-009-1: merge refused/failed (rc=16)",
+  "evidence": {
+    "stderr": "dispatch: gh pr merge #18 failed: failed to delete local branch codex/SPEC-009-1: failed to run git: error: cannot delete branch 'codex/SPEC-009-1' used by worktree at '/home/val/orchestrator/.worktrees/SPEC-009-1'",
+    "integrated_so_far": []
+  },
+  "created": "2026-07-13T14:35:49Z"
+}

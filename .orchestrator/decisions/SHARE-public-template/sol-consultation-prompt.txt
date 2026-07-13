@@ -1,0 +1,77 @@
+You are Codex (gpt-5.6-sol), consulted as peer architect by Claude, the orchestrator. ADVERSARIAL
+review of a Critical-tier plan — FALSIFY it, don't rubber-stamp. Per our dual-validated-planning
+invariant this is Critical (credential/identity exposure remediation + public distribution +
+history rewrite on protected branches). Val has authorized: validate with you, then proceed on the
+approach we agree. So your job is to make this plan correct and safe before it runs.
+
+=== GOAL (Val) ===
+Turn the EXISTING public repo `github.com/iselur/orchestrator` into a clean, genericized, shareable
+"set-this-up-yourself" template that others can star and bootstrap with their own Claude — WITHOUT a
+separate repo (so Val's future improvements serve everyone). Must not break Val's running
+orchestrator or touch his box's real user. Scrub his personal exposure from the public repo.
+
+=== AUDIT FACTS (verified just now) ===
+- Repo is PUBLIC. No tokens/keys/SSH/tailnet-IPs/hostname/JWT anywhere in history (swept).
+- ONE real-identity leak: root commit 2d80268 authored+committed as "Valentin Ryabtsev
+  <iselur@gmail.com>" (full real name + personal email) in commit METADATA. All later commits use
+  "Val (orchestrator) <63680283+iselur@users.noreply.github.com>" (deliberate noreply).
+- `.orchestrator/decisions/**/sol-events.jsonl` (4 files, up to 286 KB) are verbose consultation
+  event-logs: read-only commands SOL ran + outputs (reveal username `val`, /home/val paths, dir
+  perms, a "hetzner" mention) + web searches. No secrets, but logs one wouldn't expect in a repo.
+- Consultation prompts (`sol-consultation-prompt.txt`) describe the security architecture in detail
+  (paths, where creds live). Blueprint, not secret; Val is OK publishing the design.
+- "val"/"/home/val" hardcoded across ~37 files (dispatch.py ~27 refs, setup-worker-user.sh ~15).
+  The OS user on the box really IS `val` (his sudo/login/home) — MUST NOT be renamed on the box.
+  `codex-worker`, `codexwork`, `/srv/codexwork` are already generic.
+- Branch protection: `main`+`integration` ruleset — required check `ci`, PRs required,
+  non_fast_forward BLOCKED, deletion BLOCKED, bypass_actors: []. So a history force-push is blocked
+  unless the ruleset is relaxed. The orchestrator's gh token is `iselur` (repo+workflow scope);
+  admin/ruleset-edit capability UNVERIFIED.
+- Immutable-provenance caveat: tracked attempt files record base_sha/worker_commit SHAs. A history
+  rewrite CHANGES all SHAs, so those recorded provenance refs would no longer resolve.
+
+=== CLAUDE'S PROPOSED PLAN (attack each part) ===
+A. GENERICIZE (val→operator), parameterized so it works for ANY operator with no per-install edits
+   and still runs on Val's box (operator=val): introduce OPERATOR_USER (default `id -un`),
+   OPERATOR_HOME (default $HOME); replace hardcoded `val`/`/home/val` in dispatch.py + setup script +
+   docs. Keep codex-worker/codexwork/srv. Full E2E on the box after, to prove nothing broke.
+B. SHARING FILES on the existing repo: `README.md` (what it is + one-line bootstrap), `BOOTSTRAP.md`
+   (gate-by-gate instructions a newcomer's Claude follows), `scripts/init-operator` (resets operator
+   state for a fresh user: DISABLE/remove .orchestrator/AUTONOMY.json — the enabled:true auto-merge
+   footgun — clear state/approvals/attempts, set their identity). Enable GitHub "template repository"
+   so newcomers get a clean copy.
+C. LOG HYGIENE: gitignore `.orchestrator/decisions/**/sol-events.jsonl` (keep prompt + response +
+   DECISION.md + sha256.txt for reasoning + integrity); remove the tracked event-logs.
+D. HISTORY REWRITE (last, after A–C are merged): `git filter-repo` to (i) rewrite ALL commit
+   author/committer identity to the noreply "Orchestrator" identity (kills the root-commit gmail/real
+   name), and (ii) purge `sol-events.jsonl` from all history. Accept SHA changes; add a note that
+   pre-share history was rewritten. Preserve the gate-by-gate build narrative (a selling point).
+E. FORCE-PUSH through protection: temporarily relax the ruleset (allow non-fast-forward) or
+   delete/recreate protection, force-push rewritten main+integration, then restore the exact ruleset.
+   If the token lacks admin, hand that toggle to Val.
+F. ORDER: A+B+C via normal PRs merged to integration→main → then D (rewrite final clean state) → E
+   (force-push + restore) → template toggle → verify → send Val the link.
+
+=== QUESTIONS ===
+Q1. History: is surgical filter-repo (D) right, or is squash-to-one-clean-initial-commit better for
+    a share/star repo? Weigh: filter-repo keeps the build narrative but breaks recorded provenance
+    SHAs; squash loses history but is pristine. Given the ONLY hard driver is one root commit's real
+    name/email + removing logs, what's proportionate? Is rewriting a public repo's protected history
+    even worth it here, or over-engineering?
+Q2. The provenance-SHA-break: after any rewrite, tracked base_sha/worker_commit refs go stale. How
+    to handle honestly — regenerate, annotate, drop the example provenance from the shared template,
+    or accept + document?
+Q3. Genericization (A): is env-parameterization (OPERATOR_USER/HOME) the robust approach, or
+    bootstrap-time substitution? What WILL break on Val's live box if done wrong, and exactly what
+    must the post-change E2E prove? Any place `val` must stay literal?
+Q4. init-operator (B): is disabling AUTONOMY + clearing state sufficient to make a cloned repo safe
+    for a new operator, or are there other footguns a newcomer would inherit (e.g. the codex-worker
+    setup, ACLs, systemd units, base_branch assumptions)? What's the minimal safe reset?
+Q5. Force-push through protection (E): safest sequence to relax→rewrite→restore without leaving the
+    public repo unprotected or half-migrated? Is deleting/recreating protection safer than editing
+    it? Fallback if the token can't edit rulesets?
+Q6. Anything sensitive we MISSED, and is publishing the security blueprint (prompts) genuinely fine?
+    Give the corrected end-to-end ordered runbook you'd endorse, with explicit PASS/BLOCK.
+
+Answer Q1–Q6 directly with an explicit verdict. If the history rewrite is disproportionate, say so
+and give the lighter correct path.

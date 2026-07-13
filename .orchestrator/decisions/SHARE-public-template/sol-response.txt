@@ -1,0 +1,187 @@
+## Explicit verdict
+
+**BLOCK the proposed plan as written. PASS a corrected plan with a surgical rewrite.**
+
+The principal defects are:
+
+- Rewriting every commit identity is unnecessarily destructive.
+- `OPERATOR_USER=id -un` plus `OPERATOR_HOME=$HOME` is unsafe under `sudo` and systemd.
+- `init-operator` treats dangerous inherited state after the fact instead of making the repository safe by default.
+- Copied approval artifacts may authorize copied specs unless approvals are instance-bound.
+- The force-push plan omits all other branches/tags, open PRs, atomicity, and migration of Val’s existing checkout.
+- Deleting/recreating the ruleset is riskier than a temporary, narrowly scoped bypass.
+- Enabling “all branches” on a GitHub template would create unrelated branch histories, so `main` and `integration` could not be merged normally. GitHub confirms template-generated repos start with one commit and that copied branches have unrelated histories. [GitHub template documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template)
+
+## Q1 — Rewrite, squash, or leave history?
+
+**Verdict: surgical `git-filter-repo` PASS; squash BLOCK; broad identity normalization BLOCK.**
+
+Rewrite only:
+
+1. The exact offending author/committer identity:
+   `Valentin Ryabtsev <iselur@gmail.com>` → the chosen noreply project identity.
+2. The four enumerated `sol-events.jsonl` paths, including any prior names or locations discovered during rehearsal.
+
+Do not rewrite later intentional identities or other contributors. Do not squash.
+
+Squashing changes all downstream identity just as surely, destroys the build narrative, invalidates signatures and provenance, and does not make the GitHub cutover materially safer. Changing the root commit necessarily changes every descendant because author, committer, tree, and parent identifiers are part of the commit hash. [git-filter-repo FAQ](https://github.com/newren/git-filter-repo/blob/main/Documentation/FAQ.md)
+
+A lighter path is valid only if Val changes the requirement:
+
+- Delete logs at the current tip.
+- Add the ignore rule.
+- Add `.mailmap`.
+- Do not rewrite.
+
+That is sufficient for newly generated template repositories because they receive a new single-commit history. It is **not** sufficient to scrub the existing canonical repo: raw old commit metadata and historical logs remain retrievable.
+
+Given the stated goal, the surgical rewrite is proportionate. But it only cleans the canonical reachable history. Existing clones, forks, cached GitHub views, and PR refs may retain the old objects; GitHub explicitly warns that a force-push cannot undo public disclosure globally. [GitHub history-removal guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)
+
+## Q2 — Broken provenance SHAs
+
+**Verdict: do not regenerate and do not silently replace them. Make old operational artifacts inert and document a history epoch.**
+
+Recommended treatment:
+
+- Move existing approvals, attempts, and state out of active runtime paths into something explicitly documentary, such as `docs/project-provenance/pre-template/`, or archive them offline if they have little public value.
+- Preserve the original artifacts unchanged.
+- Generate a separate migration manifest from `git-filter-repo`’s commit map containing only referenced old-SHA → sanitized-SHA mappings.
+- Label it explicitly: “derived history-rewrite translation, not original gate evidence.”
+- Record rewrite date, affected ref tips, tool/version, filter specification, and hash of the complete offline commit map.
+- Start new live attempts under a new `history_epoch` or `instance_id`.
+
+This is more honest than “regenerating” evidence, which would falsely imply the rewritten commits were the original worker outputs.
+
+Merely accepting stale SHAs with a prose note is weak. Template-generated repositories have new unrelated history anyway, so inherited project provenance cannot function as active provenance there. It must be documentary or removed.
+
+Also inspect integrity manifests: if `sha256.txt` includes a removed event log, either preserve that line as documentation of an intentionally absent artifact or migrate the entire evidence set. Do not leave it looking like a currently verifiable complete bundle.
+
+## Q3 — Genericization
+
+**Verdict: parameterization PASS, but ambient environment defaults as proposed are BLOCK. Bootstrap substitution is also BLOCK.**
+
+Use one generated, ignored instance configuration as the source of truth. Environment overrides can exist for tests and one-shot administration, but should not be the persistent configuration mechanism.
+
+Required behavior:
+
+- Non-root bootstrap may default the operator from the current UID using the passwd database.
+- Privileged setup must require `--operator-user` explicitly, or use a previously generated validated instance config.
+- Resolve the home directory from NSS/passwd for that user. Do not independently trust `$HOME`.
+- If `OPERATOR_HOME` is supported, require an absolute path and validate its owner against the configured operator.
+- Validate usernames and paths before using them in shell, ACL, or systemd commands.
+- Store the resolved UID as well as the name where identity stability matters.
+- Refuse mismatches such as `operator=root`, `home=/home/val`, or a nonexistent account.
+
+The proposed defaults fail under:
+
+- `sudo`, where `id -un` may be `root`;
+- preserved or rewritten `HOME`;
+- system services with sanitized environments;
+- nonstandard home directories;
+- independent user/home overrides.
+
+No executable code, current unit, current test fixture, or current setup documentation should retain literal `val`. It may remain only in consciously retained archival material that is clearly historical. `codex-worker`, `codexwork`, and `/srv/codexwork` should remain unchanged.
+
+The post-change E2E must prove:
+
+- `./scripts/test` passes.
+- Static scans find no unintended `val`, `/home/val`, owner, email, hostname, or event logs.
+- Setup dry-run resolves exactly `val` and `/home/val`, never `root`.
+- Re-running setup is idempotent.
+- Existing systemd units, ownership, ACLs, and `/srv/codexwork` paths remain correct.
+- `codex-worker` still cannot traverse/read `/home/val`.
+- A disposable approved spec dispatches as `val`, launches the worker as `codex-worker`, creates its worktree under `/srv/codexwork/worktrees`, runs all gates, records evidence, and opens a PR against `integration`.
+- Autonomy is off during the canary and no merge can occur unexpectedly.
+- No active worktree, service, or attempt depends on the old checkout before cutover.
+
+## Q4 — `init-operator`
+
+**Verdict: disabling autonomy and clearing state is necessary but insufficient.**
+
+The repo must be safe before initialization:
+
+- Track a disabled example/default autonomy configuration.
+- Put Val’s enabled setting in an ignored local override.
+- Migrate that override carefully on his box; do not let a merge delete his only live configuration.
+- Dispatcher behavior should fail closed if local configuration is missing or malformed.
+
+Minimum safe initialization:
+
+1. Refuse to run against the canonical `iselur/orchestrator` remote unless an explicit development override is provided.
+2. Generate a new random instance ID and ignored operator configuration.
+3. Set Git identity repo-locally only; never modify global Git configuration.
+4. Leave autonomy disabled.
+5. Remove active approvals, attempts, locks, counters, PIDs, worktree registrations, and copied runtime state.
+6. Leave example specs unapproved.
+7. Create `integration` from the generated repo’s `main`.
+8. Configure the new repo’s owner/name, branch targets, and GitHub settings explicitly.
+9. Perform privileged worker setup as a separate, human-confirmed, dry-runnable step.
+
+Most importantly: **prove copied approvals cannot authorize copied specs**. If approval validity is currently only a spec digest, that is a blocker. Bind approvals to at least an instance ID and repository identity, and test that an approval copied into a new template instance is rejected.
+
+Tell users not to select “Include all branches” when creating from the template. GitHub says those copied branches have unrelated histories. Bootstrap should create `integration` from `main` instead.
+
+## Q5 — Protection and force-push
+
+**Verdict: edit with a temporary narrow bypass; do not delete/recreate the ruleset.**
+
+Safest sequence:
+
+1. Save the complete semantic ruleset JSON and version.
+2. Confirm the authenticated actor has repository administration permission. Updating a ruleset requires repository Administration write permission. [GitHub ruleset API](https://docs.github.com/en/rest/repos/rules)
+3. Add only `iselur` as a temporary individual bypass actor with `bypass_mode: always`.
+4. Keep every other rule active. This leaves the repo protected from everyone except the exact migration actor.
+5. Push all affected writable heads and tags explicitly in one `--atomic` operation, using per-ref `--force-with-lease=<expected-old-tip>`.
+6. Do not use a casual `push --mirror`: inventory refs and avoid attempting to mutate GitHub-owned `refs/pull/*`.
+7. Verify rewritten tips, trees, commit metadata, absence of event logs on every reachable head/tag, and fresh `ci`.
+8. Remove the bypass actor immediately.
+9. Compare the restored semantic ruleset with the saved version and verify the bypass list is empty.
+
+Merely disabling non-fast-forward protection may still leave PR and status-check rules blocking the push. A ruleset bypass is the cleaner mechanism. GitHub rulesets support bypass actors, and current GitHub support includes individual-user bypass on repository rulesets. [GitHub rules documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets), [GitHub 2026 user-bypass update](https://github.blog/changelog/2026-05-07-repository-rulesets-user-bypass-and-branch-renaming/)
+
+If the token cannot administer rulesets: **BLOCK**. Val must add the narrow bypass interactively, observe the atomic push, and remove it afterward. Do not fall back automatically to deletion or an unprotected window.
+
+## Q6 — Missed exposure and blueprint publication
+
+Publishing the generic security blueprint is reasonable. Paths and isolation design must not be treated as secrets. Still, genericize deployment-specific locations and identities when they add no teaching value.
+
+Audit these additional surfaces before PASS:
+
+- All remote branches, tags, annotated taggers, releases, and release assets.
+- Open and closed PR refs, comments, issues, Actions logs/artifacts/caches, wiki, Pages, and forks.
+- Commit messages, co-author trailers, signatures, `.mailmap`, Git config examples, badges, package metadata, and `CODEOWNERS`.
+- Consultation responses and `sha256.txt`, not just prompts and event logs.
+- GitHub workflow permissions, especially `pull_request_target`, checkout of untrusted PR code, writable tokens, and action references not pinned to immutable SHAs.
+- Webhooks, deploy keys, environments, secrets, and branch assumptions.
+- Privileged setup-script injection, symlink, PATH, and ownership hazards.
+- A real open-source `LICENSE`; a public repository without one is not a usable shareable template.
+
+## Corrected ordered runbook
+
+1. **PASS/BLOCK audit.** Inventory every GitHub ref and non-Git surface; count forks; close or merge open PRs; verify no active attempts or worktrees; verify ruleset administration. Any unknown affected ref, active writer, or missing admin path is **BLOCK**.
+
+2. **Freeze live automation.** Quiesce dispatch and any job that can fetch/push. Save ignored runtime configuration and a mode-0600 local bundle of the old repository. Never publish that bundle.
+
+3. **Normal PR: safe generic runtime.** Add validated instance configuration, disabled tracked defaults, local autonomy override, instance-bound approvals, guarded initializer, generic docs, `LICENSE`, and current-tip log removal/ignore.
+
+4. **Normal PR: provenance boundary.** Move inherited project evidence out of active runtime paths, establish the history-epoch policy, and ensure fresh template users receive no active approval or autonomous state.
+
+5. **Val-box canary.** Configure `operator=val` explicitly, run setup dry-run/idempotence checks, isolation tests, the full suite, and one disposable end-to-end dispatch with autonomy disabled. Any UID/home/ACL/systemd drift is **BLOCK**.
+
+6. **Merge through `integration` → `main`.** Require `ci` normally.
+
+7. **Offline rewrite rehearsal.** Use a fresh full clone; rewrite only the exact old identity and enumerated log paths across every affected branch/tag. Review `changed-refs`, lost signatures, pruned commits, tree differences, and commit map. Run tests and the complete exposure scan. Unexpected content changes are **BLOCK**.
+
+8. **Prepare live-checkout replacement.** Because Val’s checkout will diverge, do not plan to `git pull`. Prepare a fresh post-rewrite clone in a sibling directory, restore only audited ignored local configuration, and plan an atomic directory cutover while automation is stopped.
+
+9. **Protected cutover.** Add the temporary individual bypass, perform one atomic lease-guarded push of all affected refs, verify the remote, and wait for fresh `ci`.
+
+10. **Restore protection.** Remove the bypass and confirm active rules, required `ci`, deletion blocking, force-push blocking, and an empty bypass list. Failure to restore is **BLOCK**.
+
+11. **Cut over Val’s box.** Swap to the fresh clone, verify permissions and absolute service paths, run a smoke dispatch, then resume automation. Preserve the old clone/bundle offline until confidence is established; never push from it.
+
+12. **Enable template mode.** Enable the GitHub template flag only after all verification. Document “default branch only”; bootstrap creates `integration`. Test by generating a disposable repository and prove that copied approvals are invalid, autonomy is disabled, and setup reaches the expected human confirmation boundary.
+
+13. **Publish the rewrite notice.** State plainly that canonical history was sanitized, old clones must be discarded, and historical object IDs changed. Do not claim worldwide erasure.
+
+That is the version I would authorize.

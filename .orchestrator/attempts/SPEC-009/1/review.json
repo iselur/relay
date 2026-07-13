@@ -1,0 +1,42 @@
+{
+  "verdict": "PASS",
+  "criteria": [
+    {
+      "criterion": "scripts/lib/capitalize.sh defines a function capitalize that prints its first argument with the first character uppercased (ASCII), rest unchanged.",
+      "result": "MET",
+      "evidence": "Diff adds scripts/lib/capitalize.sh lines 3-8: capitalize() uppercases \"${value:0:1}\" via LC_ALL=C tr 'a-z' 'A-Z' (ASCII-only) and prints \"${value:1}\" unchanged; ${1-} guards missing arg under set -u."
+    },
+    {
+      "criterion": "capitalize 'hello world' prints 'Hello world'.",
+      "result": "MET",
+      "evidence": "tests/capitalize.sh line 20 asserts assert_capitalize 'hello world' 'Hello world'; orchestrator evidence: bash tests/capitalize.sh exited 0."
+    },
+    {
+      "criterion": "capitalize '' prints an empty string.",
+      "result": "MET",
+      "evidence": "tests/capitalize.sh line 21 asserts assert_capitalize '' ''; with value='', both ${value:0:1} and ${value:1} are empty so only the trailing newline is emitted (stripped by $(...)); test exited 0."
+    },
+    {
+      "criterion": "capitalize '9lives' prints '9lives' (non-letter first char unchanged).",
+      "result": "MET",
+      "evidence": "tests/capitalize.sh line 22 asserts assert_capitalize '9lives' '9lives'; tr 'a-z' 'A-Z' leaves '9' unchanged; test exited 0."
+    },
+    {
+      "criterion": "tests/capitalize.sh sources the helper, asserts those cases, and exits 0 when all pass.",
+      "result": "MET",
+      "evidence": "tests/capitalize.sh line 5 `source scripts/lib/capitalize.sh`; lines 20-22 assert all three cases; set -euo pipefail (line 2) makes any assert_capitalize failure (return 1) abort nonzero; orchestrator evidence shows exit 0."
+    }
+  ],
+  "scope_finding": "Only scripts/lib/capitalize.sh and tests/capitalize.sh are touched \u2014 both within in_scope globs (scripts/lib/**, tests/capitalize.sh); no out-of-scope paths (.github/**, specs/**, .orchestrator/**) modified. Orchestrator scope check: PASS.",
+  "regression_finding": "Both files are new; no existing code is modified, so no regression surface. Minor note (non-blocking): capitalize emits a trailing newline via printf '%s\\n', which is conventional shell output behavior and is stripped by command substitution in consumers; none observed as a defect.",
+  "security_findings": "None observed. No secrets, no network use (needs_network: false honored), no credential access; shell usage is safe \u2014 variables are quoted, LC_ALL=C tr/printf only, and the test uses set -euo pipefail with quoted expansions.",
+  "reasons": [
+    "All five acceptance criteria are satisfied by the new scripts/lib/capitalize.sh and tests/capitalize.sh, with orchestrator-verified test_command exit 0.",
+    "Changed paths are strictly within the approved scope and orchestrator integrity/scope checks both PASS.",
+    "No security concerns: no network, secrets, or unsafe shell constructs; expansions are quoted and the ASCII-only tr translation matches the spec's ASCII requirement."
+  ],
+  "spec_digest": "bf6292bdf3245017c1807a28faa9ac761fb583e7c5aa89c76ba19b7e0176da3d",
+  "base_sha": "63378f54be134292b0ece43f34fdc00485635fca",
+  "worker_commit": "d22299bc74cc4b9c01b417dcb5f953caa8ed55d1",
+  "schema_version": "2"
+}

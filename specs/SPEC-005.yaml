@@ -1,0 +1,25 @@
+id: SPEC-005
+title: Add a reverse shell helper
+risk_class: low
+depends_on: []
+objective: >
+  A reusable Bash function reverse exists at scripts/lib/reverse.sh that prints its first
+  argument with its characters in reverse order. Used for the Gate 3 recovery drills.
+in_scope:
+  - scripts/lib/**
+  - tests/reverse.sh
+out_of_scope:
+  - .github/**
+  - specs/**
+  - .orchestrator/**
+acceptance_criteria:
+  - "scripts/lib/reverse.sh defines a function reverse that prints its first argument reversed character by character."
+  - "reverse 'abc' prints 'cba'."
+  - "reverse '' prints an empty string."
+  - "tests/reverse.sh sources the helper and asserts those cases plus reverse 'a' -> 'a'."
+  - "tests/reverse.sh exits 0 when all assertions pass."
+test_command: "bash tests/reverse.sh"
+hard_ceiling_hours: 2
+needs_network: false
+context:
+  - tests/slugify.sh

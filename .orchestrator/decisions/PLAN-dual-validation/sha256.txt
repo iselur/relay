@@ -1,0 +1,5 @@
+bc667e8c6dbcec7a00f1bf7eadba7942744ce5aa251943f86e60c78044b3ab73  .orchestrator/decisions/PLAN-dual-validation/sol-consultation-prompt.txt
+1ed7be3d0bdb667abc848e7f3cc570ecdb506e083e5bf8d040a6fff89ff2d3a4  .orchestrator/decisions/PLAN-dual-validation/sol-response.txt
+43f93012b59f0a88b91382823b3a475d823e7328d36189c2e2eae9e8717ff45a  .orchestrator/decisions/PLAN-dual-validation/sol-events.jsonl
+31f1de1f81f8d3283fc23ded55f50d0b79a4401becd565c484ae0de75017cd56  .orchestrator/decisions/PLAN-dual-validation/DECISION.md
+# note: sol-events.jsonl is intentionally untracked (gitignored); its hash above documents the local artifact.

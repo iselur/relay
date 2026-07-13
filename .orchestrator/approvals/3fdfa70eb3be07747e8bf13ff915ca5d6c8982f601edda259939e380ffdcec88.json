@@ -1,0 +1,15 @@
+{
+  "approver": "val",
+  "timestamp": "2026-07-13T11:20:00Z",
+  "spec_id": "SPEC-001",
+  "spec_digest": "3fdfa70eb3be07747e8bf13ff915ca5d6c8982f601edda259939e380ffdcec88",
+  "spec_digest_method": "sha256(specs/SPEC-001.yaml)",
+  "risk_class": "low",
+  "approved_scope": ["scripts/lib/**", "tests/slugify.sh"],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "Gate 1 end-to-end spike. Approved verbally by Val 2026-07-13. Spec immutable from this point; this artifact binds only to the digest above."
+}

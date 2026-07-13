@@ -1,0 +1,18 @@
+{
+  "approver": "orchestrator-on-behalf-of-val (Level 1.5 grant; D5 isolated E2E)",
+  "timestamp": "2026-07-13T15:14:58Z",
+  "spec_id": "SPEC-012",
+  "spec_digest": "ff357b3a63cbf8df0aeed88cb96dd22c8308c0fe5159b3c9021615d20b4de948",
+  "spec_digest_method": "sha256(specs/SPEC-012.yaml)",
+  "risk_class": "low",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/squeeze.sh"
+  ],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "D5 isolated-pipeline E2E fixture."
+}

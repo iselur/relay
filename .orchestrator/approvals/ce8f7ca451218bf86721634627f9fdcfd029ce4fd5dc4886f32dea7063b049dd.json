@@ -1,0 +1,18 @@
+{
+  "approver": "val",
+  "timestamp": "2026-07-13T14:18:52Z",
+  "spec_id": "SPEC-007",
+  "spec_digest": "ce8f7ca451218bf86721634627f9fdcfd029ce4fd5dc4886f32dea7063b049dd",
+  "spec_digest_method": "sha256(specs/SPEC-007.yaml)",
+  "risk_class": "low",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/upper.sh"
+  ],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "SPEC-007 approved explicitly by Val via remote control 2026-07-13 as one of the two MAX_PARALLEL=2 end-to-end fixtures (independent of its sibling). Recorded by the orchestrator on Val's instruction."
+}

@@ -1,0 +1,44 @@
+My recommendation: use a hardened B/D hybrid—let the worker commit in a fully isolated repository, then transfer an inert bundle/pack into an orchestrator-created quarantine repo for validation. Do not fetch directly from the worker-controlled repository.
+
+1. Option B is sound, but not exactly as written.
+
+`--shared` and `--reference` use alternates: ordinary object writes remain local, and the read-only sandbox prevents writes through the alternate path. However, they create lifetime dependencies on the parent object store.
+
+More importantly:
+
+- Never use a normal local clone with hardlinks. A writable hardlink inside the sandbox can mutate the same inode as the parent object.
+- Do not run `git fetch /worker/repo` outside the sandbox. That executes Git against worker-controlled repository metadata and configuration, unnecessarily expanding the command-execution and parser attack surface.
+- Prefer a bundle seeded at `base_sha`, or `clone --no-hardlinks` with no alternates. Verify that `.git/objects/info/alternates` is absent.
+- Have the worker emit a bundle containing its branch. Import that bundle into a fresh quarantine repository, run `git fsck --strict`, then validate the exact object ID.
+
+2. B and C are not security-equivalent.
+
+“The worker authored the commit” provides workflow ownership, but no trustworthy provenance: author fields and commit metadata are self-asserted unless cryptographically signed by a protected worker identity.
+
+B also allows hostile Git structures that C prevents by construction: pathological trees, oversized or transient blobs, secrets in commit messages, extra intermediate commits, unusual modes, and objects later deleted from the final tree. Your existing gates are insufficient if the scope check only compares `base_sha` with the final tree.
+
+For B, additionally require:
+
+- Scope validation on every commit transition, not merely the aggregate diff.
+- Linear ancestry and a commit-count limit.
+- Limits on introduced object count and size.
+- Commit-message/header policy.
+- Explicit rejection of unsupported modes, especially gitlinks.
+- Integrity checks with replace/graft mechanisms disabled.
+- Checkout and testing in a fresh orchestrator-created worktree.
+
+C remains materially smaller and safer, but conflicts with Val’s ownership preference.
+
+3. Reject A.
+
+Giving a potentially rogue worker write access to the real repository’s complete Git control plane defeats the sandbox’s main security boundary. Downstream checks cannot repair deleted refs, corrupted objects, sabotaged concurrent worktrees, or races introduced before validation.
+
+4. Option D is artifact handoff.
+
+The worker commits inside an isolated repository and produces a Git bundle. The orchestrator imports it into a disposable quarantine repository, validates it, and only then transfers the verified commit into the real repository. This preserves literal worker-created commits without trusting the worker repository as a live Git remote.
+
+5. Single recommendation
+
+Implement D as the hardened form of B: self-contained worker repo, no hardlinks or alternates, bundle handoff, quarantine import, strict object/history validation, then gates and promotion.
+
+The strongest argument against it is that it adds substantial Git attack surface and dispatcher complexity solely to preserve mostly cosmetic commit ownership; Option C is simpler and safer by construction.

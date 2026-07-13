@@ -1,0 +1,20 @@
+{
+  "attempt_id": "SPEC-005-1",
+  "spec_id": "SPEC-005",
+  "attempt": 1,
+  "spec_digest": "52c7f7c4089609f4cbb65ed7f00a4d1a9716af5d8663f9f2062da15bde711958",
+  "base_sha": "5ec8e23522e8337cce241be1bc4fcf7de7161e9c",
+  "branch": "codex/SPEC-005-1",
+  "worktree": "/home/val/orchestrator/.worktrees/SPEC-005-1",
+  "worker_model": "gpt-5.6-sol",
+  "worker_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "test_command": "bash tests/reverse.sh",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/reverse.sh"
+  ],
+  "hard_ceiling_hours": 2.0,
+  "created": "2026-07-13T12:37:45Z"
+}
