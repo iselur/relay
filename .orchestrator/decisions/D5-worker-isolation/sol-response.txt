@@ -1,0 +1,243 @@
+Your draft is directionally right but does **not** close 13-B as written.
+
+The fatal gap is not in `codex exec`; it is the post-worker test. The dispatcher commits worker-controlled files, then runs `test_command` as `val` at [scripts/dispatch.py](/home/val/orchestrator/scripts/dispatch.py:651). A malicious patch can make that test read `~/.config/gh/hosts.yml` and use `val`’s unrestricted network. The reviewer is a second, weaker confused-deputy path because worker-controlled diff text is given to a Claude process running as `val` with filesystem Read/Grep/Glob tools at [scripts/dispatch.py](/home/val/orchestrator/scripts/dispatch.py:813).
+
+My recommendation is **C: dedicated user + retain bwrap, but use distro bwrap and a current read-restricting Codex permission profile; run both Codex and the gate test in separate hardened system services.** Do not build the `/opt` copy/AppArmor scheme as drafted.
+
+## Q1. Permission model and shared worktrees
+
+A dedicated UID is correct. The proposed directory permissions are not.
+
+### Setgid is insufficient
+
+Setgid controls inherited group ownership, not permission bits.
+
+- A checkout made with `val`’s normal `0022` umask produces `0644` files owned by `val`; `codex-worker` cannot edit them.
+- Run `git worktree add` under `umask 0007`, producing approximately `0660` files and `0770` directories.
+- Run the worker service with `UMask=0007`.
+- Keep the worktree root and descendants setgid so new files remain `codexwork`.
+
+For normal cooperative output, this lets `val` read worker-created files. It is not reliable against an adversarial worker: the owner can `chmod 000`, clear ACLs, or create inaccessible subdirectories. Default POSIX ACLs have the same weakness. Treat that as denial-of-service and fail the attempt; do not pretend group permissions guarantee recovery from a hostile owner.
+
+Use these parent modes:
+
+```text
+/srv/codexwork                    root:root       0755
+/srv/codexwork/worktrees          val:codexwork   2750
+/srv/codexwork/worktrees/ATTEMPT  val:codexwork   2770
+```
+
+Do **not** make the shared worktrees parent `2770`. Group write on the parent lets the worker rename, delete, or create sibling worktree entries.
+
+Keep the linked worktree’s `.git` pointer file owned by `val` and non-group-writable, and mount/protect it read-only in both untrusted phases.
+
+### Shared group versus ACLs
+
+Use the group. ACLs are more intricate without providing a stronger hostile-owner guarantee.
+
+The group does create cross-attempt exposure: one `codex-worker` UID can access every worktree made accessible to that UID. One fixed UID cannot provide Unix-level isolation between simultaneous workers. Retaining bwrap—and preferably using a workspace-only read profile—prevents one Codex run from reading or writing sibling worktrees. Per-attempt UIDs would be the later, stronger solution.
+
+### Symlinks, hardlinks, and `/tmp`
+
+- A symlink does not bypass `/home/val`’s missing search permission, so the worker cannot directly follow a link to `val`’s credentials.
+- But a later process running as `val` can follow it. This is another reason the gate test must not run as `val`.
+- A hardlink to a `val` credential is not viable without reaching/opening the source path. A hardlink to the worker’s own auth file may be possible if both paths share a filesystem, unless sandbox read policy denies the source.
+- Give every untrusted system service `PrivateTmp=yes`. Otherwise `/tmp` offers persistence, cross-user symlink games, and places to retain hardlinks.
+- Before `git add`, use `lstat`-style validation and fail on unexpected FIFOs, sockets, devices, changed hardlinks, and new/modified symlinks unless the spec explicitly allows them. Do not recursively follow worker-controlled paths as root.
+
+`codex-worker` cannot reach `val` credentials through ordinary DAC provided it is not in group `val`, receives no `XDG_RUNTIME_DIR=/run/user/1000`, and `/home/val` remains `0750`.
+
+## Q2. Keep or drop bwrap
+
+Keep it. Specifically, choose **C**, not B:
+
+> Dedicated user + distro `/usr/bin/bwrap` + Codex workspace-only permission profile + systemd hardening.
+
+Both proposed OS-level network replacements are wrong for the Codex unit:
+
+- `PrivateNetwork=yes` applies to the entire service, including the Codex controller, so Codex cannot reach OpenAI.
+- An nftables `skuid codex-worker drop` rule likewise blocks sockets opened by the Codex controller.
+- Codex needs a split policy: its controller needs network, while model-spawned commands do not. That is exactly what Codex’s sandbox provides. OpenAI documents that the sandbox applies to spawned commands and that workspace-write networking is off by default. [Codex sandbox documentation](https://learn.chatgpt.com/docs/sandboxing), [agent approvals and network controls](https://learn.chatgpt.com/docs/agent-approvals-security).
+
+Write confinement also remains valuable. Without it, the worker can write:
+
+- Its own home and authentication state.
+- Every group-writable worktree.
+- Persistent temporary locations.
+- World-writable paths.
+- Files that poison later runs.
+
+Systemd `ProtectSystem=strict` with narrow `ReadWritePaths=` is useful defense-in-depth, but it does not distinguish the Codex controller from model commands within the allowed paths.
+
+Your installed Codex 0.144.3 supports the newer permission profiles. Use a profile equivalent to:
+
+```toml
+default_permissions = "worker"
+
+[permissions.worker]
+extends = ":workspace"
+
+[permissions.worker.filesystem]
+":root" = "deny"
+":minimal" = "read"
+
+[permissions.worker.filesystem.":workspace_roots"]
+"." = "write"
+
+[permissions.worker.network]
+enabled = false
+```
+
+This provides the read boundary your legacy `--sandbox workspace-write` mode lacks. OpenAI’s documented `workspace-only` example uses precisely the `:root = "deny"` plus `:minimal = "read"` pattern. [Codex permission profiles](https://learn.chatgpt.com/docs/permissions).
+
+Important: permission profiles do not compose with `--sandbox`; passing `--sandbox workspace-write` selects the older settings. Remove that flag and select the profile explicitly. Profiles are beta, so pin a minimum Codex version and make the isolation smoke test fail closed.
+
+For the independent gate test, `PrivateNetwork=yes` is appropriate because that process has no legitimate API control channel.
+
+## Q3. Privileged launch mechanism
+
+Use a **system-manager transient service**:
+
+```text
+sudo -n systemd-run --uid=codex-worker ...
+```
+
+Do not use `systemd-run --user --uid=codex-worker`; the `val` user manager generally lacks the privilege to switch to another host UID and cannot apply all filesystem namespace hardening.
+
+Recommended properties include:
+
+```text
+Type=exec
+RuntimeMaxSec=<remaining attempt budget>
+KillMode=control-group
+TimeoutStopSec=10s
+PrivateTmp=yes
+ProtectSystem=strict
+InaccessiblePaths=/home/val
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+UMask=0007
+ReadWritePaths=<current worktree> <worker Codex state>
+ReadOnlyPaths=<worktree>/.git
+```
+
+Do not set `PrivateNetwork=yes` on the Codex service. Do set it on the test service.
+
+Use:
+
+```text
+--pipe --wait --quiet --collect
+```
+
+That preserves streaming:
+
+- Open `events.jsonl` and stderr as `val`.
+- Pass their file descriptors through `systemd-run --pipe`.
+- Pass `/dev/null` as stdin.
+- `--wait` propagates the service exit status.
+- `--quiet` prevents systemd’s runtime summary from corrupting JSONL.
+
+Because the worker cannot write the evidence directory inside `/home/val`, drop `--output-last-message`; recover the final `agent_message` from JSONL as your project convention already permits.
+
+A system transient service is not nested under the outer user unit’s cgroup. Therefore:
+
+- Give the child its own `RuntimeMaxSec`.
+- Store its deterministic unit name in attempt state.
+- `dispatch cancel` must stop the child system unit first, then the outer user unit.
+- An unexpectedly killed outer unit can leave the child alive only until its own ceiling, never indefinitely.
+
+`sudo -u codex-worker` is simpler and stays inside the outer cgroup, but gives you no independently killable worker cgroup, no clean `PrivateTmp`, no transient bind mount, and no systemd filesystem hardening. `setpriv` requires privilege to change UID and buys nothing here.
+
+See the systemd semantics for [`--uid`, `--pipe`, and `--wait`](https://www.freedesktop.org/software/systemd/man/255/systemd-run.html) and [`ProtectSystem`, `ReadWritePaths`, `PrivateTmp`, and `PrivateNetwork`](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html).
+
+## Q4. Codex installation and authentication
+
+### Installation: do not copy and re-pin the bundled bwrap
+
+Install the Ubuntu package:
+
+```text
+bubblewrap
+apparmor-profiles
+apparmor-utils
+```
+
+Then load Ubuntu 24.04’s generic `bwrap-userns-restrict` profile. OpenAI explicitly recommends distro bwrap and documents the Ubuntu 24.04 AppArmor profile procedure. Codex uses the first `bwrap` on `PATH`, so a scrubbed `/usr/bin:/bin` path selects `/usr/bin/bwrap`. [Linux sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing).
+
+That moves the AppArmor attachment to the stable `/usr/bin/bwrap` path and removes npm-version coupling.
+
+To expose the existing Codex package without opening `/home/val` or copying 336 MB, use the transient system service’s root-created bind mount:
+
+```text
+BindReadOnlyPaths=
+  /home/val/.local/lib/node_modules/@openai/codex:/opt/codex
+```
+
+Then launch:
+
+```text
+/usr/bin/node /opt/codex/bin/codex.js
+```
+
+The service manager performs the bind before dropping UID; `codex-worker` never receives traversal permission into `/home/val`. This also automatically uses the currently installed package on each launch.
+
+Test this exact arrangement during setup. If transient binding proves incompatible, the fallback is a versioned, root-owned install under `/opt`, not ACL traversal into `/home/val`. Giving the worker execute permission on `/home/val` would expose any guessed `0644` file beneath it.
+
+### Authentication: do not copy the exact auth file
+
+A separate Unix user does not hide that user’s own `0600` auth file from processes running as the same UID. Therefore copying `val`’s `auth.json` does not support the claim that credentials are separated from worker actions.
+
+Prefer, in order:
+
+1. A dedicated automation/API identity with the narrowest available scope and budget.
+2. A separate device-auth login for the worker, producing independently replaceable token material.
+3. Copying the existing token only as an explicitly documented temporary residual risk.
+
+Whether another login consumes a seat is a product/licensing question; do not infer it from Unix identity mechanics.
+
+The workspace-only Codex permission profile is what prevents model-spawned commands from reading the worker’s own `auth.json`. Unix DAC alone cannot separate a controller and its subprocesses when both have the same UID. If you require that boundary without trusting Codex’s command sandbox, you need a separate credential broker or separate controller/command UIDs—far beyond minimum D5.
+
+## Q5. Minimum viable D5
+
+I would ship this:
+
+1. Create `codex-worker` with no login shell, no sudo, a private primary group, and supplementary `codexwork`.
+2. Create the worktree hierarchy with a non-group-writable parent and per-attempt `2770` directories.
+3. Create worktrees under `umask 0007`; keep `.git` non-worker-writable.
+4. Install distro bubblewrap and Ubuntu’s generic AppArmor profile.
+5. Define and smoke-test a root-owned workspace-only Codex permission profile: current worktree writable, minimal runtime readable, everything else unreadable, command network off.
+6. Launch Codex in a transient system service under `codex-worker`, bind-mounting the existing Codex package read-only.
+7. After that service is fully dead, validate file types/link counts, then let `val` perform Git commit, integrity, and scope gates.
+8. Run `test_command` in a second transient system service as `codex-worker`, with `PrivateNetwork=yes`, `PrivateTmp=yes`, `/home/val` and the worker auth directory inaccessible, and only the worktree writable.
+9. Kill that service, then re-check worktree cleanliness and commit identity before review/push.
+10. Give the reviewer no host filesystem tools. It already receives the spec and complete diff. If more context is needed, have the orchestrator include it in the prompt; do not let a prompt-injected reviewer browse as `val`.
+11. Add fail-closed drills proving:
+    - `cat /home/val/.config/gh/hosts.yml` fails.
+    - Reading worker `auth.json` from a model command fails.
+    - Writing a sibling worktree fails.
+    - Model-command network fails while Codex API traffic succeeds.
+    - Gate-test network fails.
+    - Cancellation kills all worker/test descendants.
+
+Defer:
+
+- Per-attempt UIDs.
+- Containers.
+- nftables or custom network proxies.
+- POSIX ACL machinery.
+- A separate copied `/opt` Codex tree.
+- Dynamic users.
+- General chroot/root-image construction.
+- Secret scanning as a claimed security boundary; it is useful defense-in-depth but encoding defeats it.
+
+New attack surfaces to control:
+
+- Never grant `codex-worker` sudo or a permissive Polkit rule.
+- A sudoers rule allowing arbitrary `systemd-run` is root-equivalent. If `val`’s blanket sudo is later removed, use a root-owned fixed launcher that validates attempt IDs, unit names, real paths beneath `/srv/codexwork/worktrees`, and fixed service properties.
+- Validate every path before passing it as `ReadWritePaths=` or a bind mount source.
+- Keep `/opt` mountpoints and launch wrappers root-owned.
+- Do not let the worker write the shared worktree parent.
+- Do not pass `val`’s `XDG_RUNTIME_DIR`, SSH agent, DBus address, proxy variables, or token-bearing environment.
+- Treat worker-created inaccessible files as a failed attempt, not as a reason to run broad recursive root operations over an untrusted tree.
+
+The most important correction is conceptual: **the trust boundary must cover execution of worker-produced code, not merely the `codex exec` process.** Until the test phase moves out of `val`, D5 is security theater.
