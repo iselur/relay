@@ -1,8 +1,8 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "criteria", "scope_finding", "regression_finding", "security_findings", "reasons", "spec_digest", "base_sha", "worker_commit", "schema_version"],
-  "description": "Reviewer verdict v2 — mandatory structured rubric (policy-note item 2). A PASS with empty reasons, or a PASS with any UNMET criterion, is rejected fail-closed by the dispatcher.",
+  "required": ["verdict", "criteria", "scope_finding", "regression_finding", "security_findings", "reasons", "spec_digest", "base_sha", "worker_commit", "schema_version", "quality"],
+  "description": "Reviewer verdict v3 — mandatory structured rubric plus advisory quality dimensions (policy-note item 2). A PASS with empty reasons, or a PASS with any UNMET criterion, is rejected fail-closed by the dispatcher.",
   "properties": {
     "verdict": { "type": "string", "enum": ["PASS", "FAIL"] },
     "criteria": {
@@ -27,6 +27,40 @@
     "spec_digest": { "type": "string" },
     "base_sha": { "type": "string" },
     "worker_commit": { "type": "string" },
-    "schema_version": { "type": "string", "const": "2" }
+    "schema_version": { "type": "string", "const": "3" },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maintainability", "design_fit", "test_quality"],
+      "properties": {
+        "maintainability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score", "evidence"],
+          "properties": {
+            "score": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "evidence": { "type": "string", "pattern": "\\S" }
+          }
+        },
+        "design_fit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score", "evidence"],
+          "properties": {
+            "score": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "evidence": { "type": "string", "pattern": "\\S" }
+          }
+        },
+        "test_quality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score", "evidence"],
+          "properties": {
+            "score": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "evidence": { "type": "string", "pattern": "\\S" }
+          }
+        }
+      }
+    }
   }
 }
