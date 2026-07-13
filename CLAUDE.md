@@ -9,12 +9,21 @@ log and findings live in `SETUP-REPORT.md`. On any conflict, `SETUP-BRIEF.md` in
 artifact) and merges every PR. Merge to `main` is human-only, forever. The orchestrator never
 merges.
 
-## Session-start ritual (Gate 3 — encode reconciliation here)
+## Session-start ritual (Gate 3)
 
-1. Read `.orchestrator/state/*.json`. 2. Inspect real repo/worktree/unit state
-   (`git worktree list`, `systemctl --user list-units 'codex-*'`). 3. Reconcile drift: a state
-   file `running` whose unit is gone → mark `interrupted`. 4. Resume from the recorded next action.
-Never ask Val to reconstruct context these files already hold.
+Run **`./scripts/dispatch reconcile`** first thing. It reads `.orchestrator/state/*.json`, inspects
+real unit state (`systemctl --user`), and flips any attempt whose state is `running` but whose unit
+is gone (orchestrator/box restart) to `interrupted` — resumable ONLY as a fresh attempt (never
+hand-finish a partial worktree; see quota/degradation policy). Then resume from the recorded next
+action. Never ask Val to reconstruct context these files already hold.
+
+## Health monitoring (Gate 3 — soft-alert, confirm-then-cancel)
+
+`./scripts/dispatch health <attempt-id>` (threshold `--minutes`, default 10). A stale JSONL event
+stream raises an **alert, not a kill**. Silence ≠ death: a long compile/test is silent but busy.
+Cancel ONLY a **confirmed hang** — unit alive but no CPU progress, no new events, and no journal
+activity across **two consecutive** checks. A busy-but-silent worker (CPU advancing) always
+survives.
 
 ## Definition of done (a spec is `done` only when ALL hold)
 

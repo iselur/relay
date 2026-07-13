@@ -709,6 +709,126 @@ def cmd_cancel(attempt_id: str) -> None:
                       "stop_rc": cp.returncode, "stderr": cp.stderr.strip()}))
 
 
+# =============================================================== health =======
+# Gate 3 health monitoring: soft-alert, confirm-then-cancel. Silence on the JSONL event stream is
+# NOT death — a long compile/test is silent but busy. We only cancel a CONFIRMED hang: unit alive
+# but no CPU progress AND no new events AND no journal activity across TWO consecutive checks.
+HEALTH_INACTIVITY_MIN = 10          # configurable; a stale event stream past this raises an alert
+HEALTH_CPU_EPSILON_NS = 50_000_000  # 50ms of CPU between checks counts as "made progress"
+
+
+def _health_snap_path(spec_id: str) -> Path:
+    return STATE / f"{spec_id}.health.json"
+
+
+def _read_health_snap(spec_id: str) -> dict:
+    p = _health_snap_path(spec_id)
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def _journal_lines_since(unit: str, since_ts: float) -> int:
+    if since_ts <= 0:
+        return 0
+    cp = run(["journalctl", "--user", "-u", unit, "--since",
+              datetime.fromtimestamp(since_ts, timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+              "-o", "cat", "--no-pager"])
+    return len([ln for ln in (cp.stdout or "").splitlines() if ln.strip()])
+
+
+def cmd_health(attempt_id: str, inactivity_min: int = HEALTH_INACTIVITY_MIN) -> None:
+    spec_id, n = parse_attempt_id(attempt_id)
+    unit = unit_name(spec_id, n)
+    att = ATTEMPTS / spec_id / str(n)
+    events = att / "raw" / "events.jsonl"
+
+    show = systemctl_show(unit, "ActiveState", "SubState", "CPUUsageNSec")
+    active = show.get("ActiveState") in {"active", "activating"}
+    cpu = int(show.get("CPUUsageNSec", "0") or 0)
+    nowts = time.time()
+    ev_mtime = events.stat().st_mtime if events.exists() else 0.0
+    ev_lines = sum(1 for _ in events.open()) if events.exists() else 0
+    idle_s = nowts - ev_mtime if ev_mtime else 1e9
+
+    snap = _read_health_snap(spec_id)
+    same_attempt = snap.get("attempt_id") == attempt_id
+    prior_dead = snap.get("consecutive_dead", 0) if same_attempt else 0
+
+    out = {"attempt_id": attempt_id, "unit": unit, "active_state": show.get("ActiveState", "gone"),
+           "idle_seconds": round(idle_s), "event_lines": ev_lines, "cpu_nsec": cpu}
+
+    action = "none"
+    if not active:
+        health = "unit_inactive"          # terminal/gone — status/await handle it, not a hang
+        consecutive_dead = 0
+    elif idle_s < inactivity_min * 60:
+        health = "healthy"                # recent event → alive
+        consecutive_dead = 0
+    else:
+        # Stale event stream — ALERT. Inspect deeper before any kill.
+        cpu_delta = cpu - snap.get("cpu_nsec", cpu) if same_attempt else 0
+        events_grew = ev_lines > snap.get("event_lines", ev_lines) if same_attempt else False
+        journal_new = _journal_lines_since(unit, snap.get("checked_ts", 0)) if same_attempt else 0
+        progressing = cpu_delta > HEALTH_CPU_EPSILON_NS or events_grew or journal_new > 0
+        out.update({"cpu_delta_nsec": cpu_delta, "events_grew": events_grew,
+                    "journal_new_lines": journal_new})
+        if progressing:
+            health = "busy_no_events"     # silent but working (e.g. long compile) — DO NOT KILL
+            consecutive_dead = 0
+        else:
+            consecutive_dead = prior_dead + 1
+            if consecutive_dead >= 2:
+                health = "confirmed_hang"  # two consecutive dead checks → cancel
+                action = "cancelled"
+                run(["systemctl", "--user", "stop", unit])
+                st = read_state(spec_id) or {}
+                if st.get("attempt_id") == attempt_id and st.get("status") in LIVE:
+                    write_state(spec_id, {**st, "status": "interrupted",
+                                          "error_class": "hang",
+                                          "detail": "confirmed hang: no CPU/event/journal progress "
+                                                    "across two consecutive health checks"})
+            else:
+                health = "alert_pending_confirm"  # first dead check — wait for a second to confirm
+
+    out["health"] = health
+    out["consecutive_dead"] = consecutive_dead
+    out["action"] = action
+    atomic_write(_health_snap_path(spec_id), json.dumps({
+        "attempt_id": attempt_id, "checked_ts": nowts, "cpu_nsec": cpu,
+        "event_lines": ev_lines, "consecutive_dead": consecutive_dead,
+    }, indent=2))
+    print(json.dumps(out, indent=2))
+
+
+# ============================================================= reconcile ======
+def cmd_reconcile() -> None:
+    """Session-start ritual (Gate 3 / CLAUDE.md): read state, inspect real units, mark drift."""
+    reconciled = []
+    for st in all_states():
+        if st.get("status") not in LIVE:
+            continue
+        aid = st.get("attempt_id")
+        spec_id = st.get("spec_id")
+        unit = st.get("unit") or (unit_name(*parse_attempt_id(aid)) if aid else None)
+        active = unit_active(unit) if unit else False
+        if not active:
+            write_state(spec_id, {**st, "status": "interrupted", "error_class": "interrupted",
+                                  "detail": "reconcile: state was LIVE but unit is gone "
+                                            "(orchestrator/box restart); resumable as a fresh "
+                                            "attempt"})
+            reconciled.append({"attempt_id": aid, "from": st.get("status"),
+                               "to": "interrupted", "unit_active": False})
+        else:
+            reconciled.append({"attempt_id": aid, "status": st.get("status"),
+                               "unit_active": True, "note": "still running"})
+    print(json.dumps({"reconciled": reconciled,
+                      "live_units": [u for u in _list_codex_units()]}, indent=2))
+
+
+def _list_codex_units() -> list[str]:
+    cp = run(["systemctl", "--user", "list-units", "codex-*", "--no-legend", "--plain"])
+    return [ln.split()[0] for ln in (cp.stdout or "").splitlines() if ln.strip()]
+
+
 # ================================================================= main =======
 def main() -> None:
     ap = argparse.ArgumentParser(prog="dispatch")
@@ -719,6 +839,11 @@ def main() -> None:
     for name in ("status", "await", "cancel", "_run"):
         p = sub.add_parser(name)
         p.add_argument("attempt_id")
+    ph = sub.add_parser("health")
+    ph.add_argument("attempt_id")
+    ph.add_argument("--minutes", type=int, default=HEALTH_INACTIVITY_MIN,
+                    help="inactivity threshold before an alert (default 10)")
+    sub.add_parser("reconcile")
     args = ap.parse_args()
 
     if args.cmd == "launch":
@@ -729,6 +854,10 @@ def main() -> None:
         cmd_await(args.attempt_id)
     elif args.cmd == "cancel":
         cmd_cancel(args.attempt_id)
+    elif args.cmd == "health":
+        cmd_health(args.attempt_id, args.minutes)
+    elif args.cmd == "reconcile":
+        cmd_reconcile()
     elif args.cmd == "_run":
         _run(args.attempt_id)
 
