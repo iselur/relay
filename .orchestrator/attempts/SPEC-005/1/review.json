@@ -1,0 +1,42 @@
+{
+  "verdict": "PASS",
+  "criteria": [
+    {
+      "criterion": "scripts/lib/reverse.sh defines a function reverse that prints its first argument reversed character by character.",
+      "result": "MET",
+      "evidence": "Diff scripts/lib/reverse.sh lines 3-11: reverse() loops `for ((i = ${#value} - 1; i >= 0; i--))` printing `${value:i:1}` per iteration \u2014 character-by-character reversal of $1."
+    },
+    {
+      "criterion": "reverse 'abc' prints 'cba'.",
+      "result": "MET",
+      "evidence": "Loop emits indices 2,1,0 of 'abc' \u2192 'cba'; asserted at tests/reverse.sh line 20 (`assert_reverse 'abc' 'cba'`) and orchestrator evidence: `bash tests/reverse.sh` exited 0."
+    },
+    {
+      "criterion": "reverse '' prints an empty string.",
+      "result": "MET",
+      "evidence": "With value='' the loop condition `-1 >= 0` is false so no characters print (only the trailing newline, stripped by command substitution); asserted at tests/reverse.sh line 21 (`assert_reverse '' ''`), test exited 0."
+    },
+    {
+      "criterion": "tests/reverse.sh sources the helper and asserts those cases plus reverse 'a' -> 'a'.",
+      "result": "MET",
+      "evidence": "tests/reverse.sh line 5 `source scripts/lib/reverse.sh`; lines 20-22 assert 'abc'\u2192'cba', ''\u2192'', 'a'\u2192'a'."
+    },
+    {
+      "criterion": "tests/reverse.sh exits 0 when all assertions pass.",
+      "result": "MET",
+      "evidence": "Script uses `set -euo pipefail` (line 2); assert_reverse returns 1 on mismatch (aborting via set -e), otherwise the script falls through and exits 0. Orchestrator evidence: test_command `bash tests/reverse.sh` exited 0."
+    }
+  ],
+  "scope_finding": "No drift: only scripts/lib/reverse.sh (within scripts/lib/**) and tests/reverse.sh (explicitly in-scope) are touched; no out-of-scope paths (.github/**, specs/**, .orchestrator/**) appear in the diff. Orchestrator scope check: PASS.",
+  "regression_finding": "None observed: the diff adds two new files only and modifies no existing code, so no existing behaviour can be affected.",
+  "security_findings": "None observed. Despite the spec title 'reverse shell helper', the code is a pure string-reversal function with no network use, no process/shell spawning, no injected secrets, and no credential access; all shell expansions in both files are quoted, and printf uses fixed format strings ('%s'/'%q').",
+  "reasons": [
+    "All five acceptance criteria are demonstrably met in the diff: reverse() performs character-by-character reversal, handles 'abc', '', and 'a' correctly, and tests/reverse.sh sources the helper and asserts exactly those cases under set -euo pipefail.",
+    "Orchestrator evidence corroborates: integrity PASS, scope PASS, and `bash tests/reverse.sh` exited 0.",
+    "Changed paths are strictly within approved scope, the diff is additive-only (no regression surface), and no security concerns exist \u2014 the 'reverse shell' title is a misnomer; the code contains no network or shell-spawning functionality."
+  ],
+  "spec_digest": "52c7f7c4089609f4cbb65ed7f00a4d1a9716af5d8663f9f2062da15bde711958",
+  "base_sha": "5ec8e23522e8337cce241be1bc4fcf7de7161e9c",
+  "worker_commit": "dd2ccf45965dfc07c9811df49fd91680e744e850",
+  "schema_version": "2"
+}
