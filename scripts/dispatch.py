@@ -1274,6 +1274,96 @@ def _list_codex_units() -> list[str]:
     return [ln.split()[0] for ln in (cp.stdout or "").splitlines() if ln.strip()]
 
 
+# =============================================================== metrics ======
+# ASSURANCE scorecard (holistic-review takeaway #2, SOL/Fable 2026-07-13): derive a trust/assurance
+# picture from the provenance we already keep — NOT a vanity "autonomy %". Read-only; no side effects.
+# The point is straight-through vs remediation vs escaped-defect signal, stratified by risk class, so
+# the numbers can't be Goodharted into "look how autonomous we are".
+def cmd_metrics() -> None:
+    per_spec = {}   # spec_id -> {risk, attempts:[(n,status,error_class,merged)], reviewer:[...], escalated:bool}
+    if ATTEMPTS.exists():
+        for sd in sorted(ATTEMPTS.iterdir()):
+            if not sd.is_dir():
+                continue
+            spec_id = sd.name
+            try:
+                risk = load_spec(spec_id).get("risk_class", "default") if spec_path(spec_id).exists() else "unknown"
+            except SystemExit:
+                risk = "unknown"
+            rec = per_spec.setdefault(spec_id, {"risk": risk, "attempts": [], "reviewer": [], "escalated": False})
+            for ad in sorted((q for q in sd.iterdir() if q.name.isdigit()), key=lambda q: int(q.name)):
+                rp = ad / "result.json"
+                if rp.exists():
+                    try:
+                        r = json.loads(rp.read_text())
+                        rec["attempts"].append((int(ad.name), r.get("status"), r.get("error_class"),
+                                                bool(r.get("merged"))))
+                    except Exception:
+                        pass
+                rv = ad / "review.json"
+                if rv.exists():
+                    try:
+                        v = json.loads(rv.read_text())
+                        if v.get("verdict"):
+                            rec["reviewer"].append(v["verdict"])
+                    except Exception:
+                        pass
+    if ESCALATIONS.exists():
+        for p in ESCALATIONS.glob("*.json"):
+            sid = p.name.split("-2")[0]  # SPEC-XXX-<ts>
+            if sid in per_spec:
+                per_spec[sid]["escalated"] = True
+
+    from collections import Counter
+    err = Counter(); rev = Counter(); by_risk = {}
+    specs_total = passed = merged = straight_through = needed_remediation = escalated = 0
+    total_attempts = 0
+    for sid, rec in per_spec.items():
+        atts = rec["attempts"]
+        if not atts:
+            continue
+        specs_total += 1
+        total_attempts += len(atts)
+        for _, st, ec, mg in atts:
+            if ec:
+                err[ec] += 1
+        for v in rec["reviewer"]:
+            rev[v] += 1
+        merit = [a for a in atts if a[1] in MERIT_FAILURES]
+        got_pass = any(a[1] == "passed_pr_opened" for a in atts)
+        got_merge = any(a[3] for a in atts)
+        passed += 1 if got_pass else 0
+        merged += 1 if got_merge else 0
+        # straight-through = passed on attempt 1 with no prior merit failure
+        st_ok = got_pass and not merit and atts[0][1] == "passed_pr_opened"
+        straight_through += 1 if st_ok else 0
+        needed_remediation += 1 if len(merit) >= 1 and got_pass else 0
+        escalated += 1 if rec["escalated"] else 0
+        b = by_risk.setdefault(rec["risk"], {"specs": 0, "straight_through": 0, "merged": 0})
+        b["specs"] += 1; b["straight_through"] += 1 if st_ok else 0; b["merged"] += 1 if got_merge else 0
+
+    def pct(a, b): return round(100 * a / b, 1) if b else None
+    out = {
+        "generated": now(),
+        "specs_with_attempts": specs_total,
+        "total_attempts": total_attempts,
+        "attempts_per_spec": round(total_attempts / specs_total, 2) if specs_total else None,
+        "straight_through_rate_pct": pct(straight_through, specs_total),
+        "needed_remediation_pct": pct(needed_remediation, specs_total),
+        "escalation_rate_pct": pct(escalated, specs_total),
+        "eventually_passed_pct": pct(passed, specs_total),
+        "merged_pct": pct(merged, specs_total),
+        "by_risk_class": {k: {**v, "straight_through_pct": pct(v["straight_through"], v["specs"]),
+                              "merged_pct": pct(v["merged"], v["specs"])} for k, v in sorted(by_risk.items())},
+        "failure_error_classes": dict(err.most_common()),
+        "reviewer_verdicts": dict(rev.most_common()),
+        "note": "Assurance signal, NOT a published autonomy KPI. Straight-through = passed on attempt 1 "
+                "with no prior merit failure. Escaped-defect / reversion tracking requires post-merge "
+                "data not yet collected (see holistic-review decision).",
+    }
+    print(json.dumps(out, indent=2))
+
+
 # ================================================================= merge =======
 # Plan-scoped autonomy (Level 1.5, ratified by the operator 2026-07-13). The orchestrator may merge an
 # attempt's PR to `integration` WITHOUT a per-PR human click — but ONLY through this fail-closed
@@ -1560,6 +1650,7 @@ def main() -> None:
     ph.add_argument("--minutes", type=int, default=HEALTH_INACTIVITY_MIN,
                     help="inactivity threshold before an alert (default 10)")
     sub.add_parser("reconcile")
+    sub.add_parser("metrics")
     pi = sub.add_parser("integrate")
     pi.add_argument("attempt_ids", nargs="+")
     args = ap.parse_args()
@@ -1578,6 +1669,8 @@ def main() -> None:
         cmd_health(args.attempt_id, args.minutes)
     elif args.cmd == "reconcile":
         cmd_reconcile()
+    elif args.cmd == "metrics":
+        cmd_metrics()
     elif args.cmd == "integrate":
         cmd_integrate(args.attempt_ids)
     elif args.cmd == "_run":
