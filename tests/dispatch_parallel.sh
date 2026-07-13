@@ -42,15 +42,19 @@ def claim(spec_id):
     except SystemExit as e:
         return e.code
 
-check("MAX_PARALLEL is 2", d.MAX_PARALLEL == 2)
-check("1st spec claims a slot",            claim("SPEC-AAA") is None)
-check("2nd spec claims a slot",            claim("SPEC-BBB") is None)
-check("3rd spec refused (exit 8)",         claim("SPEC-CCC") == 8)
-check("same spec re-claim refused (8)",    claim("SPEC-AAA") == 8)
-# free a slot: mark SPEC-AAA terminal
-p = d.STATE / "SPEC-AAA.json"; st = json.loads(p.read_text()); st["status"] = "passed_pr_opened"
+# MAX_PARALLEL is configurable (env ORCH_MAX_PARALLEL); test the guard relative to its value, not a
+# hardcoded number, so the assertion stays valid whatever the bound is.
+N = d.MAX_PARALLEL
+check(f"MAX_PARALLEL is a positive int ({N})", isinstance(N, int) and N >= 1)
+ids = [f"SPEC-P{i:02d}" for i in range(N + 1)]
+for i in range(N):
+    check(f"spec {i+1}/{N} claims a slot", claim(ids[i]) is None)
+check(f"spec {N+1} refused over the limit (exit 8)", claim(ids[N]) == 8)
+check("same spec re-claim refused (8)",              claim(ids[0]) == 8)
+# free a slot: mark the first terminal → the over-limit spec now fits
+p = d.STATE / f"{ids[0]}.json"; st = json.loads(p.read_text()); st["status"] = "passed_pr_opened"
 p.write_text(json.dumps(st))
-check("freed slot reopens for 3rd spec",   claim("SPEC-CCC") is None)
+check("freed slot reopens for the next spec",        claim(ids[N]) is None)
 
 # --- Guard 2: stale-base detection ------------------------------------------------------------
 tmp = pathlib.Path(tempfile.mkdtemp())

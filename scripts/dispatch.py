@@ -52,8 +52,16 @@ SPEC_SCHEMA = SPECS / "spec.schema.json"
 VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
 
-MAX_PARALLEL = 2   # Gate 3 part 3 (both recovery drills passed 2026-07-13). Unique branch/worktree
-                   # per attempt; slot claim is atomic; a stale base is refused at push.
+# Concurrency bound (Gate 3 part 3 mechanism: atomic slot claim + stale-base guard, unchanged).
+# Configurable via ORCH_MAX_PARALLEL; default 3 (Val, 2026-07-13). NOTE the real limiter is not the
+# box — a worker is API-latency-bound (~200-300MB, mostly waiting on the model). It is the shared
+# Codex/Claude quota + rate-limits, and the stale-base rebase churn that grows with parallelism. On
+# THIS box (2 vCPU, 3.7GB, NO swap) 3 is safe for light specs; heavier real-product test suites/builds
+# need more RAM/vCPU before raising this (no swap → OOM risk). Resize the box, then raise the env var.
+try:
+    MAX_PARALLEL = max(1, int(os.environ.get("ORCH_MAX_PARALLEL", "3")))
+except ValueError:
+    MAX_PARALLEL = 3
 DEFAULT_CEILING_HOURS = 2.0
 
 # Gate 4: remediation limits by risk_class. initial_attempt (attempt 1) is never a remediation.
@@ -199,6 +207,33 @@ def validate_spec(spec_id: str) -> tuple[dict, list[str]]:
     return spec, errors
 
 
+INSTANCE = ORCH / "instance.json"   # gitignored: this operator instance's identity
+
+
+def instance_identity() -> dict | None:
+    """Per-instance identity (id + repo). Gitignored, so it NEVER travels with a clone/template —
+    which is exactly what lets us reject copied approvals (SOL, SHARE decision)."""
+    if not INSTANCE.exists():
+        return None
+    try:
+        return json.loads(INSTANCE.read_text())
+    except Exception:
+        return None
+
+
+def ensure_instance() -> dict:
+    """Create the instance identity if absent (random id bound to the git origin). Called lazily so
+    an existing operator gets one on first launch; init-operator generates a fresh one for newcomers."""
+    inst = instance_identity()
+    if inst:
+        return inst
+    import secrets
+    origin = run(["git", "remote", "get-url", "origin"], cwd=str(ROOT)).stdout.strip()
+    inst = {"instance_id": secrets.token_hex(16), "repo": origin, "created": now()}
+    atomic_write(INSTANCE, json.dumps(inst, indent=2))
+    return inst
+
+
 def approval_for(digest: str) -> dict | None:
     p = APPROVALS / f"{digest}.json"
     if not p.exists():
@@ -231,6 +266,17 @@ def preflight(spec_id: str) -> dict:
             f"approval). Expected {APPROVALS / (digest + '.json')}.", 6)
     if approval.get("spec_digest") != digest:
         die("approval artifact's spec_digest does not match the current spec file.", 6)
+
+    # Instance binding (SOL, SHARE decision): an approval only authorizes on the instance that
+    # created it. A digest matches identical spec text anywhere, so digest-only approval would let a
+    # CLONED repo's copied approvals authorize copied specs. instance.json is gitignored (never
+    # travels with a clone), so a copied approval's instance_id can't match a fresh clone's. Fail
+    # closed: no instance, or a mismatch, refuses the launch.
+    inst = ensure_instance()
+    if approval.get("instance_id") != inst["instance_id"]:
+        die(f"approval is not bound to this instance ({inst['instance_id'][:12]}…): approval "
+            f"instance_id={str(approval.get('instance_id'))[:12]}…. A copied approval cannot "
+            f"authorize a spec here — re-approve on this instance.", 6)
 
     # depends_on all done.
     for dep in spec.get("depends_on", []):

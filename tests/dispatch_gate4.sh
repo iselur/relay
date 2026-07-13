@@ -119,6 +119,15 @@ check("committed out-of-scope path -> scope FAIL names it",
 integ, ok = d.integrity(work, base, wc)
 check("dirty worktree -> integrity FAIL", ok is False and integ["worktree_clean"] is False)
 
+# --- instance-bound approvals (copied approvals must not authorize copied specs) -------------
+d.INSTANCE = tmp / "instance.json"
+inst = d.ensure_instance()
+check("ensure_instance creates an id + repo", bool(inst.get("instance_id")) and "repo" in inst)
+check("ensure_instance is idempotent", d.ensure_instance()["instance_id"] == inst["instance_id"])
+check("an approval from THIS instance matches", inst["instance_id"] == d.instance_identity()["instance_id"])
+check("a copied/foreign approval's instance_id does NOT match (→ rejected in preflight)",
+      "f0f0"*8 != inst["instance_id"])
+
 # --- integrate helpers -----------------------------------------------------------------------
 order_specs = {"SPEC-A": [], "SPEC-B": ["SPEC-A"], "SPEC-C": ["SPEC-B"]}
 d.load_spec = lambda sid: {"depends_on": order_specs[sid]}  # stub only for _topo_specs

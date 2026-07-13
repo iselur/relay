@@ -23,3 +23,7 @@
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Per-operator identity + local autonomy override (never shared; make copied approvals fail on clones)
+.orchestrator/instance.json
+.orchestrator/AUTONOMY.local.json
