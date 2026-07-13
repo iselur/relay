@@ -5,9 +5,17 @@ log and findings live in `SETUP-REPORT.md`. On any conflict, `SETUP-BRIEF.md` in
 
 ## Autonomy level
 
-**Level 1 (D9, permanent until Gate 5 criteria met).** Val approves every spec (the approval
-artifact) and merges every PR. Merge to `main` is human-only, forever. The orchestrator never
-merges.
+**Level 1.5 — plan-scoped autonomy (Val ratified 2026-07-13, THIS repo only).** Val agrees a plan
+scope with the orchestrator, then the orchestrator may **merge in-scope PRs to `integration`
+autonomously** — no per-PR human click — via `./scripts/dispatch merge <attempt-id>`, which is
+fail-closed and enforces every gate: attempt `passed_pr_opened`; bound reviewer PASS; `ci` green;
+PR head == the reviewed `worker_commit`; and the **merge-time base-check** (base still == bound
+`base_sha`, closing the post-PR stale-base hole). The grant lives in `.orchestrator/AUTONOMY.json`
+(`enabled`, `allowed_risk_class`, `needs_network_allowed`); delete it or set `enabled:false` to
+revert to Level 1. **`main` promotion stays human-only, permanently** — never auto-merged.
+Spec approval still binds each attempt to intent; Val reviews results after the fact; `HALT` pauses
+everything. This grant is per-project and does NOT transfer to the eventual real-product repo, which
+gets its own explicit policy decision. Rationale + adversarial validation: `SETUP-REPORT.md` G4-A.
 
 ## Session-start ritual (Gate 3)
 

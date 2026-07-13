@@ -898,6 +898,119 @@ def _list_codex_units() -> list[str]:
     return [ln.split()[0] for ln in (cp.stdout or "").splitlines() if ln.strip()]
 
 
+# ================================================================= merge =======
+# Plan-scoped autonomy (Level 1.5, ratified by Val 2026-07-13). The orchestrator may merge an
+# attempt's PR to `integration` WITHOUT a per-PR human click — but ONLY through this fail-closed
+# path, and ONLY while the AUTONOMY grant is present. Every correctness gate still applies, plus the
+# merge-time base-check that closes the post-PR stale-base hole (SOL, G4-A): after a sibling PR
+# integrates, a still-open parallel PR's reviewer verdict is bound to an obsolete base, and CI alone
+# does not repair that — so a moved base is refused here and the attempt is re-run fresh. `main`
+# promotion is NEVER done here (main stays human-only). Revoke autonomy by deleting AUTONOMY.json.
+AUTONOMY = ORCH / "AUTONOMY.json"
+
+
+def load_autonomy() -> dict | None:
+    if not AUTONOMY.exists():
+        return None
+    try:
+        g = json.loads(AUTONOMY.read_text())
+    except Exception:
+        return None
+    return g if g.get("enabled") is True else None
+
+
+def _base_tip(base_branch: str) -> str:
+    git("fetch", "--quiet", "origin", base_branch)
+    return git("rev-parse", f"origin/{base_branch}")
+
+
+def _pr_number(pr_url: str) -> str:
+    return (pr_url or "").rstrip("/").split("/")[-1]
+
+
+def cmd_merge(attempt_id: str) -> None:
+    """Auto-merge a PASSED attempt's PR to integration under the AUTONOMY grant. Fail-closed:
+    every check must pass or it refuses without merging. Structured exit codes for the caller."""
+    grant = load_autonomy()
+    if grant is None:
+        die("autonomy not granted (.orchestrator/AUTONOMY.json absent or enabled!=true); "
+            "PR merge stays human (Level 1).", 12)
+    if HALT.exists():
+        die(f"HALT present ({HALT}); refusing to merge.", 3)
+
+    spec_id, n = parse_attempt_id(attempt_id)
+    att = ATTEMPTS / spec_id / str(n)
+    rp = att / "result.json"
+    if not rp.exists():
+        die(f"no result.json for {attempt_id}; nothing to merge.", 13)
+    result = json.loads(rp.read_text())
+    if result.get("status") != "passed_pr_opened":
+        die(f"{attempt_id} status is {result.get('status')}, not passed_pr_opened; refuse.", 13)
+
+    lc = json.loads((att / "launch.json").read_text())
+    base_branch = lc.get("base_branch", "integration")
+    base_sha = result.get("base_sha") or lc.get("base_sha")
+    worker_commit = result.get("worker_commit")
+    pr_url = result.get("pr_url")
+    pr = _pr_number(pr_url)
+
+    # Grant bounds (defense in depth; already enforced at launch, re-checked at the merge boundary).
+    if base_branch == "main":
+        die("main promotion is human-only; never auto-merged.", 12)
+    if base_branch != grant.get("target_branch", "integration"):
+        die(f"target branch {base_branch} != grant target; refuse.", 12)
+    spec = load_spec(spec_id)
+    if spec.get("risk_class") not in grant.get("allowed_risk_class", ["low"]):
+        die(f"risk_class {spec.get('risk_class')} not in grant; refuse.", 12)
+    if spec.get("needs_network", False) and not grant.get("needs_network_allowed", False):
+        die("needs_network spec not permitted by grant; refuse.", 12)
+
+    # PR state must match exactly what was reviewed.
+    pv = run(["gh", "pr", "view", pr, "--json",
+              "state,isDraft,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup"])
+    if pv.returncode != 0:
+        die(f"gh pr view {pr} failed: {pv.stderr.strip()}", 14)
+    info = json.loads(pv.stdout)
+    if info.get("state") != "OPEN":
+        die(f"PR #{pr} state={info.get('state')} (not OPEN); refuse.", 14)
+    if info.get("baseRefName") != base_branch:
+        die(f"PR #{pr} base={info.get('baseRefName')} != {base_branch}; refuse.", 14)
+    if info.get("headRefOid") != worker_commit:
+        die(f"PR #{pr} head {info.get('headRefOid')[:9]} != reviewed worker_commit "
+            f"{worker_commit[:9]}; the diff changed since review; refuse.", 14)
+    ci_ok = any((c.get("name") == "ci" or c.get("context") == "ci")
+                and (c.get("conclusion") == "SUCCESS" or c.get("state") == "SUCCESS")
+                for c in (info.get("statusCheckRollup") or []))
+    if not ci_ok:
+        die(f"required check 'ci' not green on PR #{pr}; refuse.", 14)
+
+    # THE merge-time base-check (closes SOL's post-PR stale-base hole).
+    current = _base_tip(base_branch)
+    if current != base_sha:
+        write_state(spec_id, {**(read_state(spec_id) or {}), "status": "stale_base",
+                              "error_class": ERR_STALE_BASE,
+                              "detail": f"merge refused: {base_branch} advanced "
+                                        f"{base_sha[:9]} -> {current[:9]} since review; re-run a "
+                                        f"fresh attempt (all gates) before this can merge."})
+        die(f"STALE BASE at merge: {base_branch} moved {base_sha[:9]} -> {current[:9]} since the "
+            f"attempt was reviewed. Refusing to merge #{pr}; re-launch a fresh attempt.", 15)
+
+    # All gates green and base current — merge (un-draft first if needed).
+    if info.get("isDraft"):
+        run(["gh", "pr", "ready", pr])
+    mg = run(["gh", "pr", "merge", pr, "--merge"])
+    if mg.returncode != 0:
+        die(f"gh pr merge #{pr} failed: {mg.stderr.strip()}", 16)
+    merge_tip = _base_tip(base_branch)
+    result = {**result, "merged": True, "merged_pr": pr, "merged_at": now(),
+              "merge_base_tip": merge_tip, "merged_by": "orchestrator (AUTONOMY grant)"}
+    atomic_write(rp, json.dumps(result, indent=2))
+    write_state(spec_id, {**(read_state(spec_id) or {}), "status": "passed_pr_opened",
+                          "merged": True, "merged_pr": pr})
+    print(json.dumps({"attempt_id": attempt_id, "merged_pr": pr, "base_branch": base_branch,
+                      "new_tip": merge_tip}, indent=2))
+
+
 # ================================================================= main =======
 def main() -> None:
     ap = argparse.ArgumentParser(prog="dispatch")
@@ -905,7 +1018,7 @@ def main() -> None:
     for name in ("launch",):
         p = sub.add_parser(name)
         p.add_argument("spec_id")
-    for name in ("status", "await", "cancel", "_run"):
+    for name in ("status", "await", "cancel", "merge", "_run"):
         p = sub.add_parser(name)
         p.add_argument("attempt_id")
     ph = sub.add_parser("health")
@@ -923,6 +1036,8 @@ def main() -> None:
         cmd_await(args.attempt_id)
     elif args.cmd == "cancel":
         cmd_cancel(args.attempt_id)
+    elif args.cmd == "merge":
+        cmd_merge(args.attempt_id)
     elif args.cmd == "health":
         cmd_health(args.attempt_id, args.minutes)
     elif args.cmd == "reconcile":

@@ -1,0 +1,81 @@
+You are Codex (gpt-5.6-sol), consulted as a peer architect by Claude, the orchestrator in a
+Claude-orchestrates / Codex-executes automation system. I need your independent, ADVERSARIAL
+judgment. Do not be agreeable. If my reasoning is wrong, say so plainly and explain why. The human
+owner (Val) has asked Claude and you to jointly validate the recommendation; he will weigh our
+combined judgment but the final call is his (see question 1 — that is itself part of the question).
+
+=== SYSTEM CONTEXT ===
+- A VPS-hosted control plane. Claude (orchestrator) dispatches one Codex worker per approved spec
+  into a bubblewrap sandbox (writes+network confined; reads NOT confined on this host — Landlock
+  legacy backend, "residual risk 13-B"). Workers run as the SAME Unix user as the orchestrator, env
+  scrubbed of all GitHub/SSH creds, network OFF. Only the orchestrator holds the GitHub token and is
+  the sole party that pushes and opens PRs.
+- Target repo `iselur/orchestrator`. Branches `main` and `integration` are protected by a GitHub
+  RULESET: required status check `ci`, PRs required, `non_fast_forward` + `deletion` blocked, and
+  crucially `bypass_actors: []` (nobody, including the repo admin, can bypass). `required_approving_
+  review_count: 0` — deliberately, because it is a solo account and GitHub forbids self-approval; so
+  the real human gate is Val MERGING each PR, not a review approval.
+- Autonomy is "Level 1" (D9): Val approves every spec (writes/authorizes an approval artifact bound
+  to the spec's sha256 digest) and merges every PR. "Merge to main is human-only, forever" is a
+  stated permanent invariant. Level 2/3 are explicitly DEFERRED to future "Gate 5 criteria."
+- Correctness review is already delegated away from the human: CI is the hard gate; a separate
+  schema-bound read-only Claude reviewer checks each diff against its spec (with adversarial negative
+  controls that proved it is not a rubber stamp); the dispatcher runs deterministic integrity/scope/
+  test gates and is fail-closed.
+- Current phase: MVP / practice. The specs being built are trivial throwaway shell string-helpers
+  (slugify, trim, reverse, upper, lower) in a Val-owned repo, explicitly to exercise the pipeline,
+  NOT to build product. A real business website is the eventual real-stakes target, later.
+- We just shipped Gate 3 part 3: MAX_PARALLEL 1->2 with an atomic slot claim and a stale-base guard
+  (an attempt whose base branch advanced while it ran is refused at push and re-run fresh).
+
+=== VAL'S PROPOSAL (verbatim intent) ===
+Val says: he has no technical ability to properly review or check the PRs, so his merging/approving
+in GitHub feels meaningless — "my job is meaningless here." He proposes: have Claude AUTO-APPROVE and
+merge all PRs NOW (during the practice phase), and switch BACK to human approvals LATER, when we
+actually build the real business-website product.
+
+=== CLAUDE'S CURRENT POSITION (challenge this) ===
+1. Val is RIGHT that human CODE REVIEW is not where he adds value; a human rubber-stamp that
+   simulates review is worse than none (false assurance). Correctness is already delegated to CI +
+   the bound reviewer + deterministic gates.
+2. But the human MERGE gate is NOT primarily a code review. It is (a) an INTENT check ("did I
+   actually ask for this?" — a human can do this with zero code skill; it is the check against the
+   orchestrator drifting from intent or being prompt-injected into building something unrequested),
+   (b) RELEASE AUTHORITY + PACE control (nothing ships until a human chooses to; rate-limits
+   failures to human speed), and (c) the CIRCUIT BREAKER: the one intentional break in an otherwise
+   unbroken spec->worker->commit->PR->main path, in a design that assumes the automated pipeline CAN
+   malfunction (that assumption is why D11/network-off/"orchestrator never merges" exist).
+3. Auto-approval concretely requires either adding a bypass_actor or letting the orchestrator merge
+   its own output — dismantling the exact boundary Gate 0 was built to create. `main` human-only is a
+   stated permanent invariant.
+4. TIMING: the pipeline is at its LEAST proven right now (we keep finding load-bearing bugs: the
+   worker-cannot-commit fork, the read-gap 13-B, the stale-base hole). Removing the backstop when the
+   machinery is least trustworthy, and re-adding it when stakes rise, is backwards. Keeping the gate
+   through the MVP is cheap (a few clicks) and the value is highest exactly while bugs are surfacing.
+5. RECOMMENDATION: do NOT auto-approve. Instead reframe Val's role honestly — he is not a code
+   reviewer; he is the owner of INTENT and RELEASE AUTHORITY, which no automation can replace. Reduce
+   ceremony/guilt, not the boundary. Any autonomy increase should be the deferred, criteria-gated
+   Gate-5 decision, ratified by Val, not flipped now.
+
+=== QUESTIONS FOR YOU (be specific, be adversarial) ===
+Q1. Is Claude's recommendation correct, or is it over-cautious institutional theater? Steelman
+    Val's proposal: what is the STRONGEST case that removing the human gate now is actually fine or
+    even better, and does it survive? Is "my job is meaningless" evidence of a real design smell
+    (the gate provides no value) or a reframing problem (the gate's value is real but mislabeled)?
+Q2. If some autonomy increase IS warranted for the practice phase, what is the SAFEST concrete
+    partial step that preserves the load-bearing properties? (e.g. orchestrator may merge to
+    `integration` for a pre-approved low-risk spec class while `main` and spec-approval stay human;
+    or Val pre-authorizes a batch; or nothing changes.) Give the specific mechanism and what invariant
+    each option keeps or breaks. Explicitly address whether ANY of these should touch `bypass_actors`.
+Q3. Independent of Q1/Q2: who should decide THIS question? Claude argues that delegating one's own
+    authority is inherently the human's call and cannot be auto-decided by the agents — so the agents
+    advise but Val ratifies. Is that right, or a cop-out?
+Q4. NEXT STEPS sanity check. Immediate plan: (a) record approval artifacts for two just-approved
+    specs (SPEC-007 upper, SPEC-008 lower — independent, needs_network:false) attributing Val's
+    explicit approval given in his message, then run them as the first genuine MAX_PARALLEL=2
+    two-at-once end-to-end (expect 2 live units -> 2 draft PRs); (b) open a small provenance-tracking
+    PR that commits SPEC-005's on-disk-but-untracked spec/approval/attempt-manifest files (its worker
+    code already merged via PR #10; only the .orchestrator provenance was never committed). Any
+    correctness or ordering objection? Anything that should gate (a) or (b)?
+
+Answer Q1–Q4 directly and concisely. Flag anything Claude got wrong.

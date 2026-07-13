@@ -30,6 +30,11 @@ An orchestrator that dispatches Codex worker jobs from schema-validated specs, g
   promotes `integration` → `main`. Both protected (ruleset, not classic protection).
 - Evidence: per-attempt under `.orchestrator/attempts/<id>/<n>/`. Manifests tracked; raw
   logs/events + worktrees gitignored, integrity provable via tracked sha256 hashes.
+- Consulting Codex SOL (`gpt-5.6-sol`, high reasoning): **never cap the run at minutes.** These
+  runs can legitimately take hours; a minute-scale timeout just burns tokens by killing a run about
+  to finish. Run `codex exec` consultations **detached** (background / `systemd-run --user`), never
+  a foreground call with a short timeout. The final answer is recoverable from the `--json` stream
+  (`item.type == "agent_message"`, last one) even if `--output-last-message` didn't get to write.
 
 ## Test command
 
