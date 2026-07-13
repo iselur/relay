@@ -31,3 +31,4 @@ __pycache__/
 # SOL consultation raw event-logs — verbose machine logs; keep prompt+response+DECISION+sha256 only
 .orchestrator/decisions/**/sol-events.jsonl
 !.orchestrator/REQUEST-LEDGER.md
+!.orchestrator/plans/PLAN-TEMPLATE.md

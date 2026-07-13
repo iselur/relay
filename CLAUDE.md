@@ -32,13 +32,19 @@ row and no plan-ref may not proceed. At the END of every turn, reconcile: update
 scan for any `open`/`in-progress` row that stalled — a request that leaves the ledger without reaching
 `done` or an explicit operator deferral IS a process failure, surfaced to the operator, not swallowed.
 
-**Highest-detail plan for EVERY substantive task.** No "small task" exemption on plan EXISTENCE (only
-on plan LENGTH via `--small`). Codex drafts the plan (`scripts/codex-plan`), Claude challenges it in
-writing with ≥1 named objection, Claude authorizes it (digest-bound), and BOTH Claude and Codex then
-follow the authorized plan — deviations are reconciled at completion (followed / authorized-deviation /
-unauthorized-deviation), and repeated unauthorized deviation fails process review even with green tests.
-The only planless path is the narrow fast-path below. When uncertain whether something is substantive,
-it is — write the plan and the ledger row.
+**Highest-detail plan ARTIFACT for EVERY substantive task.** The deliverable is not a bullet sketch —
+it is a **brief-caliber standalone document** at the depth of the original SETUP-BRIEF (detailed enough
+to execute autonomously with no further clarification), written to `.orchestrator/plans/PLAN-NNN.md`
+following `.orchestrator/plans/PLAN-TEMPLATE.md` (decision/non-goals; cited current-state evidence;
+numbered testable requirements incl. abuse cases; detailed design + alternatives; affected boundaries +
+dependency closure; ordered file-level steps; failure modes + blast radius; falsifiable validation
+incl. a fail-on-broken/pass-on-fixed test; rollback; open questions; provenance). No "small task"
+exemption on plan EXISTENCE or DEPTH — only `--small` micro-plans for genuinely trivial edits scale the
+length. Codex drafts to the template (pass it as `--context`), Claude challenges in writing with ≥1
+named objection, Claude authorizes (digest-bound), and BOTH follow the authorized artifact — deviations
+reconciled at completion (followed / authorized-deviation / unauthorized-deviation); repeated
+unauthorized deviation fails process review even with green tests. When uncertain whether something is
+substantive, it is — write the brief-caliber plan and the ledger row.
 
 ## Execution split — delegate-first (Claude delegates, Codex executes most work)
 
