@@ -1,0 +1,19 @@
+{
+  "attempt_id": "SPEC-015-1",
+  "spec_id": "SPEC-015",
+  "attempt": 1,
+  "spec_digest": "e45539c409dfbc3f3ea2c4e02484cff48e786b0872682ced0f5713a40a521fad",
+  "base_sha": "fe9a7468c112954ce4daab3b0aa75f868cb12f13",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "claude-fable-5",
+  "isolation": "D5: codex-worker uid, systemd-hardened, the operator's home inaccessible, test phase network-off",
+  "test_command": "./scripts/test",
+  "status": "passed_pr_opened",
+  "error_class": null,
+  "commit_policy": "orchestrator-commits (G1-A/C)",
+  "finished": "2026-07-13T21:27:39Z",
+  "worker_commit": "8913783a40ab500339a9db4d67ec11d44bd793e2",
+  "pr_url": "https://github.com/iselur/orchestrator/pull/38",
+  "merged": true,
+  "merged_via": "human merge by operator (PR #38, GitHub UI) \u2014 high risk_class excluded from autonomy grant by design; dispatch merge refused idempotent recording (fail-closed), reconciled manually"
+}

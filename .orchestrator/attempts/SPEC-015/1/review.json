@@ -1,0 +1,53 @@
+{
+  "verdict": "PASS",
+  "criteria": [
+    {
+      "criterion": "scripts/verdict.schema.json becomes schema_version const '3' with required quality object (additionalProperties false, exactly maintainability/design_fit/test_quality), each dimension requiring integer score 1-5 rejecting strings/null/booleans/non-integral by type, evidence with non-whitespace pattern (not merely minLength 1), all v2 constraints preserved verbatim",
+      "result": "MET",
+      "evidence": "scripts/verdict.schema.json diff: schema_version const changed to \"3\"; required gains only \"quality\"; quality has additionalProperties false and required [maintainability, design_fit, test_quality]; each dimension is {additionalProperties: false, required: [score, evidence], score: {type integer, minimum 1, maximum 5}, evidence: {type string, pattern \"\\\\S\"}} with no minLength; no v2 property/enum/constraint lines are touched. Type rejection verified in tests/dispatch_gate4.sh loop over bad scores (0, 6, \"3\", None, True, 2.5) which the suite (exited 0) confirms are rejected \u2014 jsonschema's Draft 2020-12 integer type checker excludes bool and rejects 2.5."
+    },
+    {
+      "criterion": "Regression matrix proves no v2 constraint weakened: previously-invalid verdicts remain rejected when augmented with a valid quality block; schema-version confusion rejected both ways (v2 verdict rejected by v3 validation; v3 missing quality rejected as MALFORMED)",
+      "result": "MET",
+      "evidence": "tests/dispatch_gate4.sh regression_invalid list builds from valid_v3() (which always carries a fully valid quality block): empty reasons, PASS with UNMET criterion, missing scope_finding/regression_finding/security_findings, criterion missing evidence \u2014 each asserted rejected via `not structurally_valid or not binary_valid` (validate_review_verdict). Both confusion directions tested: `bad[\"schema_version\"]=\"2\"` \u2192 `not schema_accepts(bad)` under v3, and `del bad[\"quality\"]` \u2192 check \"v3 missing quality is MALFORMED, not historical\"."
+    },
+    {
+      "criterion": "Reviewer prompt requests schema_version 3, defines behavioral anchors 1-5 per dimension with non-overlapping maintainability vs design_fit definitions, requires concrete evidence citations, states PASS/FAIL decided ONLY by binary rubric with scores having no influence; code comment documents single-invocation anchoring residual",
+      "result": "MET",
+      "evidence": "scripts/dispatch.py review(): quality_instructions block defines 1=..5= anchors for all three dimensions; maintainability scoped \"independent of whether it matches repository architecture\" and design_fit \"independent of local code readability\" (non-overlapping); requires \"evidence citing a concrete diff, test, or path reference\"; states verdict \"MUST be decided ONLY by the binary rubric\" and values \"MUST have no influence on PASS/FAIL\"; comment \"Accepted residual: binary findings and advisory scores come from one reviewer invocation, so anchoring/halo coupling remains possible... separate scoring pass is deferred\". Test intercepts d.run, captures the request, and asserts all of these strings plus 'schema_version is \"3\"'."
+    },
+    {
+      "criterion": "Binary-gate evaluation isolated in a code path whose inputs exclude the quality block; no dispatcher path uses score values for gating/merge/remediation/prioritization/exit status; differential test proves score-1 vs score-5 identical outcomes for both PASS and FAIL pairs",
+      "result": "MET",
+      "evidence": "scripts/dispatch.py evaluate_binary_review(verdict, criteria, scope_finding, regression_finding, security_findings) has no quality parameter and is the sole gate input in _run_pipeline step 8 (`if binary_result != \"PASS\": finish(...)`); quality scores appear only in cmd_metrics reporting. Test asserts `\"quality\" not in inspect.signature(d.evaluate_binary_review).parameters` and, for both PASS and FAIL, that valid_v3(1)/valid_v3(5) yield `low_valid is high_valid is True` and `gate(low) == gate(high)`."
+    },
+    {
+      "criterion": "cmd_metrics reports quality_score_distribution, quality_avg_by_dimension (one decimal), quality_scored_attempts (per-attempt, all three dimensions valid), quality_skipped; v2 files including a poisoned v2 with a stray quality key never counted; corrupt/partial/wrong-type/out-of-range skipped gracefully with no partial counting; section labeled advisory",
+      "result": "MET",
+      "evidence": "scripts/dispatch.py cmd_metrics: gate `v.get(\"schema_version\") != \"3\" or not isinstance(v.get(\"quality\"), dict)` \u2192 skipped (catches poisoned v2 before quality inspection); Draft202012Validator over the quality subschema skips partial/typed/ranged failures; quality_scored_attempts increments once per attempt only after the whole block validates (no per-dimension counting); except \u2192 quality_skipped for corrupt JSON; output includes quality_advisory=true and \"ADVISORY operator trend signal only\" note. Test fixtures: 2 valid (a1 PASS scores 1/2/3, b3 FAIL 5/4/3) + 5 skipped (partial, corrupt JSON, poisoned v2 with quality key, string score, score 6); asserts scored==2, skipped==5, exact per-dimension distributions including zero buckets, and averages {3.0, 3.0, 3.0}."
+    },
+    {
+      "criterion": "Version pinning: cmd_launch snapshots current verdict.schema.json into the attempt dir at launch; validation uses the pinned snapshot when present with repo fallback; test proves a v2-pinned attempt validates a v2 verdict while the repo schema is v3",
+      "result": "MET",
+      "evidence": "scripts/dispatch.py cmd_launch: `atomic_write(att_dir / \"verdict.schema.json\", VERDICT_SCHEMA.read_text())` before slot claim; _verdict_schema_for_attempt returns pinned-if-exists else repo schema; review() sources both prompt version and validation schema from it. Test writes a v2 snapshot into pinned_att, confirms _verdict_schema_for_attempt selects const \"2\" while repo is \"3\", that validate_review_verdict accepts the v2 verdict against the pinned schema, and that the same verdict is rejected by unpinned v3 validation."
+    },
+    {
+      "criterion": "tests/dispatch_gate4.sh covers all boundary cases, regression matrix, differential pairs, pinning cutover, and metrics mix; full repo suite (scripts/test) exits 0",
+      "result": "MET",
+      "evidence": "tests/dispatch_gate4.sh diff adds: score boundary loop (0/6/\"3\"/None/True/2.5), whitespace-only evidence per dimension, extra quality dimension and extra dimension member, partial block, the regression matrix, both schema-version confusion directions, PASS+FAIL differential pairs, pinning cutover block, prompt-construction assertions, and metrics over v3 PASS + v3 FAIL + multiple attempts + partial v3 + corrupt JSON + poisoned v2 + wrong type + out-of-range. Orchestrator evidence: \"./scripts/test exited 0\"."
+    }
+  ],
+  "scope_finding": "All changed paths (scripts/dispatch.py, scripts/verdict.schema.json, tests/dispatch_gate4.sh) are exactly the three in_scope entries; no out_of_scope path (scripts/lib/**, scripts/test, .orchestrator/**, specs/**, etc.) is touched. Orchestrator scope check: PASS.",
+  "regression_finding": "None observed. The _run_pipeline gate refactor is semantics-preserving: review() only returns verdicts that already passed validate_review_verdict, so evaluate_binary_review reproduces the old verdict-field check exactly (including the \"malformed\" fallback via `binary_result or \"malformed\"`). A pinned v2 attempt in flight still gates correctly since evaluate_binary_review never consumes quality. cmd_metrics now unconditionally reads the repo schema's \"quality\" property \u2014 safe because the repo schema is v3 in the same commit \u2014 and its metrics fixtures (attempts 3-8 with review.json but no result.json) do not disturb the pre-existing 50% rate assertions, which still pass in the suite.",
+  "security_findings": "None observed. No secrets introduced, no network use (spec: needs_network false), no new shell interpolation; the schema snapshot uses the existing atomic_write helper; test monkeypatching of d.run/d.git/d.spec_path is restored immediately after use and confined to the test process. The pre-existing confused-deputy mitigation comment (reviewer denied all tools) is retained.",
+  "reasons": [
+    "All seven acceptance criteria are met with direct diff and test evidence, and the orchestrator confirms integrity PASS, scope PASS, and ./scripts/test exit 0.",
+    "The advisory/binary separation is structurally enforced: evaluate_binary_review's signature excludes quality, the differential score-1/score-5 test proves value invariance for both PASS and FAIL pairs, while the quality block's presence/validity remains fail-closed via the v3 schema.",
+    "The regression matrix demonstrates no v2 constraint was weakened, schema-version confusion is rejected in both directions, and per-attempt schema pinning makes the prompt+schema pair atomic across the v2\u2192v3 cutover with a passing proof test.",
+    "cmd_metrics counts only fully valid v3 quality blocks per attempt (2 scored, 5 skipped across partial/corrupt/poisoned-v2/wrong-type/out-of-range fixtures) and labels the section advisory."
+  ],
+  "spec_digest": "e45539c409dfbc3f3ea2c4e02484cff48e786b0872682ced0f5713a40a521fad",
+  "base_sha": "fe9a7468c112954ce4daab3b0aa75f868cb12f13",
+  "worker_commit": "8913783a40ab500339a9db4d67ec11d44bd793e2",
+  "schema_version": "2"
+}

@@ -1,0 +1,14 @@
+{
+  "approved_scope": [
+    "scripts/verdict.schema.json",
+    "scripts/dispatch.py",
+    "tests/dispatch_gate4.sh"
+  ],
+  "changed": [
+    "scripts/dispatch.py",
+    "scripts/verdict.schema.json",
+    "tests/dispatch_gate4.sh"
+  ],
+  "out_of_scope": [],
+  "result": "PASS"
+}
