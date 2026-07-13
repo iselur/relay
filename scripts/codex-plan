@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Turn a task and optional context files into a durable Codex-drafted plan.
+set -euo pipefail
+
+MODEL="gpt-5.6-sol"
+out_dir=".orchestrator/plans"
+small=0
+contexts=()
+task_parts=()
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/codex-plan [--small] [--context FILE]... [--out DIR] [--] [TASK...]
+
+Supply TASK as arguments or, when no task argument is given, on standard input.
+EOF
+}
+
+die() {
+  printf 'codex-plan: %s\n' "$*" >&2
+  exit 2
+}
+
+while (($#)); do
+  case "$1" in
+    --small)
+      small=1
+      shift
+      ;;
+    --context)
+      (($# >= 2)) || die "--context requires a file"
+      contexts+=("$2")
+      shift 2
+      ;;
+    --out)
+      (($# >= 2)) || die "--out requires a directory"
+      out_dir="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      task_parts+=("$@")
+      break
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      task_parts+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if ((${#task_parts[@]})); then
+  task="${task_parts[*]}"
+else
+  # The sentinel prevents command substitution from trimming trailing newlines.
+  task="$(cat; printf '\034')"
+  task="${task%$'\034'}"
+fi
+
+[[ "$task" =~ [^[:space:]] ]] || die "task must not be empty"
+[[ -n "$out_dir" ]] || die "--out must not be empty"
+
+for context in "${contexts[@]}"; do
+  [[ -f "$context" && -r "$context" ]] || die "context is not a readable file: $context"
+done
+
+mkdir -p "$out_dir"
+[[ -d "$out_dir" && -w "$out_dir" ]] || die "output directory is not writable: $out_dir"
+
+# Treat plans and their provenance logs as allocated artifacts. This preserves
+# failed-run diagnostics instead of reusing and overwriting their identifier.
+max_id=0
+shopt -s nullglob
+for artifact in "$out_dir"/PLAN-*; do
+  name="${artifact##*/}"
+  if [[ "$name" =~ ^PLAN-([0-9]+)($|[^0-9].*) ]]; then
+    number=$((10#${BASH_REMATCH[1]}))
+    ((number > max_id)) && max_id=$number
+  fi
+done
+printf -v plan_id 'PLAN-%03d' "$((max_id + 1))"
+
+plan_path="$out_dir/$plan_id.md"
+stdout_path="$out_dir/$plan_id.stdout"
+stderr_path="$out_dir/$plan_id.stderr"
+
+if ((small)); then
+  instructions=$(cat <<'EOF'
+Draft a concise five-field micro-plan. Use exactly these fields: objective,
+scope, action, verification, and rollback. Make each field specific enough to
+execute, and return only the Markdown plan body without YAML frontmatter.
+EOF
+)
+else
+  instructions=$(cat <<'EOF'
+Draft a durable, decision-complete implementation plan. Cover the decision and
+non-goals, assumptions and supporting evidence, alternatives considered,
+affected boundaries and interfaces, failure modes, ordered implementation
+steps, validation criteria, and rollback. Resolve material choices so an
+implementer can proceed without making new product or architecture decisions.
+Return only the Markdown plan body without YAML frontmatter.
+EOF
+)
+fi
+
+prompt="$instructions
+
+Task:
+$task"
+
+for context in "${contexts[@]}"; do
+  # Preserve trailing newlines: they are part of the supplied context.
+  context_text="$(cat -- "$context"; printf '\034')"
+  context_text="${context_text%$'\034'}"
+  prompt+="
+
+Context file: $context
+---
+$context_text"
+done
+
+codex_status=0
+if codex exec \
+  -m "$MODEL" \
+  -c model_reasoning_effort=high \
+  -c service_tier=priority \
+  --sandbox read-only \
+  --skip-git-repo-check \
+  "$prompt" \
+  </dev/null >"$stdout_path" 2>"$stderr_path"; then
+  codex_status=0
+else
+  codex_status=$?
+fi
+
+if ((codex_status != 0)); then
+  printf 'codex-plan: Codex exited %d; provenance retained at %s and %s\n' \
+    "$codex_status" "$stdout_path" "$stderr_path" >&2
+  exit "$codex_status"
+fi
+
+if ! grep -q '[^[:space:]]' "$stdout_path"; then
+  printf 'codex-plan: Codex produced empty output; provenance retained at %s and %s\n' \
+    "$stdout_path" "$stderr_path" >&2
+  exit 1
+fi
+
+created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+task_summary="${task:0:200}"
+# JSON strings are valid YAML scalars and preserve newlines and punctuation.
+task_yaml="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' \
+  "$task_summary")"
+temp_plan="$(mktemp "${TMPDIR:-/tmp}/codex-plan.XXXXXX")"
+trap 'rm -f "$temp_plan"' EXIT
+
+{
+  printf '%s\n' '---'
+  printf 'id: %s\n' "$plan_id"
+  printf 'created: %s\n' "$created"
+  printf 'author_model: %s\n' "$MODEL"
+  printf 'status: draft\n'
+  printf 'task: %s\n' "$task_yaml"
+  printf '%s\n' '---'
+  cat "$stdout_path"
+} >"$temp_plan"
+
+mv "$temp_plan" "$plan_path"
+trap - EXIT
+
+printf 'Plan: %s\n' "$plan_path"
+printf 'ID: %s\n' "$plan_id"
