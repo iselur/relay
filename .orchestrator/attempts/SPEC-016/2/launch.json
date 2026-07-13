@@ -1,0 +1,27 @@
+{
+  "attempt_id": "SPEC-016-2",
+  "spec_id": "SPEC-016",
+  "attempt": 2,
+  "spec_digest": "454f7b5cca6d3e2dccbb3221d58b37c6d4d5d045c99a58a2b047e4bacac0d181",
+  "base_sha": "e579ab853ba0c1b28509c69c4c719fd195a723c0",
+  "branch": "codex/SPEC-016-2",
+  "base_branch": "integration",
+  "worktree": "/srv/codexwork/worktrees/SPEC-016-2",
+  "worker_model": "gpt-5.6-sol",
+  "worker_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "test_command": "bash tests/codex_plan.sh",
+  "approved_scope": [
+    "scripts/codex-plan",
+    "tests/codex_plan.sh"
+  ],
+  "regression_command": null,
+  "regression_test_paths": [],
+  "hard_ceiling_hours": 2.0,
+  "remediation": null,
+  "isolation": true,
+  "worker_unit": "codex-worker-SPEC-016-2",
+  "test_unit": "codex-test-SPEC-016-2",
+  "created": "2026-07-13T21:38:38Z"
+}

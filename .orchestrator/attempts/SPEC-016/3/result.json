@@ -1,0 +1,22 @@
+{
+  "attempt_id": "SPEC-016-3",
+  "spec_id": "SPEC-016",
+  "attempt": 3,
+  "spec_digest": "454f7b5cca6d3e2dccbb3221d58b37c6d4d5d045c99a58a2b047e4bacac0d181",
+  "base_sha": "0521c71e335ce454ca35e9fe1b4d6be5f050eaa9",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "claude-fable-5",
+  "isolation": "D5: codex-worker uid, systemd-hardened, the operator's home inaccessible, test phase network-off",
+  "test_command": "bash tests/codex_plan.sh",
+  "status": "passed_pr_opened",
+  "error_class": null,
+  "commit_policy": "orchestrator-commits (G1-A/C)",
+  "finished": "2026-07-13T21:52:27Z",
+  "worker_commit": "53196e95758f9955740f35a58754b635a6f8eb32",
+  "pr_url": "https://github.com/iselur/orchestrator/pull/41",
+  "merged": true,
+  "merged_pr": "41",
+  "merged_at": "2026-07-13T21:55:06Z",
+  "merge_base_tip": "9945d87975361d249b03429350901075f354cf0d",
+  "merged_by": "orchestrator (AUTONOMY grant)"
+}

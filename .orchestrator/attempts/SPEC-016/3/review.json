@@ -1,0 +1,112 @@
+{
+  "verdict": "PASS",
+  "criteria": [
+    {
+      "criterion": "scripts/codex-plan exists, is executable, and accepts a task statement either as a command-line argument or from standard input.",
+      "result": "MET",
+      "evidence": "Diff header 'new file mode 100755' for scripts/codex-plan; positional args collected into task_parts (scripts/codex-plan:52-55) with stdin fallback via sentinel-protected `task=\"$(cat; printf '\\034')\"` (scripts/codex-plan:60-64); both paths exercised in tests/codex_plan.sh (arg run at line ~62, stdin run at lines 168-180)."
+    },
+    {
+      "criterion": "scripts/codex-plan supports --small, repeatable --context <file>, and --out <dir> options; --out defaults to .orchestrator/plans/.",
+      "result": "MET",
+      "evidence": "Option loop handles --small, repeatable `contexts+=(\"$2\")`, and --out (scripts/codex-plan:24-43); default `out_dir=\".orchestrator/plans\"` at scripts/codex-plan:6; test asserts default path '.orchestrator/plans/PLAN-001.md' when run from a fresh cwd (tests/codex_plan.sh:181)."
+    },
+    {
+      "criterion": "Each --context file's contents are appended to the prompt supplied to Codex, in the same order the options were provided.",
+      "result": "MET",
+      "evidence": "Ordered `for context in \"${contexts[@]}\"` loop appends 'Context file: ...' blocks with trailing-newline-preserving sentinel (scripts/codex-plan:105-114); test asserts the prompt endswith the exact two-context suffix in option order via Python (tests/codex_plan.sh:151-163)."
+    },
+    {
+      "criterion": "The wrapper scans the selected output directory for existing PLAN-NNN artifacts, allocates the next numeric identifier, and increments beyond the highest existing identifier.",
+      "result": "MET",
+      "evidence": "Glob over \"$out_dir\"/PLAN-* with regex ^PLAN-([0-9]+)($|[^0-9].*) and 10# max computation, then `printf -v plan_id 'PLAN-%03d' \"$((max_id + 1))\"` (scripts/codex-plan:76-85); test seeds PLAN-007.md and asserts PLAN-008, then PLAN-009, and PLAN-011 after failed-run provenance PLAN-010.stdout/.stderr (tests/codex_plan.sh:50, 70, 143, 214)."
+    },
+    {
+      "criterion": "On success, the wrapper writes PLAN-NNN.md with valid YAML frontmatter containing id, a UTC created timestamp, the author model, status set to draft, and task set to the first 200 characters of the submitted task.",
+      "result": "MET",
+      "evidence": "Frontmatter block writes id, `created=$(date -u +%Y-%m-%dT%H:%M:%SZ)`, author_model gpt-5.6-sol, status: draft, and JSON-encoded `task_summary=\"${task:0:200}\"` (scripts/codex-plan:148-172); test parses it with yaml.safe_load, asserts exact dict equality against TASK[:200] and that created is an aware datetime with utcoffset()==0 (tests/codex_plan.sh:105-127)."
+    },
+    {
+      "criterion": "The content after the frontmatter is the complete non-empty plan output produced by Codex, and the wrapper prints both the resulting plan path and allocated PLAN-NNN identifier.",
+      "result": "MET",
+      "evidence": "`cat \"$stdout_path\"` follows the closing '---' (scripts/codex-plan:170) and the script prints 'Plan: %s' and 'ID: %s' (scripts/codex-plan:177-178); test asserts `match.group(2) == \"complete default plan\"` and that the run output contains both the path and PLAN-008 (tests/codex_plan.sh:70-72, 126)."
+    },
+    {
+      "criterion": "The wrapper invokes codex exec with exactly the required execution settings: -m gpt-5.6-sol, -c model_reasoning_effort=high, -c service_tier=priority, --sandbox read-only, and --skip-git-repo-check.",
+      "result": "MET",
+      "evidence": "codex exec invocation at scripts/codex-plan:117-125 passes exactly those flags plus the prompt; test does byte-exact `cmp -s \"$tmp/expected-args\" \"$args_file\"` against the stub-recorded non-prompt argv (tests/codex_plan.sh:74-87)."
+    },
+    {
+      "criterion": "The Codex invocation is detached-safe: its standard input is redirected from /dev/null, the task and prompt are supplied without relying on interactive input, and the wrapper imposes no minute-scale or other wrapper-level timeout.",
+      "result": "MET",
+      "evidence": "`</dev/null >\"$stdout_path\" 2>\"$stderr_path\"` with prompt as argv (scripts/codex-plan:124-125); no `timeout`/SIGALRM/background-kill anywhere in the diff; stub actively fails (exit 91) if it can read anything from stdin (tests/codex_plan.sh:21-25)."
+    },
+    {
+      "criterion": "Raw Codex standard output and standard error are captured separately in provenance files beside the intended plan file on both success and failure.",
+      "result": "MET",
+      "evidence": "stdout_path/stderr_path are \"$out_dir/$plan_id.stdout\" and .stderr (scripts/codex-plan:88-90); test asserts both exist and hold verbatim content on success (PLAN-008.stdout == 'complete default plan') and on failure (PLAN-010.stdout=='partial output', PLAN-010.stderr=='failure detail') (tests/codex_plan.sh:71-73, 210-213)."
+    },
+    {
+      "criterion": "The embedded default prompt requests a decision-complete plan covering the decision and non-goals, assumptions and evidence, alternatives, affected boundaries, failure modes, ordered implementation steps, validation criteria, and rollback.",
+      "result": "MET",
+      "evidence": "Default instructions heredoc names every required element (scripts/codex-plan:93-100); test greps the stub-captured prompt for all eleven phrases including 'decision-complete', 'non-goals', 'ordered implementation', 'validation criteria', 'rollback' (tests/codex_plan.sh:89-103)."
+    },
+    {
+      "criterion": "When --small is supplied, the embedded prompt instead requests a five-field micro-plan containing objective, scope, action, verification, and rollback.",
+      "result": "MET",
+      "evidence": "--small selects the 'concise five-field micro-plan' instructions listing objective, scope, action, verification, rollback (scripts/codex-plan:92-97 small branch); test greps for 'five-field micro-plan' and each field, and asserts 'alternatives considered' from the default template is absent (tests/codex_plan.sh:145-150)."
+    },
+    {
+      "criterion": "If Codex exits non-zero or produces empty output, scripts/codex-plan exits non-zero, creates no PLAN-NNN.md or partial plan file, and retains the raw stdout and stderr provenance files for diagnosis.",
+      "result": "MET",
+      "evidence": "Non-zero path re-exits with codex's status before any plan write (scripts/codex-plan:130-134); whitespace-only output exits 1 via `grep -q '[^[:space:]]'` (scripts/codex-plan:136-140); the plan is assembled in a mktemp file and only mv'd into place after all checks, so no partial file is possible. Test asserts both failure modes exit non-zero, assert_no_file PLAN-010.md/PLAN-011.md, and provenance retained (tests/codex_plan.sh:196-216)."
+    },
+    {
+      "criterion": "tests/codex_plan.sh replaces codex through PATH with a local stub and never invokes the real Codex binary or requires network access.",
+      "result": "MET",
+      "evidence": "Stub written to \"$tmp/bin/codex\" and every wrapper invocation runs with PATH=\"$tmp/bin:$PATH\" prepended (tests/codex_plan.sh:11-31, 58, 132, 172, 197, 209); the stub only writes local files and no test step performs network I/O."
+    },
+    {
+      "criterion": "tests/codex_plan.sh verifies identifier allocation increments, generated frontmatter is well-formed and contains the required fields, --small changes the prompt, repeatable --context file contents appear in the prompt passed to the stub, and a non-zero or empty Codex result exits non-zero without creating a plan file.",
+      "result": "MET",
+      "evidence": "Seeded PLAN-007 \u2192 asserts PLAN-008 then PLAN-009 (increment); yaml.safe_load exact-dict frontmatter check (tests/codex_plan.sh:105-127); 'five-field micro-plan' grep plus default-template exclusion; Python endswith check for ordered context contents; CODEX_STUB_EXIT=23 and whitespace-only stdout runs both required to fail with assert_no_file on the plan (tests/codex_plan.sh:196-216)."
+    },
+    {
+      "criterion": "bash tests/codex_plan.sh passes in CI without Codex credentials, a Codex installation, or network access.",
+      "result": "MET",
+      "evidence": "Orchestrator evidence: 'bash tests/codex_plan.sh exited 0'; the test is self-contained (stubbed codex on PATH, all artifacts under mktemp -d, no network calls), needing only bash/python3/PyYAML which are exercised in the passing run."
+    },
+    {
+      "criterion": "The implementation changes only scripts/codex-plan and tests/codex_plan.sh and does not modify scripts/dispatch.py.",
+      "result": "MET",
+      "evidence": "The diff contains exactly two new files, scripts/codex-plan and tests/codex_plan.sh; scripts/dispatch.py is untouched. Orchestrator scope check: PASS."
+    }
+  ],
+  "scope_finding": "All changed paths (scripts/codex-plan, tests/codex_plan.sh) are exactly the in_scope list; no out-of-scope file (scripts/dispatch.py, dispatcher behavior) is touched. Orchestrator scope check: PASS. No drift observed.",
+  "regression_finding": "Both files are new additions; no existing file is modified, so no existing behavior can regress. The wrapper writes only under the user-selected --out directory (default .orchestrator/plans/) and a mktemp temp file, and identifier allocation counts failed-run provenance files so prior diagnostics are never overwritten. None observed.",
+  "security_findings": "No injected secrets or credential access. Tests never touch the network or the real codex binary (PATH-prepended local stub). Shell handling is careful: set -euo pipefail, prompt passed as a single argv (no eval/word-splitting of user input), context files read with `cat --`, temp file via mktemp with EXIT trap, task YAML-escaped via python3 json.dumps rather than string interpolation. None observed.",
+  "reasons": [
+    "All 16 acceptance criteria are MET with direct evidence in the diff and the test file; the orchestrator confirms integrity PASS, scope PASS, and `bash tests/codex_plan.sh` exited 0.",
+    "The codex exec invocation matches the required settings byte-for-byte (verified by cmp against the stub-recorded argv), is detached-safe (</dev/null, no wrapper timeout, stub fails if stdin is readable), and provenance stdout/stderr are retained separately on success and failure.",
+    "Failure paths are atomic: the plan is assembled in a mktemp file and moved into place only after the non-zero-exit and empty-output checks, so no partial PLAN-NNN.md can be created; tests cover both failure modes plus identifier allocation across failed-run provenance.",
+    "No scope drift, no regression surface (new files only), and no security concerns (stubbed codex, no network, properly quoted shell, YAML value escaped via json.dumps)."
+  ],
+  "spec_digest": "454f7b5cca6d3e2dccbb3221d58b37c6d4d5d045c99a58a2b047e4bacac0d181",
+  "base_sha": "0521c71e335ce454ca35e9fe1b4d6be5f050eaa9",
+  "worker_commit": "53196e95758f9955740f35a58754b635a6f8eb32",
+  "schema_version": "3",
+  "quality": {
+    "maintainability": {
+      "score": 4,
+      "evidence": "scripts/codex-plan is a linear, well-sectioned ~180-line script with defensive checks (readable-context validation, writable out_dir, empty-task rejection) and comments that explain non-obvious constraints only (e.g. the \\034 sentinel preserving trailing newlines, why provenance files count as allocated identifiers). Minor debt: an implicit runtime dependency on python3 for YAML escaping (scripts/codex-plan:155) and the sentinel trick repeated twice."
+    },
+    "design_fit": {
+      "score": 4,
+      "evidence": "Follows the repo's existing scripts/ + tests/*.sh shape (spec references scripts/dispatch.py and shell test_command), keeps artifacts under the established .orchestrator/ tree, and leaves dispatcher behavior untouched; the PLAN-NNN.md-with-YAML-frontmatter artifact matches the spec's provenance conventions."
+    },
+    "test_quality": {
+      "score": 5,
+      "evidence": "tests/codex_plan.sh is highly discriminating: byte-exact cmp of codex argv, stub that fails on any readable stdin (detach regression), yaml.safe_load exact-dict frontmatter assertion including UTC-aware timestamp and 200-char truncation, order-sensitive endswith check for repeated --context, stdin-task trailing-newline preservation, and both failure modes (exit 23 and whitespace-only output) asserted to leave provenance but no plan file, with the next run allocating PLAN-011 past the failed run's provenance."
+    }
+  }
+}

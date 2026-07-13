@@ -1,0 +1,19 @@
+{
+  "approver": "orchestrator-on-behalf-of-val (Level 1.5 grant; PLAN-001 authorized chain)",
+  "timestamp": "2026-07-13T21:32:29Z",
+  "spec_id": "SPEC-016",
+  "spec_digest": "454f7b5cca6d3e2dccbb3221d58b37c6d4d5d045c99a58a2b047e4bacac0d181",
+  "spec_digest_method": "sha256(specs/SPEC-016.yaml)",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "risk_class": "low",
+  "approved_scope": [
+    "scripts/codex-plan",
+    "tests/codex_plan.sh"
+  ],
+  "worker_model": "gpt-5.6-sol",
+  "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5",
+  "reviewer_effort": "high",
+  "base_branch": "integration",
+  "note": "codex-plan wrapper. FULL delegated chain: plan PLAN-001 (Codex-drafted, Claude-challenged), spec Codex-drafted (Claude challenge: no blocking objections), Codex executes, Claude reviews."
+}
