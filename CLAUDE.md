@@ -40,6 +40,21 @@ integrity preconditions held; deterministic checks ran and passed; the reviewer 
 PASS; remediation stayed within limits; no scope drift; the summary states real results with
 evidence paths. **"Should work" is never evidence.**
 
+## Remediation + integration (Gate 4)
+
+- **Remediation limits by risk_class: low 5 / default 3 / high 1.** Attempt 1 is never a
+  remediation; interrupted/stale_base/spec_blocked launches don't consume budget — only merit
+  failures (test/review/scope/integrity) do. Each remediation is a NEW attempt whose prompt embeds
+  the SPECIFIC findings of the last failure. Two consecutive identical findings = stop-early. Limit
+  exhausted or stop-early → spec `failed_remediation_exhausted` + a tracked escalation record in
+  `.orchestrator/escalations/` — never an infinite loop, never silent success.
+- **High-risk specs need Val's per-dispatch approval artifact** (`approvals/<digest>.attempt-<n>.json`)
+  before EVERY dispatch, at every autonomy level.
+- **`./scripts/integrate <attempt-id>…`** is the deterministic integration step: merges in
+  `depends_on` order via the base-checked `dispatch merge`, re-runs the suite after every merge,
+  cleans up worktree/branch, auto-commits provenance (spec + approvals + attempt evidence +
+  escalations). Merge conflict or suite failure = stop/escalate — never AI-resolved.
+
 ## Quota / degradation policy (policy-note item 1 — permanent, not deferred)
 
 - A worker hitting a rate/usage limit mid-attempt is classified **`interrupted`**, not failed:

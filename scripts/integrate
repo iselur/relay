@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Gate 4 §3: deterministic integration (SETUP-BRIEF.md control plane names this script).
+# Thin alias for `dispatch integrate` — merge passed attempts in depends_on order (fail-closed,
+# base-checked per merge), re-run the suite after every merge, clean up worktrees/branches,
+# auto-commit provenance. Merge conflict or suite failure = stop/escalate, never AI-resolved.
+set -euo pipefail
+exec "$(cd "$(dirname "$0")" && pwd)/dispatch" integrate "$@"

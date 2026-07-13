@@ -56,11 +56,18 @@ MAX_PARALLEL = 2   # Gate 3 part 3 (both recovery drills passed 2026-07-13). Uni
                    # per attempt; slot claim is atomic; a stale base is refused at push.
 DEFAULT_CEILING_HOURS = 2.0
 
+# Gate 4: remediation limits by risk_class. initial_attempt (attempt 1) is never a remediation.
+# Only MERIT failures count toward the limit — interrupted/stale_base/error_launch are
+# infrastructure outcomes and re-launch fresh without consuming remediation budget.
+REMEDIATION_LIMITS = {"low": 5, "default": 3, "high": 1}
+MERIT_FAILURES = {"failed_test", "failed_review", "failed_scope", "failed_integrity"}
+ESCALATIONS = ORCH / "escalations"
+
 # Terminal vs live attempt statuses.
 TERMINAL = {
     "passed_pr_opened", "failed_worker_error", "failed_integrity",
     "failed_scope", "failed_test", "failed_review", "interrupted", "error_launch",
-    "spec_blocked", "stale_base",
+    "spec_blocked", "stale_base", "failed_remediation_exhausted",
 }
 LIVE = {"launching", "running"}
 
@@ -83,6 +90,9 @@ ERR_STALE_BASE = "stale_base"
 # policy-note item 2: worker signals the spec itself is unworkable; the old approval is void and a
 # spec revision + new approval digest is required. Not a worker failure.
 ERR_SPEC_BLOCKED = "spec_blocked"
+# Gate 4: remediation budget exhausted or findings repeating without material change — the spec is
+# failed and escalated with the full evidence trail. Never an infinite loop, never silent success.
+ERR_REMEDIATION = "remediation_exhausted"
 ERR_NONE = None
 
 
@@ -269,6 +279,128 @@ def claim_slot(spec_id: str, launching_state: dict) -> None:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
+# ------------------------------------------------------- remediation (G4) ----
+def merit_failed_attempts(spec_id: str) -> list[tuple[int, dict]]:
+    """Prior attempts of this spec that ended in a MERIT failure (ascending attempt order).
+    Infrastructure endings (interrupted, stale_base, error_launch, spec_blocked) don't count."""
+    d = ATTEMPTS / spec_id
+    out = []
+    if not d.exists():
+        return out
+    for p in sorted((q for q in d.iterdir() if q.name.isdigit()), key=lambda q: int(q.name)):
+        rp = p / "result.json"
+        if rp.exists():
+            try:
+                r = json.loads(rp.read_text())
+            except Exception:
+                continue
+            if r.get("status") in MERIT_FAILURES:
+                out.append((int(p.name), r))
+    return out
+
+
+def findings_of(spec_id: str, n: int, result: dict) -> dict:
+    """Extract the SPECIFIC findings a remediation must address, from attempt n's evidence."""
+    att = ATTEMPTS / spec_id / str(n)
+    status = result.get("status")
+    f: dict = {"failed_attempt": n, "status": status}
+    if status == "failed_review":
+        rv = att / "review.json"
+        if rv.exists():
+            try:
+                v = json.loads(rv.read_text())
+                f["reviewer_reasons"] = v.get("reasons", [])
+                f["unmet_criteria"] = [c for c in v.get("criteria", [])
+                                       if c.get("result") != "MET"]
+                f["scope_finding"] = v.get("scope_finding")
+                f["security_findings"] = v.get("security_findings")
+            except Exception:
+                f["reviewer_reasons"] = ["review.json unreadable"]
+    elif status == "failed_test":
+        tl = att / "test.log"
+        if tl.exists():
+            f["test_log_tail"] = tl.read_text()[-2000:]
+        f["test_exit"] = result.get("test_exit")
+    elif status == "failed_scope":
+        sc = att / "scope.json"
+        if sc.exists():
+            try:
+                f["out_of_scope_paths"] = json.loads(sc.read_text()).get("out_of_scope", [])
+            except Exception:
+                pass
+    elif status == "failed_integrity":
+        f["integrity"] = result.get("integrity") or result.get("detail")
+    return f
+
+
+def _findings_key(f: dict) -> str:
+    """Canonical form for the repeated-identical-findings stop-early check."""
+    core = {k: f.get(k) for k in ("status", "reviewer_reasons", "unmet_criteria",
+                                  "out_of_scope_paths", "test_exit")}
+    return json.dumps(core, sort_keys=True)
+
+
+def escalate(spec_id: str, reason: str, evidence: dict) -> Path:
+    """Durable escalation record (tracked provenance). Gate 4: limit exhausted / stop-early →
+    spec failed + escalation with the evidence trail. Val reviews after the fact."""
+    ESCALATIONS.mkdir(parents=True, exist_ok=True)
+    path = ESCALATIONS / f"{spec_id}-{now().replace(':', '').replace('-', '')}.json"
+    atomic_write(path, json.dumps({"spec_id": spec_id, "reason": reason,
+                                   "evidence": evidence, "created": now()}, indent=2))
+    return path
+
+
+def remediation_preflight(spec_id: str, spec: dict, digest: str, n: int) -> dict | None:
+    """Gate 4 remediation gate, applied at launch of attempt n. Returns the remediation context
+    to embed in launch.json (None for a non-remediation launch). Dies (and records the failed/
+    escalated state) if the budget is exhausted or findings are repeating."""
+    fails = merit_failed_attempts(spec_id)
+    k = len(fails)
+    risk = spec.get("risk_class", "default")
+
+    # High-risk specs require Val's explicit approval before EVERY dispatch, at every autonomy
+    # level (Gate 4 §2) — a per-attempt artifact next to the spec approval, never implied.
+    if risk == "high":
+        pa = APPROVALS / f"{digest}.attempt-{n}.json"
+        if not pa.exists():
+            die(f"high-risk spec: attempt {n} needs Val's per-dispatch approval artifact "
+                f"({pa}); refusing to launch.", 17)
+
+    if k == 0:
+        return None  # initial attempt (or only infrastructure re-launches so far)
+
+    limit = REMEDIATION_LIMITS.get(risk, REMEDIATION_LIMITS["default"])
+    if k > limit:
+        ev = {"merit_failures": [{"attempt": a, "status": r.get("status")} for a, r in fails],
+              "limit": limit, "risk_class": risk}
+        path = escalate(spec_id, f"remediation limit exhausted ({k} merit failures > "
+                                 f"{limit} allowed remediations)", ev)
+        write_state(spec_id, {"attempt_id": f"{spec_id}-{n}", "spec_id": spec_id, "attempt": n,
+                              "spec_digest": digest, "status": "failed_remediation_exhausted",
+                              "error_class": ERR_REMEDIATION, "escalation": str(path)})
+        die(f"remediation limit exhausted for {spec_id} ({k} merit failures, limit {limit}); "
+            f"spec FAILED and escalated: {path}", 18)
+
+    last_n, last_r = fails[-1]
+    last_f = findings_of(spec_id, last_n, last_r)
+    if k >= 2:
+        prev_f = findings_of(spec_id, fails[-2][0], fails[-2][1])
+        if _findings_key(prev_f) == _findings_key(last_f):
+            ev = {"identical_findings": last_f,
+                  "attempts": [fails[-2][0], last_n], "risk_class": risk}
+            path = escalate(spec_id, "stop-early: two consecutive attempts produced identical "
+                                     "findings with no material change", ev)
+            write_state(spec_id, {"attempt_id": f"{spec_id}-{n}", "spec_id": spec_id,
+                                  "attempt": n, "spec_digest": digest,
+                                  "status": "failed_remediation_exhausted",
+                                  "error_class": ERR_REMEDIATION, "escalation": str(path)})
+            die(f"stop-early for {spec_id}: attempts {fails[-2][0]} and {last_n} produced "
+                f"identical findings; spec FAILED and escalated: {path}", 18)
+
+    return {"remediation_number": k, "of_attempt": last_n, "findings": last_f,
+            "limit": limit}
+
+
 # ------------------------------------------------------------------ units ----
 def unit_name(spec_id: str, n: int) -> str:
     return f"codex-{spec_id}-{n}"
@@ -310,6 +442,9 @@ def cmd_launch(spec_id: str) -> None:
     spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
 
     n = next_attempt(spec_id)
+    # Gate 4: remediation budget + stop-early + high-risk per-dispatch approval. Dies (recording
+    # failed_remediation_exhausted + escalation) if this launch is not permitted.
+    remediation = remediation_preflight(spec_id, spec, digest, n)
     attempt_id = f"{spec_id}-{n}"
     att_dir = ATTEMPTS / spec_id / str(n)
     (att_dir / "raw").mkdir(parents=True, exist_ok=True)
@@ -351,7 +486,7 @@ def cmd_launch(spec_id: str) -> None:
         "reviewer_model": approval.get("reviewer_model", "claude-fable-5"),
         "reviewer_effort": approval.get("reviewer_effort", "high"),
         "test_command": spec["test_command"], "approved_scope": approval["approved_scope"],
-        "hard_ceiling_hours": ceiling_h, "created": now(),
+        "hard_ceiling_hours": ceiling_h, "remediation": remediation, "created": now(),
     }, indent=2))
 
     unit = unit_name(spec_id, n)
@@ -426,6 +561,18 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
         "the reason — never improvise beyond the spec."
     )
     prompt = preamble + "\n\n=== SPEC ===\n" + spec_path(spec_id).read_text()
+    # Gate 4: a remediation attempt must address the SPECIFIC findings of the failed attempt —
+    # inside the approved scope, producing new evidence in this new attempt directory.
+    rem = lc.get("remediation")
+    if rem:
+        prompt += (
+            f"\n\n=== REMEDIATION (attempt {n}; remediation #{rem['remediation_number']} of "
+            f"max {rem['limit']}) ===\n"
+            f"A previous attempt (#{rem['of_attempt']}) FAILED. Your job is to address these "
+            f"specific findings — nothing else. Stay strictly within the approved scope. If the "
+            f"findings cannot be addressed within the spec and scope, report SPEC_BLOCKED.\n"
+            + json.dumps(rem["findings"], indent=2)
+        )
     (raw / "worker-prompt.txt").write_text(prompt)
 
     scrubbed = {
@@ -998,7 +1145,7 @@ def cmd_merge(attempt_id: str) -> None:
     # All gates green and base current — merge (un-draft first if needed).
     if info.get("isDraft"):
         run(["gh", "pr", "ready", pr])
-    mg = run(["gh", "pr", "merge", pr, "--merge"])
+    mg = run(["gh", "pr", "merge", pr, "--merge", "--delete-branch"])
     if mg.returncode != 0:
         die(f"gh pr merge #{pr} failed: {mg.stderr.strip()}", 16)
     merge_tip = _base_tip(base_branch)
@@ -1009,6 +1156,135 @@ def cmd_merge(attempt_id: str) -> None:
                           "merged": True, "merged_pr": pr})
     print(json.dumps({"attempt_id": attempt_id, "merged_pr": pr, "base_branch": base_branch,
                       "new_tip": merge_tip}, indent=2))
+
+
+# ============================================================== integrate =====
+def _topo_specs(spec_ids: list[str]) -> list[str]:
+    """Order the given specs so that depends_on (restricted to the given set) come first."""
+    deps = {s: [d for d in load_spec(s).get("depends_on", []) if d in spec_ids]
+            for s in spec_ids}
+    ordered, seen = [], set()
+
+    def visit(s, stack):
+        if s in seen:
+            return
+        if s in stack:
+            die(f"depends_on cycle involving {s}", 19)
+        for d in deps[s]:
+            visit(d, stack | {s})
+        seen.add(s)
+        ordered.append(s)
+
+    for s in spec_ids:
+        visit(s, set())
+    return ordered
+
+
+def _provenance_paths(spec_id: str, digest: str) -> list[str]:
+    """Repo-relative provenance paths for one spec (git add skips gitignored raw files)."""
+    paths = [f"specs/{spec_id}.yaml"]
+    paths += [str(p.relative_to(ROOT)) for p in APPROVALS.glob(f"{digest}*.json")]
+    d = ATTEMPTS / spec_id
+    if d.exists():
+        paths.append(str(d.relative_to(ROOT)))
+    paths += [str(p.relative_to(ROOT)) for p in ESCALATIONS.glob(f"{spec_id}-*.json")]
+    return paths
+
+
+def _commit_provenance(spec_ids: list[str]) -> str | None:
+    """Auto-commit the tracked provenance for the given specs: branch → PR → ci → merge.
+    Returns the PR url (or None if nothing to commit). Runs AFTER all worker merges so the
+    integration tip only moves when no sibling attempt merge could go stale because of it."""
+    branch = f"orch/prov-{'-'.join(s.replace('SPEC-', '') for s in spec_ids)}"
+    git("checkout", "--quiet", "integration")
+    git("pull", "--quiet", "--ff-only", "origin", "integration")
+    run(["git", "branch", "-D", branch], cwd=str(ROOT))  # tolerate leftovers
+    git("checkout", "--quiet", "-b", branch)
+    try:
+        for sid in spec_ids:
+            for p in _provenance_paths(sid, spec_digest(sid)):
+                run(["git", "add", "--", p], cwd=str(ROOT))
+        if not git("diff", "--cached", "--name-only").strip():
+            return None
+        ids = ", ".join(spec_ids)
+        git("commit", "-q", "-m",
+            f"provenance: {ids}\n\nAuto-committed by dispatch integrate (Gate 4): spec, "
+            f"approval(s), attempt evidence, and any escalations. Raw logs stay gitignored; "
+            f"integrity provable via tracked raw-sha256.txt.")
+        git("push", "-u", "origin", branch)
+        pr = run(["gh", "pr", "create", "--base", "integration", "--head", branch,
+                  "--title", f"provenance: {ids}",
+                  "--body", "Auto-committed provenance (dispatch integrate, Gate 4 / "
+                            "Level 1.5 grant). Spec + approvals + attempt evidence + "
+                            "escalations; raw logs stay gitignored."], cwd=str(ROOT))
+        if pr.returncode != 0:
+            die(f"provenance PR create failed: {pr.stderr.strip()}", 20)
+        pr_url = (pr.stdout or "").strip().splitlines()[-1]
+        prn = _pr_number(pr_url)
+        for _ in range(30):
+            ck = run(["gh", "pr", "checks", prn])
+            outp = (ck.stdout or "") + (ck.stderr or "")
+            if "pending" not in outp.lower() and outp.strip():
+                break
+            time.sleep(10)
+        mg = run(["gh", "pr", "merge", prn, "--merge", "--delete-branch"])
+        if mg.returncode != 0:
+            die(f"provenance PR #{prn} merge failed (left open for review): "
+                f"{mg.stderr.strip()}", 20)
+        return pr_url
+    finally:
+        git("checkout", "--quiet", "integration")
+        git("pull", "--quiet", "--ff-only", "origin", "integration")
+
+
+def cmd_integrate(attempt_ids: list[str]) -> None:
+    """Gate 4 §3: deterministic integration. Merge passed attempts in depends_on order (each via
+    the fail-closed `merge`, so the base-check applies per merge — the FIRST stale sibling stops
+    the run for a fresh re-attempt); re-run the repo suite after every merge; clean up the
+    attempt's worktree/branch; auto-commit provenance at the end. A merge conflict or suite
+    failure is stop/escalate — never AI-resolved."""
+    if load_autonomy() is None:
+        die("autonomy not granted; integrate is an auto-merge path (Level 1.5+).", 12)
+    if HALT.exists():
+        die(f"HALT present ({HALT}); refusing to integrate.", 3)
+
+    parsed = [parse_attempt_id(a) for a in attempt_ids]
+    by_spec = {s: n for s, n in parsed}
+    order = _topo_specs(list(by_spec))
+    report = {"integrated": [], "provenance_pr": None}
+
+    git("checkout", "--quiet", "integration")
+    for sid in order:
+        aid = f"{sid}-{by_spec[sid]}"
+        mg = run([str(ROOT / "scripts" / "dispatch"), "merge", aid])
+        if mg.returncode != 0:
+            path = escalate(sid, f"integrate stopped at {aid}: merge refused/failed "
+                                 f"(rc={mg.returncode})",
+                            {"stderr": (mg.stderr or "").strip(),
+                             "integrated_so_far": report["integrated"]})
+            report["stopped_at"] = {"attempt_id": aid, "rc": mg.returncode,
+                                    "stderr": (mg.stderr or "").strip(),
+                                    "escalation": str(path)}
+            print(json.dumps(report, indent=2))
+            sys.exit(mg.returncode)
+        git("pull", "--quiet", "--ff-only", "origin", "integration")
+        ts = run(["./scripts/test"], cwd=str(ROOT))
+        if ts.returncode != 0:
+            path = escalate(sid, f"post-merge suite FAILED on integration after {aid} — "
+                                 f"stop; human decision required",
+                            {"test_tail": ((ts.stdout or "") + (ts.stderr or ""))[-2000:]})
+            report["stopped_at"] = {"attempt_id": aid, "suite": "FAILED",
+                                    "escalation": str(path)}
+            print(json.dumps(report, indent=2))
+            sys.exit(21)
+        wt = WORKTREES / aid
+        if wt.exists():
+            run(["git", "worktree", "remove", "--force", str(wt)], cwd=str(ROOT))
+        run(["git", "branch", "-D", f"codex/{aid}"], cwd=str(ROOT))
+        report["integrated"].append(aid)
+
+    report["provenance_pr"] = _commit_provenance(order)
+    print(json.dumps(report, indent=2))
 
 
 # ================================================================= main =======
@@ -1026,6 +1302,8 @@ def main() -> None:
     ph.add_argument("--minutes", type=int, default=HEALTH_INACTIVITY_MIN,
                     help="inactivity threshold before an alert (default 10)")
     sub.add_parser("reconcile")
+    pi = sub.add_parser("integrate")
+    pi.add_argument("attempt_ids", nargs="+")
     args = ap.parse_args()
 
     if args.cmd == "launch":
@@ -1042,6 +1320,8 @@ def main() -> None:
         cmd_health(args.attempt_id, args.minutes)
     elif args.cmd == "reconcile":
         cmd_reconcile()
+    elif args.cmd == "integrate":
+        cmd_integrate(args.attempt_ids)
     elif args.cmd == "_run":
         _run(args.attempt_id)
 
