@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/iselur/orchestrator/specs/spec.schema.json",
+  "title": "Orchestrator spec",
+  "description": "Schema for specs/<id>.yaml. Specs are schema-validated, never regex-parsed (SETUP-BRIEF.md §Control plane). Approval lives in .orchestrator/approvals/, runtime state in .orchestrator/state/ — a spec carries NO status/branch/attempt fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "risk_class", "objective", "in_scope", "acceptance_criteria", "test_command"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^SPEC-[0-9]{3,}$",
+      "description": "Stable id, e.g. SPEC-001. Must match the filename stem."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "risk_class": { "enum": ["low", "default", "high"] },
+    "depends_on": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^SPEC-[0-9]{3,}$" },
+      "default": []
+    },
+    "objective": { "type": "string", "minLength": 1 },
+    "in_scope": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Explicit path globs; new files allowed only under these."
+    },
+    "out_of_scope": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": []
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Testable statements only."
+    },
+    "test_command": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact command; must exit 0."
+    },
+    "hard_ceiling_hours": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 24,
+      "default": 2,
+      "description": "Wall-clock ceiling (D10, default-on). Explicit override only."
+    },
+    "needs_network": {
+      "type": "boolean",
+      "default": false,
+      "description": "Worker network stays off unless true (D11). NOTE: the dispatcher HARD-REFUSES true until the D5 endgame (residual risk 13-B) — see SETUP-REPORT.md."
+    },
+    "context": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": []
+    }
+  }
+}

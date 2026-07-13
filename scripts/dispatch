@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Thin wrapper: sets the environment user-systemd needs and execs the Python core
+# in the project venv. Everything real lives in scripts/dispatch.py.
+#
+# Why a wrapper: (1) the venv python must run the core; (2) `systemctl --user`
+# needs XDG_RUNTIME_DIR + DBUS in non-login contexts (e.g. inside a transient
+# unit). Setting them here means both the CLI and the `_run` unit get them.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+# Orchestrator PATH: codex/claude live in ~/.local/bin; git/gh in /usr/bin.
+export PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+exec "${ROOT}/.venv/bin/python" "${ROOT}/scripts/dispatch.py" "$@"

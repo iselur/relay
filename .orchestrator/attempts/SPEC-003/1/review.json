@@ -1,0 +1,13 @@
+{
+  "verdict": "PASS",
+  "reasons": [
+    "scripts/lib/repeat.sh defines repeat() that printf's the first argument count times with no separator and emits exactly one final newline, matching criterion 1.",
+    "tests/repeat.sh asserts repeat 'ab' 3 -> 'ababab', repeat 'x' 0 -> '' (command substitution strips the single allowed trailing newline), and repeat 'z' 1 -> 'z', covering all required cases.",
+    "tests/repeat.sh sources scripts/lib/repeat.sh and uses set -euo pipefail with assert_repeat returning 1 on mismatch, so it exits 0 only when all assertions pass.",
+    "Evidence confirms integrity PASS, scope PASS, and 'bash tests/repeat.sh' exited 0; all touched files (scripts/lib/repeat.sh, tests/repeat.sh) are in scope."
+  ],
+  "spec_digest": "567027f14333b6584f0f07023d0421294b0b88d9485e59081734e7dfd9e819b0",
+  "base_sha": "1a20e1f1b6c6d5a54fa3d44aeab9f8aa2778581f",
+  "worker_commit": "b1393d8b7867750ae5ff5dda9cd403c82861bfdc",
+  "schema_version": "1"
+}

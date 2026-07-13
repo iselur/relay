@@ -1,0 +1,20 @@
+id: SPEC-004
+title: Deliberately broken spec (unsatisfiable test)
+risk_class: low
+depends_on: []
+objective: >
+  Intentionally broken spec for Gate 2 testing: the worker can implement the helper, but the
+  test_command is rigged to always fail, so the attempt MUST end failed_test with a durable record.
+in_scope:
+  - scripts/lib/**
+  - tests/**
+out_of_scope:
+  - .github/**
+  - specs/**
+  - .orchestrator/**
+acceptance_criteria:
+  - "scripts/lib/noop.sh defines a function noop that prints nothing and returns 0."
+test_command: "bash -c 'echo intentionally-failing-test >&2; exit 1'"
+hard_ceiling_hours: 2
+needs_network: false
+context: []
