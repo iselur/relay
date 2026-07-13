@@ -1,0 +1,3 @@
+ad02609f3f847e72ed62826ef785bf40a073501a00c69fc2f25405fe476c0760  /home/val/orchestrator/.orchestrator/decisions/G1-A-commit-model/sol-consultation-prompt.txt
+60ee6fd2cbce994d27ea8e9defbf9f23df349a27df24f257c9d1717929e1c821  /home/val/orchestrator/.orchestrator/decisions/G1-A-commit-model/sol-response.txt
+4a2c1fe887a4c5be971e94ab9372ef578041cde4a470403e67a5da0c7394705d  /home/val/orchestrator/.orchestrator/decisions/G1-A-commit-model/sol-events.jsonl

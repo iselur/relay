@@ -1,0 +1,11 @@
+{
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/**"
+  ],
+  "changed": [
+    "scripts/lib/noop.sh"
+  ],
+  "out_of_scope": [],
+  "result": "PASS"
+}

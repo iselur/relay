@@ -1,0 +1,24 @@
+id: SPEC-002
+title: Add a trim shell helper
+risk_class: low
+depends_on: []
+objective: >
+  A reusable Bash function trim exists at scripts/lib/trim.sh that strips leading and
+  trailing ASCII whitespace from its first argument. Second dispatcher end-to-end test.
+in_scope:
+  - scripts/lib/**
+  - tests/trim.sh
+out_of_scope:
+  - .github/**
+  - specs/**
+  - .orchestrator/**
+acceptance_criteria:
+  - "scripts/lib/trim.sh defines a function trim that reads its first argument and prints it with leading and trailing spaces/tabs removed."
+  - "Interior whitespace is preserved unchanged."
+  - "tests/trim.sh sources the helper and asserts: '  hi  ' -> 'hi'; 'a  b' -> 'a  b'; '' -> ''."
+  - "tests/trim.sh exits 0 when all assertions pass."
+test_command: "bash tests/trim.sh"
+hard_ceiling_hours: 2
+needs_network: false
+context:
+  - tests/slugify.sh

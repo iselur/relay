@@ -1,0 +1,6 @@
+{ "approver": "val", "timestamp": "2026-07-13T12:05:40Z", "spec_id": "SPEC-003",
+  "spec_digest": "567027f14333b6584f0f07023d0421294b0b88d9485e59081734e7dfd9e819b0", "spec_digest_method": "sha256(specs/SPEC-003.yaml)",
+  "risk_class": "low", "approved_scope": ["scripts/lib/**", "tests/repeat.sh"],
+  "worker_model": "gpt-5.6-sol", "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5", "reviewer_effort": "high", "base_branch": "integration",
+  "note": "Gate 2 dispatcher end-to-end test spec #2." }

@@ -1,0 +1,6 @@
+{ "approver": "val", "timestamp": "2026-07-13T12:07:17Z", "spec_id": "SPEC-004",
+  "spec_digest": "726b7ae4ed569603f0c72f4637877b6d1a3ddf8200ee4251159998a829f8d45b", "spec_digest_method": "sha256(specs/SPEC-004.yaml)",
+  "risk_class": "low", "approved_scope": ["scripts/lib/**", "tests/**"],
+  "worker_model": "gpt-5.6-sol", "worker_reasoning_effort": "high",
+  "reviewer_model": "claude-fable-5", "reviewer_effort": "high", "base_branch": "integration",
+  "note": "Gate 2 deliberately-broken spec: rigged failing test_command." }

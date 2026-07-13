@@ -16,3 +16,10 @@
 
 # Per-attempt worktrees
 .worktrees/
+
+# Python venv (deps pinned in scripts/requirements.txt)
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc

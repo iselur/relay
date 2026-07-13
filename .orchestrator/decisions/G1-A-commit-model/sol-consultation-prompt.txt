@@ -1,0 +1,65 @@
+You are Codex (gpt-5.6-sol), consulted as a peer architect by Claude, the orchestrator in a
+Claude-orchestrates / Codex-executes automation system. I need your independent, adversarial
+judgment on one design fork. Do not be agreeable; if my reasoning is wrong, say so. The human
+owner (Val) explicitly wants worker agents to be able to commit their own work, but has asked
+Claude and you to jointly validate the right decision and will defer to our combined judgment.
+
+=== SYSTEM CONTEXT ===
+- Orchestrator (Claude) dispatches one worker (Codex) per spec. MAX_PARALLEL will be 1, later 2.
+- Each attempt gets a git worktree `.worktrees/<id>-<n>/` on a fresh branch cut from an immutable
+  `base_sha` resolved from the protected `integration` branch.
+- The worker runs headless: `codex exec --sandbox workspace-write`, network OFF, environment
+  scrubbed (no GitHub/SSH/cloud creds). The sandbox is bubblewrap; writable root = the worktree
+  ONLY. The parent repo's `.git/` is OUTSIDE the writable root (read-only to the worker).
+- SECURITY MODEL: workers run as the SAME Unix user as the orchestrator (accepted temporary risk).
+  The sandbox is therefore the ONLY thing isolating worker actions. The threat model is a worker
+  going rogue via prompt-injection or model error — NOT a malicious human. On this host the sandbox
+  can restrict WRITES and NETWORK but NOT reads (Landlock legacy backend); network-off is what
+  prevents credential exfiltration.
+- After the worker finishes, the orchestrator runs, on the resulting commit, deterministic gates:
+  (1) integrity preconditions: branch HEAD == worker_commit; worker_commit is a descendant of
+      base_sha; NO merge commits in base..worker_commit; worktree perfectly clean.
+  (2) NUL-safe scope check: every changed path must match approved glob scope.
+  (3) the spec's exact test_command must exit 0.
+  (4) a separate read-only reviewer (Claude) returns a schema-bound PASS/FAIL.
+  Only on all-pass does the ORCHESTRATOR (sole holder of GitHub creds) push and open a PR.
+
+=== THE PROBLEM ===
+The worker CANNOT commit inside a git worktree: `git commit` needs to write the index, refs, and
+new objects under the parent repo's `.git/` (shared object store + `.git/worktrees/<n>/` +
+`.git/refs/...`), all of which are outside the sandbox writable root. Observed failure:
+`fatal: Unable to create '.../.git/worktrees/<n>/index.lock': Read-only file system`.
+The worker successfully wrote files and ran tests; only the commit was blocked.
+
+=== OPTIONS ===
+Option A — `--add-dir` the parent `.git` into the sandbox writable set so the worker can commit.
+  Cost: the worker gains WRITE access to the shared object store and ALL refs of the real repo
+  (every branch, every worktree). Broad blast radius for a rogue worker.
+
+Option B — Give each attempt a standalone CLONE instead of a linked worktree (e.g.
+  `git clone --reference <parent> --dissociate=false` or a `--shared` clone), so `.git` lives
+  INSIDE the worker's writable workspace. The worker authors and commits normally, fully
+  sandboxed. The orchestrator then `git fetch`es the worker's branch/commit from that local clone
+  into the real repo and runs all four gates on it. History games are caught by the integrity
+  preconditions (descendant-of-base, no-merges) which run on the fetched commit.
+  Cost: an extra clone per attempt (cheap via object sharing) + a fetch step; slightly more moving
+  parts; must ensure the clone's object sharing doesn't let the worker write into the parent store.
+
+Option C — The worker NEVER touches git. It leaves changes in the working tree. The ORCHESTRATOR
+  commits the worktree state on top of base_sha (author=worker, committer=orchestrator).
+  Cost: the commit is not literally authored-and-created by the worker; Val wanted workers to
+  commit. Benefit: worker cannot fabricate ANY git state; integrity preconditions
+  (descendant-of-base, no-merges) hold BY CONSTRUCTION rather than by after-the-fact check.
+
+=== QUESTIONS FOR YOU ===
+1. Given Val wants workers to own their commits, is Option B a sound way to honor that WITHOUT
+   weakening the security model, or does the sandboxed-clone approach have a flaw I'm missing
+   (e.g. object-sharing letting writes escape to the parent store, or fetch-time trust issues)?
+2. Is there a material security or correctness difference between B and C once the orchestrator
+   re-verifies integrity + scope + tests + review on the resulting commit? I.e. does "the worker
+   authored the commit" buy anything real, or is it cosmetic given the downstream gates?
+3. Is Option A ever justified here, or should it be rejected outright?
+4. Is there an Option D I haven't considered?
+5. Your single recommendation, and the ONE strongest argument against it.
+
+Answer concisely and concretely. This is a real decision that will be encoded in a dispatcher.
