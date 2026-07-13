@@ -51,6 +51,7 @@ HALT = ORCH / "HALT"
 SPEC_SCHEMA = SPECS / "spec.schema.json"
 VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
+QUALITY_DIMENSIONS = ("maintainability", "design_fit", "test_quality")
 
 # Concurrency bound (Gate 3 part 3 mechanism: atomic slot claim + stale-base guard, unchanged).
 # Configurable via ORCH_MAX_PARALLEL; default 3 (the operator, 2026-07-13). NOTE the real limiter is not the
@@ -695,6 +696,9 @@ def cmd_launch(spec_id: str) -> None:
     attempt_id = f"{spec_id}-{n}"
     att_dir = ATTEMPTS / spec_id / str(n)
     (att_dir / "raw").mkdir(parents=True, exist_ok=True)
+    # Pin the prompt's output contract before starting the attempt. review() reads this snapshot,
+    # so an in-flight attempt and its reviewer cannot straddle a repository schema upgrade.
+    atomic_write(att_dir / "verdict.schema.json", VERDICT_SCHEMA.read_text())
 
     # Atomic slot claim + durable 'launching' record BEFORE anything can crash (July lesson:
     # untraceable launches). claim_slot enforces MAX_PARALLEL and one-live-attempt-per-spec under
@@ -960,9 +964,13 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
     # --- step 8: reviewer (bound, fail-closed) --------------------------------
     verdict, vraw = review(att, spec_id, lc, worker_commit)
     atomic_write(att / "review.json", json.dumps(verdict, indent=2) if verdict else "{}")
-    if not verdict or verdict.get("verdict") != "PASS":
+    binary_result = (evaluate_binary_review(
+        verdict.get("verdict"), verdict.get("criteria", []),
+        verdict.get("scope_finding"), verdict.get("regression_finding"),
+        verdict.get("security_findings")) if verdict else None)
+    if binary_result != "PASS":
         finish("failed_review", ERR_REVIEW, worker_commit=worker_commit,
-               review_verdict=(verdict or {}).get("verdict", "malformed"))
+               review_verdict=binary_result or "malformed")
 
     # --- step 8.5: stale-base guard (Gate 3 part 3 — parallelism safety) -------
     # With MAX_PARALLEL>1 a sibling attempt can integrate while this one runs, advancing the base
@@ -1089,11 +1097,78 @@ def scope_check(wt: Path, base: str, wc: str, globs: list[str]) -> dict:
             "result": "PASS" if not oos else "FAIL"}
 
 
+def _verdict_schema_for_attempt(att: Path) -> dict:
+    """Use the launch-time contract, with a repo-schema fallback for historical attempts."""
+    pinned = att / "verdict.schema.json"
+    return json.loads((pinned if pinned.exists() else VERDICT_SCHEMA).read_text())
+
+
+def evaluate_binary_review(verdict: str, criteria: list[dict], scope_finding: str,
+                           regression_finding: str, security_findings: str) -> str | None:
+    """Evaluate only the binary rubric; advisory quality is deliberately not an input."""
+    if verdict not in ("PASS", "FAIL"):
+        return None
+    if not all(isinstance(f, str) and f for f in
+               (scope_finding, regression_finding, security_findings)):
+        return None
+    if verdict == "PASS" and any(c.get("result") != "MET" for c in criteria):
+        return None
+    return verdict
+
+
+def validate_review_verdict(verdict: dict, schema_obj: dict, lc: dict, wc: str) -> bool:
+    """Fail-closed structural, binding, and binary-rubric consistency validation."""
+    try:
+        Draft202012Validator(schema_obj).validate(verdict)
+        expected_version = schema_obj["properties"]["schema_version"]["const"]
+    except Exception:
+        return False
+    if (verdict.get("spec_digest") != lc["spec_digest"]
+            or verdict.get("base_sha") != lc["base_sha"]
+            or verdict.get("worker_commit") != wc
+            or verdict.get("schema_version") != expected_version):
+        return False
+    return evaluate_binary_review(
+        verdict.get("verdict"), verdict.get("criteria", []),
+        verdict.get("scope_finding"), verdict.get("regression_finding"),
+        verdict.get("security_findings")) is not None
+
+
 def review(att: Path, spec_id: str, lc: dict, wc: str):
     # policy-note item 2: mandatory structured rubric. The worker's plan/checklist is NEVER
     # included here (confirmation-bias contamination) — only spec, diff, and orchestrator evidence.
     wt = Path(lc["worktree"])
     diff = git("diff", f"{lc['base_sha']}..{wc}", cwd=wt)
+    schema_obj = _verdict_schema_for_attempt(att)
+    schema_version = schema_obj.get("properties", {}).get("schema_version", {}).get("const")
+    quality_instructions = ""
+    if schema_version == "3":
+        # Accepted residual: binary findings and advisory scores come from one reviewer invocation,
+        # so anchoring/halo coupling remains possible. A separate scoring pass is deferred because
+        # it doubles reviewer quota; score VALUES therefore remain rigorously outside gate inputs.
+        quality_instructions = (
+            "\n\nAlso fill required `quality` dimensions. Every dimension needs an integer score "
+            "1-5 and evidence citing a concrete diff, test, or path reference. Use these behavioral "
+            "anchors exactly:\n"
+            "maintainability (how safely future engineers can understand/change the implementation, "
+            "independent of whether it matches repository architecture): 1=opaque or hazardous to "
+            "change; 2=major clarity/coupling debt; 3=ordinary readable code with manageable debt; "
+            "4=clear, cohesive, and easy to modify; 5=exceptionally clear with localized change "
+            "surfaces and strong defensive structure.\n"
+            "design_fit (how well the approach follows existing repository architecture and "
+            "conventions, independent of local code readability): 1=contradicts core architecture; "
+            "2=significant convention or layering mismatch; 3=compatible with established patterns; "
+            "4=well aligned and reuses appropriate abstractions; 5=exemplary architectural fit that "
+            "strengthens existing patterns.\n"
+            "test_quality (how convincingly tests detect regressions in the changed behavior): "
+            "1=missing or effectively vacuous; 2=major behaviors/boundaries untested; 3=core behavior "
+            "covered with meaningful assertions; 4=core plus important boundary/failure cases covered; "
+            "5=highly discriminating coverage including regressions, boundaries, and failure modes.\n"
+            "The PASS/FAIL verdict MUST be decided ONLY by the binary rubric (criteria, scope, "
+            "regression, and security). Quality score VALUES are advisory trend signals and MUST "
+            "have no influence on PASS/FAIL. The quality block's presence and schema validity are "
+            "still mandatory and fail closed."
+        )
     req = (
         "You are a code reviewer acting as a hard, fail-closed gate. Review ONE worker change "
         "against ONE spec. Return a verdict only; do not fix anything. There is NO planning "
@@ -1105,14 +1180,14 @@ def review(att: Path, spec_id: str, lc: dict, wc: str):
         "blocking scope/regression/security finding exists; otherwise FAIL. If evidence is "
         "missing or ambiguous, FAIL (fail closed). `reasons[]` must be non-empty. You MUST echo "
         "spec_digest, base_sha and worker_commit verbatim; the verdict is void otherwise. "
-        "schema_version is \"2\".\n\n=== SPEC ===\n" + spec_path(spec_id).read_text() +
+        f"schema_version is \"{schema_version}\"." + quality_instructions +
+        "\n\n=== SPEC ===\n" + spec_path(spec_id).read_text() +
         f"\n\n=== BINDING ===\nspec_digest: {lc['spec_digest']}\nbase_sha: {lc['base_sha']}\n"
         f"worker_commit: {wc}\n\n=== EVIDENCE (from the orchestrator, not the worker) ===\n"
         f"integrity: PASS\nscope: PASS\ntest_command: {lc['test_command']} exited 0\n\n"
         "=== DIFF ===\n" + diff
     )
     (att / "raw" / "review-request.txt").write_text(req)
-    schema_obj = json.loads(VERDICT_SCHEMA.read_text())
     # D5: the reviewer is a Claude process running as the operator, judging WORKER-CONTROLLED diff text — a
     # confused-deputy risk (SOL). It gets the full spec + diff + evidence in the prompt and needs NO
     # host filesystem access, so ALL tools (incl. Read/Grep/Glob) are denied: a prompt-injected
@@ -1130,19 +1205,7 @@ def review(att: Path, spec_id: str, lc: dict, wc: str):
         verdict = json.loads(json.loads(cp.stdout)["result"])
     except Exception:
         return None, cp.stdout
-    # Fail-closed validation: structural schema, binding, and PASS/MET consistency.
-    try:
-        Draft202012Validator(schema_obj).validate(verdict)
-    except Exception:
-        return None, cp.stdout
-    if (verdict.get("spec_digest") != lc["spec_digest"]
-            or verdict.get("base_sha") != lc["base_sha"]
-            or verdict.get("worker_commit") != wc
-            or verdict.get("schema_version") != "2"):
-        return None, cp.stdout
-    # A PASS is invalid if any criterion is UNMET (policy-note item 2).
-    if verdict.get("verdict") == "PASS" and any(
-            c.get("result") != "MET" for c in verdict.get("criteria", [])):
+    if not validate_review_verdict(verdict, schema_obj, lc, wc):
         return None, cp.stdout
     return verdict, cp.stdout
 
@@ -1366,7 +1429,14 @@ def _list_codex_units() -> list[str]:
 # The point is straight-through vs remediation vs escaped-defect signal, stratified by risk class, so
 # the numbers can't be Goodharted into "look how autonomous we are".
 def cmd_metrics() -> None:
+    from collections import Counter
+
     per_spec = {}   # spec_id -> {risk, attempts:[(n,status,error_class,merged)], reviewer:[...], escalated:bool}
+    quality_distribution = {dimension: Counter({score: 0 for score in range(1, 6)})
+                            for dimension in QUALITY_DIMENSIONS}
+    quality_scored_attempts = quality_skipped = 0
+    quality_schema = json.loads(VERDICT_SCHEMA.read_text())["properties"]["quality"]
+    quality_validator = Draft202012Validator(quality_schema)
     if ATTEMPTS.exists():
         for sd in sorted(ATTEMPTS.iterdir()):
             if not sd.is_dir():
@@ -1392,15 +1462,24 @@ def cmd_metrics() -> None:
                         v = json.loads(rv.read_text())
                         if v.get("verdict"):
                             rec["reviewer"].append(v["verdict"])
+                        if v.get("schema_version") != "3" or not isinstance(v.get("quality"), dict):
+                            quality_skipped += 1
+                        elif list(quality_validator.iter_errors(v["quality"])):
+                            quality_skipped += 1
+                        else:
+                            scores = {dimension: v["quality"][dimension]["score"]
+                                      for dimension in QUALITY_DIMENSIONS}
+                            for dimension, score in scores.items():
+                                quality_distribution[dimension][score] += 1
+                            quality_scored_attempts += 1
                     except Exception:
-                        pass
+                        quality_skipped += 1
     if ESCALATIONS.exists():
         for p in ESCALATIONS.glob("*.json"):
             sid = p.name.split("-2")[0]  # SPEC-XXX-<ts>
             if sid in per_spec:
                 per_spec[sid]["escalated"] = True
 
-    from collections import Counter
     err = Counter(); rev = Counter(); by_risk = {}
     specs_total = passed = merged = straight_through = needed_remediation = escalated = 0
     total_attempts = 0
@@ -1443,6 +1522,22 @@ def cmd_metrics() -> None:
                               "merged_pct": pct(v["merged"], v["specs"])} for k, v in sorted(by_risk.items())},
         "failure_error_classes": dict(err.most_common()),
         "reviewer_verdicts": dict(rev.most_common()),
+        "quality_advisory": True,
+        "quality_advisory_note": "ADVISORY operator trend signal only; never used by any gate or merge decision.",
+        "quality_score_distribution": {
+            dimension: {str(score): quality_distribution[dimension][score]
+                        for score in range(1, 6)}
+            for dimension in QUALITY_DIMENSIONS
+        },
+        "quality_avg_by_dimension": {
+            dimension: (round(sum(score * count for score, count in
+                                  quality_distribution[dimension].items()) /
+                              quality_scored_attempts, 1)
+                        if quality_scored_attempts else None)
+            for dimension in QUALITY_DIMENSIONS
+        },
+        "quality_scored_attempts": quality_scored_attempts,
+        "quality_skipped": quality_skipped,
         "note": "Assurance signal, NOT a published autonomy KPI. Straight-through = passed on attempt 1 "
                 "with no prior merit failure. Escaped-defect / reversion tracking requires post-merge "
                 "data not yet collected (see holistic-review decision).",

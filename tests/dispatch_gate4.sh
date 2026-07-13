@@ -15,7 +15,7 @@ if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
 fi
 
 "$PY" - <<'PY'
-import importlib.util, json, tempfile, subprocess, pathlib, sys
+import copy, importlib.util, inspect, json, tempfile, subprocess, pathlib, sys, types
 
 spec = importlib.util.spec_from_file_location("d", "scripts/dispatch.py")
 d = importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
@@ -128,6 +128,123 @@ check("an approval from THIS instance matches", inst["instance_id"] == d.instanc
 check("a copied/foreign approval's instance_id does NOT match (→ rejected in preflight)",
       "f0f0"*8 != inst["instance_id"])
 
+# --- reviewer verdict v3: schema, binary invariance, and per-attempt pinning ----------------
+v3_schema = json.loads(pathlib.Path("scripts/verdict.schema.json").read_text())
+v3_validator = d.Draft202012Validator(v3_schema)
+binding = {"spec_digest": "d" * 64, "base_sha": "b" * 40, "worker_commit": "c" * 40}
+vlc = {"spec_digest": binding["spec_digest"], "base_sha": binding["base_sha"]}
+
+def quality(score=3):
+    return {dimension: {"score": score, "evidence": f"tests/dispatch_gate4.sh:{dimension}"}
+            for dimension in d.QUALITY_DIMENSIONS}
+
+def valid_v3(score=3, verdict="PASS"):
+    return {
+        "verdict": verdict,
+        "criteria": [{"criterion": "criterion one",
+                      "result": "MET" if verdict == "PASS" else "UNMET",
+                      "evidence": "tests/dispatch_gate4.sh:criterion"}],
+        "scope_finding": "scripts/dispatch.py stayed in scope",
+        "regression_finding": "./scripts/test passed",
+        "security_findings": "scripts/dispatch.py: no unsafe operations",
+        "reasons": ["binary rubric evidence supports the verdict"],
+        **binding, "schema_version": "3", "quality": quality(score),
+    }
+
+def schema_accepts(value, schema=v3_schema):
+    return not list(d.Draft202012Validator(schema).iter_errors(value))
+
+check("v3 schema accepts a complete quality block", schema_accepts(valid_v3()))
+for bad_score in (0, 6, "3", None, True, 2.5):
+    bad = valid_v3(); bad["quality"]["maintainability"]["score"] = bad_score
+    check(f"v3 schema rejects quality score {bad_score!r}", not schema_accepts(bad))
+for dimension in d.QUALITY_DIMENSIONS:
+    bad = valid_v3(); bad["quality"][dimension]["evidence"] = " \t\n"
+    check(f"v3 schema rejects whitespace-only {dimension} evidence", not schema_accepts(bad))
+bad = valid_v3(); bad["quality"]["extra"] = {"score": 3, "evidence": "x"}
+check("v3 schema rejects an extra quality dimension", not schema_accepts(bad))
+bad = valid_v3(); bad["quality"]["maintainability"]["extra"] = "x"
+check("v3 schema rejects an extra dimension member", not schema_accepts(bad))
+bad = valid_v3(); del bad["quality"]["design_fit"]
+check("v3 schema rejects a partial quality block", not schema_accepts(bad))
+
+# Representative v2-invalid forms must remain invalid after adding valid v3 quality.
+regression_invalid = []
+bad = valid_v3(); bad["reasons"] = []; regression_invalid.append(("empty reasons", bad))
+bad = valid_v3(); bad["criteria"][0]["result"] = "UNMET"
+regression_invalid.append(("PASS with UNMET criterion", bad))
+for finding in ("scope_finding", "regression_finding", "security_findings"):
+    bad = valid_v3(); del bad[finding]; regression_invalid.append((f"missing {finding}", bad))
+bad = valid_v3(); del bad["criteria"][0]["evidence"]
+regression_invalid.append(("criterion missing evidence", bad))
+for name, bad in regression_invalid:
+    structurally_valid = schema_accepts(bad)
+    binary_valid = d.validate_review_verdict(bad, v3_schema, vlc, binding["worker_commit"])
+    check(f"v3 regression matrix rejects {name}", not structurally_valid or not binary_valid)
+
+bad = valid_v3(); bad["schema_version"] = "2"
+check("v3 validation rejects schema_version 2", not schema_accepts(bad))
+bad = valid_v3(); del bad["quality"]
+check("v3 missing quality is MALFORMED, not historical", not schema_accepts(bad))
+
+check("binary evaluator has no quality input",
+      "quality" not in inspect.signature(d.evaluate_binary_review).parameters)
+for verdict in ("PASS", "FAIL"):
+    low, high = valid_v3(1, verdict), valid_v3(5, verdict)
+    low_valid = d.validate_review_verdict(low, v3_schema, vlc, binding["worker_commit"])
+    high_valid = d.validate_review_verdict(high, v3_schema, vlc, binding["worker_commit"])
+    def gate(v):
+        return d.evaluate_binary_review(v["verdict"], v["criteria"], v["scope_finding"],
+                                        v["regression_finding"], v["security_findings"])
+    check(f"{verdict} score 1/5 have identical validation outcomes",
+          low_valid is high_valid is True)
+    check(f"{verdict} score 1/5 have identical binary gate results", gate(low) == gate(high))
+
+# A launch-time v2 snapshot remains authoritative after the repository schema moves to v3.
+v2_schema = copy.deepcopy(v3_schema)
+v2_schema["required"].remove("quality"); del v2_schema["properties"]["quality"]
+v2_schema["properties"]["schema_version"]["const"] = "2"
+pinned_att = tmp / "pinned-v2"; pinned_att.mkdir()
+(pinned_att / "verdict.schema.json").write_text(json.dumps(v2_schema))
+v2_verdict = valid_v3(); del v2_verdict["quality"]; v2_verdict["schema_version"] = "2"
+pinned_schema = d._verdict_schema_for_attempt(pinned_att)
+check("pinned v2 schema is selected while repo schema is v3",
+      pinned_schema["properties"]["schema_version"]["const"] == "2"
+      and v3_schema["properties"]["schema_version"]["const"] == "3")
+check("pinned v2 attempt validates its v2 verdict after cutover",
+      d.validate_review_verdict(v2_verdict, pinned_schema, vlc, binding["worker_commit"]))
+check("the same v2 verdict is rejected by unpinned v3 validation", not schema_accepts(v2_verdict))
+
+# Exercise prompt construction without launching a reviewer process.
+prompt_att = tmp / "prompt-v3"; (prompt_att / "raw").mkdir(parents=True)
+(prompt_att / "verdict.schema.json").write_text(json.dumps(v3_schema))
+prompt_spec = tmp / "prompt-spec.yaml"; prompt_spec.write_text("id: SPEC-PROMPT\n")
+prompt_lc = {**vlc, "worktree": str(tmp), "test_command": "./scripts/test",
+             "reviewer_model": "claude-fable-5", "reviewer_effort": "high"}
+captured = {}
+_prompt_git, _prompt_run, _prompt_spec_path = d.git, d.run, d.spec_path
+d.git = lambda *a, **k: "diff --git a/scripts/dispatch.py b/scripts/dispatch.py"
+def fake_reviewer_run(cmd, **kwargs):
+    captured["request"] = kwargs["input"]
+    return types.SimpleNamespace(
+        stdout=json.dumps({"result": json.dumps(valid_v3())}), stderr="", returncode=0)
+d.run = fake_reviewer_run; d.spec_path = lambda sid: prompt_spec
+prompt_verdict, _ = d.review(prompt_att, "SPEC-PROMPT", prompt_lc, binding["worker_commit"])
+d.git, d.run, d.spec_path = _prompt_git, _prompt_run, _prompt_spec_path
+request = captured.get("request", "")
+check("reviewer prompt requests schema_version 3", 'schema_version is "3"' in request)
+check("reviewer prompt anchors all five levels for each distinct quality dimension",
+      all(dimension in request for dimension in d.QUALITY_DIMENSIONS)
+      and all(f"{score}=" in request for score in range(1, 6))
+      and "independent of whether it matches repository architecture" in request
+      and "independent of local code readability" in request)
+check("reviewer prompt requires concrete quality evidence",
+      "evidence citing a concrete diff, test, or path reference" in request)
+check("reviewer prompt makes quality values advisory and binary-only",
+      "MUST be decided ONLY by the binary rubric" in request
+      and "MUST have no influence on PASS/FAIL" in request)
+check("reviewer accepts a fully valid prompted v3 response", prompt_verdict is not None)
+
 # --- assurance metrics (read-only scorecard) -------------------------------------------------
 import io, contextlib
 mtmp = pathlib.Path(tempfile.mkdtemp())
@@ -139,9 +256,22 @@ for p in (d.ATTEMPTS, d.STATE, d.ESCALATIONS, d.SPECS): p.mkdir(parents=True, ex
 (d.SPECS/"SPEC-M2.yaml").write_text("id: SPEC-M2\nrisk_class: low\n")
 a1=d.ATTEMPTS/"SPEC-M1"/"1"; a1.mkdir(parents=True)
 (a1/"result.json").write_text(json.dumps({"status":"passed_pr_opened","error_class":None,"merged":True}))
-(a1/"review.json").write_text(json.dumps({"verdict":"PASS"}))
+qpass = valid_v3(1, "PASS")
+qpass["quality"]["design_fit"]["score"] = 2
+qpass["quality"]["test_quality"]["score"] = 3
+(a1/"review.json").write_text(json.dumps(qpass))
 b1=d.ATTEMPTS/"SPEC-M2"/"1"; b1.mkdir(parents=True); (b1/"result.json").write_text(json.dumps({"status":"failed_test","error_class":"test"}))
 b2=d.ATTEMPTS/"SPEC-M2"/"2"; b2.mkdir(parents=True); (b2/"result.json").write_text(json.dumps({"status":"passed_pr_opened","error_class":None,"merged":False}))
+# A second, valid scored attempt plus five skipped review files: partial v3, corrupt JSON,
+# poisoned v2 with a stray quality key, wrong score type, and out-of-range score.
+b3=d.ATTEMPTS/"SPEC-M2"/"3"; b3.mkdir()
+qfail = valid_v3(5, "FAIL"); qfail["quality"]["design_fit"]["score"] = 4; qfail["quality"]["test_quality"]["score"] = 3
+(b3/"review.json").write_text(json.dumps(qfail))
+b4=d.ATTEMPTS/"SPEC-M2"/"4"; b4.mkdir(); partial=valid_v3(); del partial["quality"]["design_fit"]; (b4/"review.json").write_text(json.dumps(partial))
+b5=d.ATTEMPTS/"SPEC-M2"/"5"; b5.mkdir(); (b5/"review.json").write_text("{not json")
+b6=d.ATTEMPTS/"SPEC-M2"/"6"; b6.mkdir(); poisoned=valid_v3(); poisoned["schema_version"]="2"; (b6/"review.json").write_text(json.dumps(poisoned))
+b7=d.ATTEMPTS/"SPEC-M2"/"7"; b7.mkdir(); wrong=valid_v3(); wrong["quality"]["test_quality"]["score"]="3"; (b7/"review.json").write_text(json.dumps(wrong))
+b8=d.ATTEMPTS/"SPEC-M2"/"8"; b8.mkdir(); ranged=valid_v3(); ranged["quality"]["maintainability"]["score"]=6; (b8/"review.json").write_text(json.dumps(ranged))
 buf=io.StringIO()
 with contextlib.redirect_stdout(buf): d.cmd_metrics()
 m=json.loads(buf.getvalue())
@@ -150,6 +280,15 @@ check("metrics: straight-through 50% (M1 only)", m["straight_through_rate_pct"]=
 check("metrics: needed_remediation 50% (M2)", m["needed_remediation_pct"]==50.0)
 check("metrics: merged 50% (M1)", m["merged_pct"]==50.0)
 check("metrics: counts a test failure", m["failure_error_classes"].get("test")==1)
+check("metrics: quality section is explicitly advisory", m["quality_advisory"] is True and "ADVISORY" in m["quality_advisory_note"])
+check("metrics: counts only attempts with all three valid dimensions",
+      m["quality_scored_attempts"] == 2 and m["quality_skipped"] == 5)
+check("metrics: quality distributions include zero-count score buckets",
+      m["quality_score_distribution"]["maintainability"] == {"1":1,"2":0,"3":0,"4":0,"5":1}
+      and m["quality_score_distribution"]["design_fit"] == {"1":0,"2":1,"3":0,"4":1,"5":0}
+      and m["quality_score_distribution"]["test_quality"] == {"1":0,"2":0,"3":2,"4":0,"5":0})
+check("metrics: averages are per dimension with one decimal",
+      m["quality_avg_by_dimension"] == {"maintainability":3.0,"design_fit":3.0,"test_quality":3.0})
 
 # --- regression-proof gate (holistic-review #1) ----------------------------------------------
 # Real run_regression_gate against a temp repo: base has a buggy add(), candidate fixes it; the
