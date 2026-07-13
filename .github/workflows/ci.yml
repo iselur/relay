@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, integration]
+
+# The job key AND its name must both be exactly `ci`: the branch ruleset on
+# `main` and `integration` requires a status check with the context `ci`, and
+# GitHub Actions derives that context from the job name. Renaming this job, or
+# adding a matrix to it (which would produce contexts like `ci (ubuntu-latest)`),
+# will make every PR block forever.
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: ./scripts/test

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Repo-level test entry point. This is what CI runs, and it is the hard merge
+# gate for `main` and `integration`.
+#
+# Individual specs declare their own `test_command`; that is what a worker must
+# drive to exit 0 inside its worktree. This script is the repo's own suite and
+# must stay green independently of any in-flight spec.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+shopt -s nullglob
+tests=(tests/*.sh)
+
+if [ ${#tests[@]} -eq 0 ]; then
+  echo "no tests defined yet"
+  exit 0
+fi
+
+failed=0
+for t in "${tests[@]}"; do
+  echo "=== $t"
+  if bash "$t"; then
+    echo "PASS $t"
+  else
+    echo "FAIL $t"
+    failed=1
+  fi
+done
+
+exit "$failed"
