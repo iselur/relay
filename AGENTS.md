@@ -12,6 +12,11 @@ An orchestrator that dispatches Codex worker jobs from schema-validated specs, g
 
 - **Dispatcher:** Python 3 (`scripts/dispatch.py`), venv in `.venv/` (gitignored), deps pinned in
   `scripts/requirements.txt` (pyyaml, jsonschema). Thin bash wrapper `scripts/dispatch`.
+- **Codex runs in Fast mode** (Val, 2026-07-13): every Codex invocation passes
+  `-c service_tier=priority` — the priority processing tier. This is a *speed* setting (faster
+  wall-clock); it does **not** change the model or reasoning depth, which stay `gpt-5.6-sol` /
+  `high` as the approval artifacts pin. The real config key is `service_tier`, not
+  `model_service_tier` (the latter is rejected under `--strict-config`).
 - **Repo tests / CI:** bash. `scripts/test` runs `tests/*.sh`; CI job is named exactly `ci`
   (required status check on `main` and `integration` — do not rename or add a matrix).
 - **Worker helpers so far:** `scripts/lib/*.sh` (slugify, trim, repeat) — produced by dispatched

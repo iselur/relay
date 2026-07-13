@@ -394,6 +394,11 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
     worker_cmd = [
         "codex", "exec", "--cd", str(wt), "--sandbox", "workspace-write",
         "-m", lc["worker_model"], "-c", f"model_reasoning_effort={lc['worker_effort']}",
+        # Fast mode (Val, 2026-07-13): priority service tier. Faster wall-clock at the SAME model
+        # and reasoning depth — a speed tier, not a quality/reasoning downgrade. Global default for
+        # every Codex invocation. The real config key is `service_tier` (NOT `model_service_tier`,
+        # which --strict-config rejects).
+        "-c", "service_tier=priority",
         "--json", "--output-last-message", str(raw / "worker-last-message.txt"), prompt,
     ]
     with open(raw / "events.jsonl", "w") as ev, open(raw / "worker-stderr.txt", "w") as er, \
