@@ -78,6 +78,17 @@ new_tip = out("git","rev-parse","HEAD", cwd=sib)
 cur2, moved2 = d.base_moved(work, "integration", base_sha)
 check("advanced base -> stale, reports new tip", (moved2 is True) and cur2 == new_tip)
 
-print(f"\n{'PASS' if not fails else 'FAIL'}: dispatch parallelism guards ({len(fails)} failed)")
+# --- Guard 3: autonomy grant loader (Level 1.5 auto-merge is gated on it) ----------------------
+import os
+d.AUTONOMY = pathlib.Path(tempfile.mkdtemp()) / "AUTONOMY.json"
+check("no grant file -> autonomy off", d.load_autonomy() is None)
+d.AUTONOMY.write_text(json.dumps({"enabled": False, "target_branch": "integration"}))
+check("enabled:false -> autonomy off", d.load_autonomy() is None)
+d.AUTONOMY.write_text(json.dumps({"enabled": True, "target_branch": "integration",
+                                  "allowed_risk_class": ["low"], "main_human_only": True}))
+g = d.load_autonomy()
+check("enabled:true -> grant loaded, main stays human", g is not None and g.get("main_human_only") is True)
+
+print(f"\n{'PASS' if not fails else 'FAIL'}: dispatch parallelism + autonomy guards ({len(fails)} failed)")
 sys.exit(1 if fails else 0)
 PY

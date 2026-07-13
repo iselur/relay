@@ -1,0 +1,75 @@
+## Q1
+
+Claude’s bottom-line rejection of Val’s broad proposal is correct, but parts of the reasoning are overstated.
+
+The strongest case for Val is substantial:
+
+- Spec approval already performs the human intent check and is digest-bound.
+- CI, deterministic gates, and independent review handle correctness.
+- These PRs target `integration`, not production.
+- Repeated meaningless clicking trains rubber-stamping and creates false assurance.
+- Automating low-risk practice work would exercise the system more realistically and expose automation failures.
+
+That case survives—but only for a narrowly bounded `integration` experiment. It does not justify “auto-merge all PRs now and restore controls later,” especially not for `main`.
+
+“My job is meaningless” reveals both a labeling problem and a design smell. Val is not a code reviewer. But if spec approval and PR merge ask him to confirm the same intent without presenting any new release decision, the second gate is partly duplicative. A circuit breaker is valuable only if Val receives a comprehensible intent/release summary and is prepared to say no. Blind clicking provides pacing, but not meaningful intent validation.
+
+Claude got two things wrong:
+
+1. Auto-merging does **not** require a bypass actor. With zero required reviews, the orchestrator could perform a normal rules-compliant merge after `ci` passes. That violates current policy, not the GitHub ruleset.
+
+2. “No automation can replace owner intent” is too absolute. Human intent may be expressed earlier through exact, bounded preauthorization. What automation cannot legitimately do is grant itself that authority.
+
+Also, merging to `integration` is not the same as shipping to `main`. Claude should distinguish staging integration from production release authority.
+
+## Q2
+
+If Val wants a practice-phase autonomy experiment, the safest useful step is an exact, one-time auto-merge grant for specified digests into `integration`.
+
+The grant should bind:
+
+- Exact spec digests—not an open-ended “low risk” class.
+- Target branch `integration` only.
+- `risk_class: low`, `needs_network: false`.
+- Maximum PR count and expiration.
+- Required attempt status, bound reviewer PASS, and `ci` success.
+- PR head equal to the recorded worker commit.
+- `origin/integration` still equal to the attempt’s bound `base_sha` immediately before merge.
+
+The orchestrator would perform an ordinary merge, not “approve” its own PR. If the base moved, it refuses and launches a fresh attempt.
+
+This preserves human spec authorization, exact intent, all correctness gates, branch protection, and permanent human-only `main`. It breaks the current “Val merges every PR/orchestrator never merges” invariant and removes the per-PR human circuit breaker on `integration`; therefore Val must explicitly amend that policy.
+
+Alternatives:
+
+- Keep everything unchanged: preserves every current invariant and is safest, but does not test increased autonomy.
+- Preauthorize launches while retaining human merges: preserves the merge boundary but adds little—the existing digest approvals already do most of this.
+- Persistent auto-merge for a broad low-risk class: too open-ended for the MVP; defer to Gate 5.
+- Auto-merge to `main`: reject. It breaks the permanent release invariant.
+
+Do not touch `bypass_actors` for any option. No bypass is needed, and adding one weakens a useful hard control.
+
+## Q3
+
+Val must decide. That is not a cop-out.
+
+The agents should provide a forceful recommendation and may refuse to silently violate existing invariants, but they cannot authorize themselves to acquire Val’s release authority. Val can delegate it after understanding what is preserved and lost. Until he explicitly ratifies a policy amendment, Level 1 remains binding.
+
+## Q4
+
+The two-spec parallel run is sound, with an important ordering correction.
+
+1. Merge the SPEC-005 provenance PR **before** launching SPEC-007/008. Any merge into `integration` afterward changes their reviewed base.
+
+2. The SPEC-005 provenance set is internally consistent: its digest matches, its worker commit is merged, and all recorded raw hashes validate. However, there is currently **no** `.orchestrator/attempts/SPEC-005/1/manifest.json`. The provenance PR is incomplete unless that manifest is created. Include the spec, approval, launch/result/integrity/scope/review evidence, raw hash list, and manifest; exclude ignored raw logs and the unrelated G4 consultation files.
+
+3. After that PR merges and CI passes, create approval artifacts for:
+
+   - SPEC-007: `ce8f7ca451218bf86721634627f9fdcfd029ce4fd5dc4886f32dea7063b049dd`
+   - SPEC-008: `e813a8d2137d75bdf1bd44e5a56177608b83affb6506d502685aa036c174a911`
+
+   Attribute Val’s explicit approval, run reconciliation, confirm no live slots, then launch both.
+
+Two draft PRs are expected if `integration` remains unchanged while both run, although the trivial jobs may finish too quickly to observe two live units simultaneously.
+
+Finally, the stale-base guard only checks before PR creation. After the first worker PR merges, the second PR’s reviewer verdict is bound to an obsolete base. Unless a fresh attempt is run, it must not be merged. Required `ci` alone does not repair that bound-review problem. This is a real post-PR stale-base hole and should gate merging the second parallel PR, though it does not block the two-PR exercise itself.

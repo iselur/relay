@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "level": "1.5",
+  "ratified_by": "val",
+  "ratified_at": "2026-07-13",
+  "target_branch": "integration",
+  "main_human_only": true,
+  "allowed_risk_class": ["low"],
+  "needs_network_allowed": false,
+  "note": "Plan-scoped autonomy for THIS practice repo only (Val ratified 2026-07-13 via remote control). The orchestrator may merge in-scope worker/scaffolding PRs to `integration` without a per-PR human click, but ONLY via `dispatch merge`, which enforces every gate (attempt passed; bound reviewer PASS; ci green; PR head == reviewed worker_commit; base still == bound base_sha) fail-closed. `main` promotion stays human. Val reviews results after the fact; HALT (.orchestrator/HALT) pauses everything. Revoke by deleting this file or setting enabled=false. A different project gets its own policy decision - this grant does not transfer."
+}
