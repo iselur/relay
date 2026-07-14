@@ -36,6 +36,7 @@ launch = src.split("def cmd_launch", 1)[1]
 # isolation_available() call on the launch path IS the downgrade hole.
 checks = {
  "has_err_class": "ERR_NO_ISOLATION" in src and "isolation_unavailable" in src,
+ "refusal_before_preflight": 0 <= launch.find("REFUSING to launch") < launch.find("preflight("),
  "refusal_before_claim_slot": 0 <= launch.find("REFUSING to launch") < launch.find("claim_slot("),
  "refusal_before_attempt_dir": 0 <= launch.find("REFUSING to launch") < launch.find(".mkdir(parents=True"),
  "worktree_root_takes_decision": "def worktree_root(iso: bool | None = None)" in src,
@@ -49,7 +50,7 @@ for k, v in checks.items():
 PY
 )"
 
-for c in has_err_class refusal_before_claim_slot refusal_before_attempt_dir \
+for c in has_err_class refusal_before_preflight refusal_before_claim_slot refusal_before_attempt_dir \
          worktree_root_takes_decision launch_passes_frozen_decision \
          breakglass_is_explicit exposure_recorded worker_phase_refuses_untrusted_record; do
   if [ "${!c}" = "1" ]; then ok "$c"; else bad "$c"; fi

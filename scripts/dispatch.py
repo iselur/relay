@@ -693,12 +693,11 @@ def run_regression_gate(lc, wt, worker_commit, att, iso, ceiling_s) -> dict:
 
 # =============================================================== launch =======
 def cmd_launch(spec_id: str) -> None:
-    ctx = preflight(spec_id)
-    spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
-
-    # T2 (decision R26) — ISOLATION FAILS CLOSED. Selected ONCE, here, before the slot claim, the
-    # attempt directory, the worktree, and any worker-controlled code. Everything downstream is
-    # handed this decision; nothing recomputes it (a recomputation is a downgrade path).
+    # T2 (decision R26) — ISOLATION FAILS CLOSED. Selected ONCE, FIRST — before preflight, the
+    # slot claim, the attempt directory, the worktree, and any worker-controlled code. Everything
+    # downstream is handed this decision; nothing recomputes it (a recomputation is a downgrade
+    # path). First deliberately: a box that cannot isolate cannot launch ANY spec, so no other
+    # error (missing spec, missing approval) may mask this refusal.
     #
     # The old behaviour silently fell back to running worker code as the operator whenever D5 was
     # unavailable — with the operator's credentials, home, and network. That is the one catastrophe
@@ -720,6 +719,9 @@ def cmd_launch(spec_id: str) -> None:
         print("!!! UNISOLATED: worker code runs as the operator with full access to this host,\n"
               "!!! its credentials and its network. You asked for this (ORCH_ALLOW_UNISOLATED=1).\n"
               "!!! It is recorded in launch.json and in the reviewer's evidence.", file=sys.stderr)
+
+    ctx = preflight(spec_id)
+    spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
 
     n = next_attempt(spec_id)
     # Gate 4: remediation budget + stop-early + high-risk per-dispatch approval. Dies (recording

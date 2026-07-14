@@ -12,7 +12,7 @@ separation, approval schema, evidence hashing) are deliberately NOT here — the
 dual-validation and are handled on-box.
 
 ## Cloud-safe items (do ONE per run; skip if an open `auto/*` PR already exists)
-- [ ] **A. CI runs the real tests.** In `.github/workflows/ci.yml`: install pinned `pyyaml` +
+- [x] **A. CI runs the real tests.** In `.github/workflows/ci.yml`: install pinned `pyyaml` +
   `jsonschema` so `tests/dispatch_gate4.sh` / `dispatch_parallel.sh` / `worker_isolation.sh` actually
   execute instead of SKIP-passing; and add a top-level `permissions: contents: read` plus
   `persist-credentials: false` on `actions/checkout`. Acceptance: a CI run executes the dispatcher

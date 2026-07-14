@@ -4,6 +4,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
+# Two assertions below need pyyaml. CI installs it into .venv, not the system python — use the
+# venv when present (absolute path: this test cd's around) so the assertions actually run there.
+PY="python3"
+[ -x "$ROOT/.venv/bin/python" ] && PY="$ROOT/.venv/bin/python"
+"$PY" -c 'import yaml' 2>/dev/null || {
+  echo "SKIP codex_plan.sh: pyyaml absent (install scripts/requirements.txt)"
+  exit 77   # did NOT run — never a pass (T1)
+}
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
@@ -100,7 +109,7 @@ for phrase in \
   grep -qi "$phrase" "$prompt_file" || fail "default prompt missing: $phrase"
 done
 
-TASK="$long_task" PLAN="$run_dir/PLAN-008.md" python3 - <<'PY'
+TASK="$long_task" PLAN="$run_dir/PLAN-008.md" "$PY" - <<'PY'
 import datetime
 import os
 import re
@@ -176,7 +185,7 @@ popd >/dev/null
 [[ "$stdin_result" == *'.orchestrator/plans/PLAN-001.md'* ]] || fail "default output path missing"
 assert_file "$default_cwd/.orchestrator/plans/PLAN-001.md"
 grep -q 'task supplied on stdin' "$prompt_file" || fail "stdin task missing from prompt"
-PLAN="$default_cwd/.orchestrator/plans/PLAN-001.md" python3 - <<'PY'
+PLAN="$default_cwd/.orchestrator/plans/PLAN-001.md" "$PY" - <<'PY'
 import os
 from pathlib import Path
 

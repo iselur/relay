@@ -33,12 +33,14 @@ jobs:
       - name: Install pinned dependencies
         run: |
           python -m venv .venv
-          .venv/bin/pip install -r scripts/requirements.txt
+          .venv/bin/pip install --disable-pip-version-check -r scripts/requirements.txt
 
-      # ...and run STRICT: if any test still skips, CI goes RED instead of quietly green. In CI
-      # there is no legitimate skip — the deps are installed — so a skip means a broken environment,
-      # and a broken environment must not certify the code.
-      - name: Run tests (strict — a skip is a failure)
+      # ...and run STRICT: if any test still skips, CI goes RED instead of quietly green. The ONLY
+      # tolerated skips are the explicitly declared box-only tests below (they need the codex-worker
+      # user + systemd, which do not exist on a hosted runner). Declared and visible beats silently
+      # green: adding a test to this list is a reviewed decision, not a runner accident.
+      - name: Run tests (strict — a skip is a failure unless declared box-only)
         env:
           ORCH_TEST_STRICT: '1'
+          ORCH_TEST_STRICT_ALLOW_SKIP: 'tests/worker_isolation.sh'
         run: ./scripts/test

@@ -23,7 +23,12 @@ check() { # check <label> <expected> <actual>
 
 echo "== T1: SKIP != PASS attestation"
 
-out=$(python3 - <<'PY'
+# dispatch.py needs pyyaml/jsonschema at import time. CI installs them into .venv, not the system
+# python — use the venv when present so this test RUNS in CI instead of skip-looping forever.
+PY="python3"
+[ -x ".venv/bin/python" ] && PY=".venv/bin/python"
+
+out=$("$PY" - <<'PY'
 import importlib.util, pathlib, sys
 spec = importlib.util.spec_from_file_location("d", pathlib.Path("scripts/dispatch.py"))
 d = importlib.util.module_from_spec(spec)

@@ -31,7 +31,13 @@ summary="${ORCH_TEST_SUMMARY:-}"   # optional path: machine-readable results for
 # reports a green suite while asserting nothing — which is exactly how CI hid the SPEC-015 false
 # PASS for a week. In CI there is no excuse for a skip: the deps are installed, so anything that
 # skips is a broken environment, and a broken environment must not certify the code.
+#
+# ORCH_TEST_STRICT_ALLOW_SKIP: space-separated test paths that MAY skip even under strict — for
+# tests that genuinely cannot run off the box (e.g. worker_isolation.sh needs the codex-worker
+# user + systemd). The list lives in ci.yml where a reviewer sees it: a DECLARED exception, never
+# a silent one. They are still reported SKIP, never PASS.
 strict="${ORCH_TEST_STRICT:-0}"
+allow_skip=" ${ORCH_TEST_STRICT_ALLOW_SKIP:-} "
 failed=0
 skipped=0
 declare -a results=()
@@ -42,7 +48,11 @@ for t in "${tests[@]}"; do
   rc=$?
   case "$rc" in
     0)  echo "PASS $t";              results+=("PASS $t") ;;
-    77) echo "SKIP $t (did not run)"; results+=("SKIP $t"); skipped=$((skipped + 1)) ;;
+    77) echo "SKIP $t (did not run)"; results+=("SKIP $t")
+        case "$allow_skip" in
+          *" $t "*) echo "     (declared box-only: tolerated under strict)" ;;
+          *)        skipped=$((skipped + 1)) ;;
+        esac ;;
     *)  echo "FAIL $t (exit $rc)";   results+=("FAIL $t"); failed=1 ;;
   esac
 done
