@@ -14,7 +14,8 @@ command -v bwrap >/dev/null 2>&1 || { echo "SKIP worker_userns.sh: bwrap absent"
 id codex-worker >/dev/null 2>&1 || { echo "SKIP worker_userns.sh: codex-worker user absent"; exit 77; }
 sudo -n true 2>/dev/null || { echo "SKIP worker_userns.sh: passwordless sudo unavailable"; exit 77; }
 
-OP_HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
+OP_HOME=$(getent passwd "${ORCH_OPERATOR_USER:-$(id -un)}" | cut -d: -f6)
+[ -n "$OP_HOME" ] && [ -d "$OP_HOME" ] || { echo "SKIP worker_userns.sh: cannot resolve operator home"; exit 77; }
 fails=0
 ok()  { echo "  ok: $1"; }
 bad() { echo "  FAIL: $1"; fails=1; }
@@ -30,7 +31,7 @@ run_as_worker_root() { # $1 = shell snippet run as fake-root inside the namespac
 
 echo "== U1: worker with fake root in a user namespace cannot read the operator's credentials"
 for secret in "$OP_HOME/.config/gh/hosts.yml" "$OP_HOME/.claude.json" "$OP_HOME/.ssh/id_ed25519"; do
-  [ -e "$secret" ] || continue
+  [ -e "$secret" ] || { echo "  skip $secret — absent on this box (nothing proved, NOT a pass)"; continue; }
   out=$(run_as_worker_root "cat '$secret'")
   if printf '%s' "$out" | grep -qi 'permission denied\|no such file'; then
     ok "read $secret — denied"
