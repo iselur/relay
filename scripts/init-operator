@@ -56,19 +56,19 @@ else
   echo "  NOTE: set a repo-local git identity: git config --local user.name/user.email"
 fi
 
-# 6. Ensure an integration branch exists (template copies may be default-branch-only).
+# 6. Ensure a ready-for-main branch exists (template copies may be default-branch-only).
 git fetch --quiet origin 2>/dev/null || true
-if ! git show-ref --verify --quiet refs/heads/integration && \
-   ! git ls-remote --exit-code --heads origin integration >/dev/null 2>&1; then
-  git branch integration 2>/dev/null && git push -u origin integration 2>/dev/null \
-    && echo "  created integration from the default branch" \
-    || echo "  NOTE: create an 'integration' branch and protect it (see BOOTSTRAP.md)"
+if ! git show-ref --verify --quiet refs/heads/ready-for-main && \
+   ! git ls-remote --exit-code --heads origin ready-for-main >/dev/null 2>&1; then
+  git branch ready-for-main 2>/dev/null && git push -u origin ready-for-main 2>/dev/null \
+    && echo "  created ready-for-main from the default branch" \
+    || echo "  NOTE: create a 'ready-for-main' branch and protect it (see BOOTSTRAP.md)"
 fi
 
 cat <<'NEXT'
 
 DONE. Next (see BOOTSTRAP.md):
-  1. Protect main + integration (ruleset: require 'ci', require PRs, block force-push/deletion).
+  1. Protect main + ready-for-main (ruleset: require 'ci', require PRs, block force-push/deletion).
   2. Authenticate gh / codex / claude (interactive).
   3. Run scripts/setup-worker-user.sh, then bash tests/worker_isolation.sh (must all pass).
   4. Write + approve a spec, dispatch it, and merge the PR yourself.

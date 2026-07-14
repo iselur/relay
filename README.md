@@ -1,66 +1,60 @@
-# orchestrator — AI engineering manager using two vendors (claude and codex) to get you best results
+# Orchestrator
 
-**You bring the idea. One AI manages the work; another builds it.** You approve a small spec, a
-sandboxed worker implements it, hard checks and a reviewer from the other vendor judge the result,
-and a pull request lands for you. `main` is yours alone — always.
+This repo lets you get maximum from your Claude and Codex **subscriptions** 💸 (no API key needed) and
+makes two great models work together with minimum oversight.
 
-**New here?** Open **[how-it-works.html](how-it-works.html)** in a browser — one page, one diagram,
-the whole system.
+This setup sets **Claude** as **Orchestrator**👩‍🏫 that manages a task backlog while **Workers**👷 (**Codex**) handle the
+implementation. They can work for days without you, while the final merge remains yours.
 
-## The short version
+## How it works
 
-1. You drop an idea: one line, plus how you'll know it's done.
-2. The manager (Claude) grills it and writes a small spec. Risky work waits for your written
-   approval, tied to that exact spec — edit the spec and the approval is void.
-3. The worker (Codex) builds it in a sandbox: its own user, no access to your home or credentials,
-   no network during tests. No sandbox means no launch.
-4. Hard checks run before anyone opines: changes in scope, tests actually ran — a skipped test is
-   a failure, and the worker's word counts for nothing.
-5. A reviewer from the other vendor judges the exact diff, with no tools. Three rounds maximum,
-   then ship or escalate.
-6. A pull request lands on `integration` only with CI green. You merge to `main` by hand.
+Give Claude (Orchestrator) a task and it turns the request into a checked spec, then delegates the
+build to Workers (Codex). Claude and Codex inspect and challenge the results for up to three review
+rounds.
 
-## Why two vendors
+Once started, the system can continue autonomously while you are away. Its watchdog restarts work
+when the five-hour usage window ends or when backlog tasks are waiting. Every change must pass
+tests and verification.
 
-Models from the same vendor fail the same way, so the reviewer is never the author's vendor and
-nothing reviews its own work. Where a test can decide, the test outranks model agreement — two
-models agreeing is not evidence.
+Passing work becomes a pull request to `ready-for-main`. Only you can merge it to `main`.
 
-## Honest limits
+The [visual explanation](how-it-works.html) shows the whole process on one page.
 
-The sandbox protects *your* credentials; it is not perfect. The worker holds its own login and has
-network while building, approval files record intent rather than prove it, and the test grade is
-not yet safe against a deliberately malicious worker. `SECURITY.md` states exactly what holds (with
-the test that proves it) and what does not hold yet; the fixes are queued in the backlog.
-
-## Quick start
-
-You need: an **Ubuntu 24.04** VPS, **Claude Code** installed on it, **Claude** and **Codex**
-subscriptions, a **GitHub repo** you own, and (recommended) **Tailscale** for private SSH.
-
-1. Click **"Use this template"** (default branch only) and clone your new repo onto the VPS.
-2. In Claude Code on the box, paste:
-
-   ```
-   Read BOOTSTRAP.md and set me up gate by gate, pausing at each human step.
-   ```
-
-It stops at the steps only you can do: provisioning, branch protection, and the Claude/Codex
-logins.
-
-## What's in here
-
-| Path | What it is |
+| Who | Job |
 |---|---|
-| `how-it-works.html` | the one-page visual explanation |
-| `scripts/dispatch.py` / `scripts/dispatch` | launch, checks, review, merge, health, reconcile |
-| `scripts/intake` | task gate: no work without a goal and a checkable definition of done |
-| `scripts/review` / `scripts/codex-plan` | bounded cross-vendor review (3 rounds max) / tiered plans |
-| `scripts/setup-worker-user.sh` | one-time privileged host setup for worker isolation |
-| `CLAUDE.md` / `AGENTS.md` / `SECURITY.md` | operating rules, role-to-model map, honest security model |
-| `specs/`, `.orchestrator/` | specs and the tracked approval/attempt records |
-| `tests/` | the repo suite, including isolation drills and the prose caps |
+| Human (You) | Chooses the work and alone merges to `main` |
+| Orchestrator (Claude) | Manages tasks and delegates them |
+| Worker (Codex) | Builds the requested changes |
+| Both agents | Review and challenge the work |
 
-## License
+## How to make it autonomous 🔄
+
+Autonomy by default is off (as a precaution).
+To let the orchestrator (Claude) merge gated worker pull requests to `ready-for-main` without a
+per-PR click, create `.orchestrator/AUTONOMY.local.json` as described in BOOTSTRAP.md step 7.
+The owner (you) is always the only one who merges `main`.
+
+## How to set it up
+
+Get the cheapest Hetzner shared VM — about $7/month is enough.
+Install Tailscale, tmux, and Claude Code on it.
+Have two subscriptions and log in for orchestrator (Claude) and worker (Codex).
+Have a GitHub repository you own.
+
+Then:
+
+1. Create the repository from this template.
+2. Clone it onto the VM.
+3. Open Claude Code in the clone and paste:
+
+```text
+Read BOOTSTRAP.md and set me up gate by gate, pausing at each human step.
+```
+
+BOOTSTRAP.md handles the setup in order and pauses whenever the owner (you) must act.
+
+## Names used here
+
+The roles are always owner (you), orchestrator (Claude), and worker (Codex).
 
 MIT — see [LICENSE](LICENSE).

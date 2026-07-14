@@ -11,7 +11,7 @@ Claude can't do. Everything else Claude runs and verifies.
 - **[HUMAN]** (Recommended) **Tailscale** on the box and your laptop/phone; put SSH on the tailnet only and close all public ports.
 - **[HUMAN]** **Claude Code** installed on the box and logged into your **Claude** subscription (not an API key).
 - **[HUMAN]** A **Codex** subscription; you'll do the device-auth login when prompted.
-- **[HUMAN]** A **GitHub repo you own** (the one you created from this template). Protect `main` and `integration` with a ruleset: require the `ci` check, require PRs, block force-push and deletion, no bypass actors.
+- **[HUMAN]** A **GitHub repo you own** (the one you created from this template). Protect `main` and `ready-for-main` with a ruleset: require the `ci` check, require PRs, block force-push and deletion, no bypass actors.
 
 ## 1. Toolchain (Claude)
 
@@ -23,7 +23,7 @@ Python venv and install `scripts/requirements.txt`. Enable systemd linger for yo
 
 Run **`scripts/init-operator`**. It is safe by default: it refuses to run against the original
 template remote, generates a fresh per-instance identity, sets a **repo-local** git identity, leaves
-autonomy **disabled**, clears the example owner state, and ensures an `integration` branch exists.
+autonomy **disabled**, clears the example owner state, and ensures an `ready-for-main` branch exists.
 Review its output.
 
 ## 3. GitHub auth + CI (Claude, with human for the login)
@@ -56,7 +56,7 @@ merge it.
 ## 7. Optional: plan-scoped autonomy
 
 Autonomy ships **disabled**. If (and only if) you want the orchestrator to merge in-scope PRs to
-`integration` without a per-PR click, create `.orchestrator/AUTONOMY.local.json` (gitignored) with
+`ready-for-main` without a per-PR click, create `.orchestrator/AUTONOMY.local.json` (gitignored) with
 your ratified grant. `main` stays human-only regardless. Read the autonomy line in `CLAUDE.md`'s
 safety invariants first.
 

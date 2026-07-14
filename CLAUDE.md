@@ -46,7 +46,7 @@ holds the commands; SECURITY.md says what the protections do and do not prove.
 
 ## Safety invariants (never violate)
 
-- Only the owner changes `main`. `integration` changes only through a pull request with `ci` green.
+- Only the owner changes `main`. `ready-for-main` changes only through a pull request with `ci` green.
 - Workers run as a separate identity that cannot reach the owner's home, and their tests have no
   network. No isolation means no launch: nothing is created, nothing runs. `ORCH_ALLOW_UNISOLATED=1`
   is full exposure, needs the owner's explicit instruction, and its use is recorded — though the

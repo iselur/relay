@@ -61,25 +61,25 @@ tmp = pathlib.Path(tempfile.mkdtemp())
 def sh(*a, cwd): subprocess.run(a, cwd=str(cwd), check=True, capture_output=True)
 def out(*a, cwd): return subprocess.run(a, cwd=str(cwd), check=True, capture_output=True, text=True).stdout.strip()
 origin, work = tmp/"origin.git", tmp/"work"
-sh("git","init","--bare","-b","integration",str(origin), cwd=tmp)
-sh("git","init","-b","integration",str(work), cwd=tmp)
+sh("git","init","--bare","-b","ready-for-main",str(origin), cwd=tmp)
+sh("git","init","-b","ready-for-main",str(work), cwd=tmp)
 sh("git","config","user.email","t@t", cwd=work); sh("git","config","user.name","t", cwd=work)
 sh("git","remote","add","origin",str(origin), cwd=work)
 (work/"a.txt").write_text("1\n"); sh("git","add","-A", cwd=work); sh("git","commit","-qm","base", cwd=work)
-sh("git","push","-q","origin","integration", cwd=work)
+sh("git","push","-q","origin","ready-for-main", cwd=work)
 base_sha = out("git","rev-parse","HEAD", cwd=work)
 
-cur, moved = d.base_moved(work, "integration", base_sha)
+cur, moved = d.base_moved(work, "ready-for-main", base_sha)
 check("unchanged base -> not stale", (moved is False) and cur == base_sha)
 
-# a sibling integrates: advance origin/integration from a second clone
-sib = tmp/"sib"; sh("git","clone","-q","-b","integration",str(origin),str(sib), cwd=tmp)
+# a sibling integrates: advance origin/ready-for-main from a second clone
+sib = tmp/"sib"; sh("git","clone","-q","-b","ready-for-main",str(origin),str(sib), cwd=tmp)
 sh("git","config","user.email","s@s", cwd=sib); sh("git","config","user.name","s", cwd=sib)
 (sib/"b.txt").write_text("2\n"); sh("git","add","-A", cwd=sib); sh("git","commit","-qm","sibling", cwd=sib)
-sh("git","push","-q","origin","integration", cwd=sib)
+sh("git","push","-q","origin","ready-for-main", cwd=sib)
 new_tip = out("git","rev-parse","HEAD", cwd=sib)
 
-cur2, moved2 = d.base_moved(work, "integration", base_sha)
+cur2, moved2 = d.base_moved(work, "ready-for-main", base_sha)
 check("advanced base -> stale, reports new tip", (moved2 is True) and cur2 == new_tip)
 
 # --- Guard 3: autonomy grant loader (Level 1.5 auto-merge is gated on it) ----------------------
@@ -88,9 +88,9 @@ _atmp = pathlib.Path(tempfile.mkdtemp())
 d.AUTONOMY = _atmp / "AUTONOMY.json"
 d.AUTONOMY_LOCAL = _atmp / "AUTONOMY.local.json"   # isolate the gitignored local override too
 check("no grant file -> autonomy off", d.load_autonomy() is None)
-d.AUTONOMY.write_text(json.dumps({"enabled": False, "target_branch": "integration"}))
+d.AUTONOMY.write_text(json.dumps({"enabled": False, "target_branch": "ready-for-main"}))
 check("enabled:false -> autonomy off", d.load_autonomy() is None)
-d.AUTONOMY.write_text(json.dumps({"enabled": True, "target_branch": "integration",
+d.AUTONOMY.write_text(json.dumps({"enabled": True, "target_branch": "ready-for-main",
                                   "allowed_risk_class": ["low"], "main_human_only": True}))
 g = d.load_autonomy()
 check("enabled:true -> grant loaded, main stays human", g is not None and g.get("main_human_only") is True)

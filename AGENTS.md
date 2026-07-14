@@ -22,14 +22,14 @@ untouched → in scope → tests actually ran → cross-vendor review), and open
 - **Dispatcher:** Python 3 (`scripts/dispatch.py`), venv in `.venv/` (gitignored), deps pinned in
   `scripts/requirements.txt`. Thin bash wrapper `scripts/dispatch`.
 - **Repo tests / CI:** bash. The test command is `./scripts/test` (runs `tests/*.sh`); the CI job
-  is named exactly `ci` (required check on `main` and `integration` — never rename or add a matrix).
+  is named exactly `ci` (required check on `main` and `ready-for-main` — never rename or add a matrix).
 
 ## Conventions
 
 - Specs: `specs/SPEC-NNN.yaml`, schema `specs/spec.schema.json`. Immutable once approved; never
   regex-parsed. Approval files in `.orchestrator/approvals/<digest>.json`.
-- Branches: worker branches `codex/SPEC-NNN-<attempt>`; PRs target `integration`; only the owner
-  promotes `integration` → `main`. Both protected by ruleset.
+- Branches: worker branches `codex/SPEC-NNN-<attempt>`; PRs target `ready-for-main`; only the owner
+  promotes `ready-for-main` → `main`. Both protected by ruleset.
 - Worker isolation: the worker and the gate tests run as the `codex-worker` user in hardened systemd
   services; worktrees under `/srv/codexwork/worktrees`. Setup: `scripts/setup-worker-user.sh`.
   Proof: `tests/worker_isolation.sh`, `tests/worker_userns.sh`.

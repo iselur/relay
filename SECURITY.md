@@ -20,7 +20,7 @@ proves them), **configured assumptions** (set up outside this repo, verified man
 
 ## Configured assumptions (outside this repo; verify during bootstrap and after any GitHub change)
 
-- Direct pushes to `main` are rejected; `integration` requires a PR with the `ci` check green —
+- Direct pushes to `main` are rejected; `ready-for-main` requires a PR with the `ci` check green —
   GitHub ruleset, not a repo test.
 - Ubuntu's `bwrap-userns-restrict` AppArmor profile is installed and enforcing (host setup, not a
   repo test — `tests/worker_userns.sh` fails if it is absent). It lets Codex build its own sandbox
