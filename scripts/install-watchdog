@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Installs (or removes) the auto-resume watchdog's systemd --user units and local config
+# (R39 brief, host-activation gate). Installing NEVER enables: activation is the owner's own
+# separate step, because new safety machinery may not switch itself on —
+#   systemctl --user enable --now orchestrator-watchdog.timer
+# Uninstall removes only files this installer marked as its own.
+set -euo pipefail
+
+ROOT="${ORCH_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+WD="${ORCH_WATCHDOG_DIR:-$ROOT/.orchestrator/watchdog}"
+UNIT_DIR="${ORCH_UNIT_DIR:-$HOME/.config/systemd/user}"
+MARK="# rendered by scripts/install-watchdog — safe to remove via: scripts/install-watchdog uninstall"
+
+die() { echo "install-watchdog: $*" >&2; exit 1; }
+
+render() { # $1 unit name, $2 content — refuses to clobber a unit some OTHER thing owns
+  local f="$UNIT_DIR/$1"
+  if [ -e "$f" ] && ! grep -qF "$MARK" "$f"; then
+    die "$f exists and was not rendered by this installer; refusing to overwrite it"
+  fi
+  printf '%s\n' "$2" > "$f"
+  echo "rendered $f"
+}
+
+case "${1:-install}" in
+  install)
+    for dep in tmux flock curl date uuidgen claude systemctl; do
+      command -v "$dep" >/dev/null 2>&1 || die "missing dependency: $dep"
+    done
+    linger=$(loginctl show-user "$USER" -p Linger 2>/dev/null || true)
+    [ "$linger" = "Linger=yes" ] || die "user lingering is off ($linger); the timer would die at logout. Owner enables it with: sudo loginctl enable-linger $USER"
+
+    mkdir -p "$WD" "$UNIT_DIR"
+    chmod 700 "$WD"
+    if [ ! -e "$WD/env" ]; then
+      cat > "$WD/env" <<'EOF'
+# Local watchdog config (mode 600, never tracked). Sourced by scripts/watchdog.
+IDLE_ALERT_SECONDS=21600
+# observe: never send post-reset input (required until the natural-limit follow-up row closes
+# and the owner approves 'active' — R39 brief, gate 9).
+USAGE_RETRY_MODE=observe
+# External alert delivery (owner-approved channel, alert-channel gate). Local ALERT records and
+# journal lines happen regardless; leave these unset until the owner picks the channel.
+#ALERT_URL=
+#ALERT_TOKEN=
+EOF
+      chmod 600 "$WD/env"
+      echo "wrote default $WD/env"
+    fi
+    [ "$(stat -c %a "$WD/env")" = "600" ] || die "$WD/env must be mode 600"
+    grep -q '^USAGE_RETRY_MODE=observe' "$WD/env" || echo "NOTE: USAGE_RETRY_MODE is not 'observe'; activation requires the follow-up gate" >&2
+
+    render orchestrator-watchdog.service "$MARK
+[Unit]
+Description=Orchestrator auto-resume watchdog check (zero-quota, bash-only)
+
+[Service]
+Type=oneshot
+ExecStart=$ROOT/scripts/watchdog check"
+
+    render orchestrator-watchdog.timer "$MARK
+[Unit]
+Description=Run the orchestrator watchdog every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target"
+
+    if command -v systemd-analyze >/dev/null 2>&1; then
+      systemd-analyze verify "$UNIT_DIR/orchestrator-watchdog.service" "$UNIT_DIR/orchestrator-watchdog.timer" \
+        || die "systemd-analyze rejected the rendered units"
+    fi
+    systemctl --user daemon-reload
+    echo "installed but NOT enabled. Owner activates with:"
+    echo "  systemctl --user enable --now orchestrator-watchdog.timer"
+    ;;
+  uninstall)
+    systemctl --user disable --now orchestrator-watchdog.timer orchestrator-watchdog.service 2>/dev/null || true
+    for u in orchestrator-watchdog.service orchestrator-watchdog.timer; do
+      f="$UNIT_DIR/$u"
+      [ -e "$f" ] || continue
+      grep -qF "$MARK" "$f" || { echo "leaving $f: not rendered by this installer" >&2; continue; }
+      rm -f "$f"; echo "removed $f"
+    done
+    systemctl --user daemon-reload
+    echo "uninstalled (local state under $WD left in place; remove it manually after diagnosis)"
+    ;;
+  *) echo "usage: install-watchdog [install|uninstall]" >&2; exit 2 ;;
+esac

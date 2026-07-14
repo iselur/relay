@@ -108,6 +108,43 @@ stale_out=$(scripts/intake stale 2>&1); rc=$?
   || bad "a row with a forged extra cell evaded stale (rc=$rc)"
 sed -i '$d' "$LEDGER"
 
+# --- watchdog-state (R39: the ONE machine predicate the auto-resume watchdog trusts) ------------
+# 19. Open actionable row -> PENDING; --ids names it; the id list never invents rows.
+printf '%s\n' '| id | date | request | lane | plan-ref | status | completion-evidence |' > "$LEDGER"
+printf '| R3 | 07-14 | some open work | — | — | open | DONE WHEN: checked |\n' >> "$LEDGER"
+[ "$(scripts/intake watchdog-state)" = "PENDING" ] && ok "open row -> PENDING" || bad "open row not PENDING"
+[ "$(scripts/intake watchdog-state --ids)" = "PENDING R3" ] && ok "--ids names the actionable row" || bad "--ids wrong: $(scripts/intake watchdog-state --ids)"
+
+# 20. All rows done -> IDLE.
+printf '%s\n' '| id | date | request | lane | plan-ref | status | completion-evidence |' > "$LEDGER"
+printf '| R3 | 07-14 | finished work | — | — | done | shipped |\n' >> "$LEDGER"
+[ "$(scripts/intake watchdog-state)" = "IDLE" ] && ok "all-done ledger -> IDLE" || bad "all-done not IDLE"
+
+# 21. An observation row (open, lane=observe) stays visible to stale but is NOT actionable:
+# waiting on an external event must neither launch sessions nor ring six-hour alerts.
+printf '| R4 | 07-14 | await natural usage limit | observe | — | open | DONE WHEN: fixture captured |\n' >> "$LEDGER"
+[ "$(scripts/intake watchdog-state)" = "IDLE" ] && ok "observe row excluded from watchdog-state" || bad "observe row counted as actionable"
+if scripts/intake stale >/dev/null 2>&1; then bad "observe row invisible to stale"; else ok "observe row still visible to stale"; fi
+
+# 22. A malformed ledger is INDETERMINATE (exit 3), never IDLE: unreadable is not 'no work'.
+printf 'garbage outside the table\n' >> "$LEDGER"
+out=$(scripts/intake watchdog-state); rc=$?
+[ "$out" = "INDETERMINATE" ] && [ "$rc" -eq 3 ] && ok "malformed ledger -> INDETERMINATE, exit 3" || bad "malformed ledger gave '$out' rc=$rc"
+sed -i '$d' "$LEDGER"
+
+# --- observe designation (owner-gated; the watchdog and resumed sessions may never do this) ------
+# 23. observe requires an open row and real evidence; it flips only the lane cell.
+if scripts/intake observe R4 "short" 2>/dev/null; then bad "observe accepted thin evidence"; else ok "observe refuses thin evidence"; fi
+if scripts/intake observe R99 "owner approved on 2026-07-14" 2>/dev/null; then bad "observe accepted a missing row"; else ok "observe refuses a missing row"; fi
+printf '| R5 | 07-14 | closed row | — | — | done | shipped |\n' >> "$LEDGER"
+if scripts/intake observe R5 "owner approved on 2026-07-14" 2>/dev/null; then bad "observe accepted a done row"; else ok "observe refuses a done row"; fi
+printf '| R6 | 07-14 | to be observed | — | — | open | DONE WHEN: event seen |\n' >> "$LEDGER"
+scripts/intake observe R6 "owner approved on 2026-07-14, natural-limit capture" >/dev/null 2>&1 \
+  && ok "observe accepted with owner evidence" || bad "observe refused valid input"
+grep -q '^| R6 | .* | observe | .* | open |.*OBSERVE (owner):' "$LEDGER" \
+  && ok "observe set the lane and recorded the evidence" || bad "observe row not updated correctly"
+[ "$(scripts/intake watchdog-state)" = "IDLE" ] && ok "newly observed row no longer actionable" || bad "observed row still actionable"
+
 # --- first use ----------------------------------------------------------------------------------
 # 14. Header-only ledger (fresh box): first intake must work and mint R1. This exact case used to
 # crash (grep no-match + pipefail + set -e) before any id was minted.

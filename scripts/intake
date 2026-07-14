@@ -9,6 +9,10 @@
 #   scripts/intake -g "one-line goal" -d "done when <checkable criterion>"   # open; prints new id
 #   scripts/intake close <id> "<completion evidence>"                        # open -> done
 #   scripts/intake stale             # list rows not yet done; exit 1 if any (run at session end)
+#   scripts/intake watchdog-state [--ids]  # machine predicate: PENDING | IDLE | INDETERMINATE
+#   scripts/intake observe <id> "<owner approval evidence>"  # mark an open row as external
+#                                    # observation: still open, still shown by stale, but
+#                                    # excluded from watchdog-state (owner-gated; R39 brief)
 # The ledger is private (gitignored); it is created with a header on first use.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -91,6 +95,60 @@ case "${1:-}" in
         echo "INTAKE INTERNAL ERROR: stale check failed to run (awk exit $rc)" >&2
         exit 1 ;;
     esac
+    ;;
+  watchdog-state)
+    # The ONE machine predicate the auto-resume watchdog trusts (R39 brief): the watchdog never
+    # parses the ledger itself. Exactly one word on stdout — PENDING (an actionable open row
+    # exists), IDLE (none), INDETERMINATE (the ledger cannot be trusted: malformed is never
+    # silently "no work"). --ids appends the actionable open ids to the PENDING line.
+    # Open rows whose lane is 'observe' are waiting on an EXTERNAL event the box cannot cause;
+    # they stay visible to `stale` but do not count as actionable here.
+    ids_mode=0
+    [ "${2:-}" = "--ids" ] && ids_mode=1
+    rc=0
+    out=$(awk -F'|' '
+      /^\| id \|/ || /^\|[-| ]+\|$/ || /^[[:space:]]*$/ { next }
+      {
+        if ($0 !~ /^\| R[0-9]+ \|/ || NF != 9) { bad = 1; next }
+        status = $7; gsub(/^[[:space:]]+|[[:space:]]+$/, "", status)
+        if (status != "open" && status != "done") { bad = 1; next }
+        lane = $5; gsub(/^[[:space:]]+|[[:space:]]+$/, "", lane)
+        if (status == "open" && lane != "observe") {
+          id = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", id)
+          ids = ids " " id
+        }
+      }
+      END {
+        if (bad)       { print "INDETERMINATE"; exit 3 }
+        if (ids != "") { print "PENDING" ids } else { print "IDLE" }
+      }
+    ' "$LEDGER") || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then out="INDETERMINATE"; rc=3; fi
+    if [ "$ids_mode" -eq 1 ]; then printf '%s\n' "$out"; else printf '%s\n' "${out%% *}"; fi
+    if [ "$rc" -eq 3 ]; then exit 3; fi
+    ;;
+  observe)
+    id="${2:-}" evidence="${3:-}"
+    [ -n "$id" ] || fail "observe needs an id: scripts/intake observe R40 \"<owner approval evidence>\""
+    check_field "observation evidence" "$evidence"
+    [ "${#evidence}" -ge 10 ] || fail "observation evidence too thin — name the external event and the owner approval"
+    grep -q "^| $id " "$LEDGER" || fail "no ledger row for $id"
+    grep -q "^| $id .*| open |" "$LEDGER" || fail "$id is not open (only open rows can become observation rows)"
+    tmp=$(mktemp)
+    awk -F'|' -v OFS='|' -v id="$id" -v ev="$evidence" '
+      NF == 9 {
+        cur = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", cur)
+        st  = $7; gsub(/^[[:space:]]+|[[:space:]]+$/, "", st)
+        if (cur == id && st == "open") {
+          $5 = " observe "
+          sub(/[[:space:]]+$/, "", $8)
+          $8 = $8 "; OBSERVE (owner): " ev " "
+        }
+      }
+      { print }
+    ' "$LEDGER" > "$tmp"
+    mv "$tmp" "$LEDGER"
+    echo "$id is now an observation row (open, visible to stale, excluded from watchdog-state)"
     ;;
   open|-*|"")
     [ "${1:-}" = "open" ] && shift
