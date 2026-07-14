@@ -58,7 +58,7 @@ step of the post-audit hardening, then stop. Rules (from CLAUDE.md, binding):
   writing, get an adversarial SOL design review, then implement via a Codex worker spec (or directly if
   it is orchestrator control-plane), gate it, review it, and open a PR.
 - NEVER merge a high-risk PR autonomously and NEVER touch `main`. Low-risk PRs may auto-merge to
-  integration under the Level 1.5 grant only if all gates pass. Anything trust-critical: open the PR and
+  ready-for-main under the Level 1.5 grant only if all gates pass. Anything trust-critical: open the PR and
   STOP for human authorization.
 - If a step needs a decision only the operator can make, or you are unsure, STOP and write a short note
   to .orchestrator/continue-logs/NEXT.md instead of guessing.
