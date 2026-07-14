@@ -1,14 +1,14 @@
 # Orchestrator
 
-This repo lets you get maximum from your Claude and Codex subscriptions (no API key needed) and
+This repo lets you get maximum from your Claude and Codex **subscriptions** 💸 (no API key needed) and
 makes two great models work together with minimum oversight.
 
-This setup sets Claude as Orchestrator that manages a task backlog while Workers (Codex) handle the
+This setup sets **Claude** as **Orchestrator**👩‍🏫 that manages a task backlog while **Workers**👷 (**Codex**) handle the
 implementation. They can work for days without you, while the final merge remains yours.
 
 ## How it works
 
-Give Claude (orchestrator) a task and it turns the request into a checked spec, then delegates the
+Give Claude (Orchestrator) a task and it turns the request into a checked spec, then delegates the
 build to Workers (Codex). Claude and Codex inspect and challenge the results for up to three review
 rounds.
 
@@ -22,12 +22,12 @@ The [visual explanation](how-it-works.html) shows the whole process on one page.
 
 | Who | Job |
 |---|---|
-| Human | Chooses the work and alone merges to `main` |
+| Human (You) | Chooses the work and alone merges to `main` |
 | Orchestrator (Claude) | Manages tasks and delegates them |
 | Worker (Codex) | Builds the requested changes |
 | Both agents | Review and challenge the work |
 
-## How to make it autonomous
+## How to make it autonomous 🔄
 
 Autonomy by default is off (as a precaution).
 To let the orchestrator (Claude) merge gated worker pull requests to `ready-for-main` without a
