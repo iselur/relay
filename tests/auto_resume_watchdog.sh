@@ -432,6 +432,21 @@ run_wd                                             # fresh launch
 grep -q -- '--session-id 00000000-0000-4000-8000-000000000002' <(keys) && ok "relaunched fresh with a NEW id" || bad "relaunch did not mint a new id"
 [ "$(cat "$WDIR/launched" 2>/dev/null)" = "00000000-0000-4000-8000-000000000002" ] && ok "launched marker matches the new id" || bad "launched marker wrong"
 
+echo "== W17c: failed kill-session during teardown -> state retained, retried, never read as corrupt"
+reset; open_row
+export FAKE_TMUX_FAIL=send-keys
+run_wd                                             # incomplete launch (session up, prompt undelivered)
+export FAKE_TMUX_FAIL=kill-session
+run_wd                                             # teardown attempt fails
+[ -e "$TS/sessions/orch-auto" ] && ok "failed kill left the session (as simulated)" || bad "test setup broken: session vanished"
+[ -e "$WDIR/session-id" ] && ok "failed teardown kept the recorded id" || bad "id dropped despite surviving session"
+[ ! -e "$WDIR/ALERT-corrupt-session-id" ] && ok "failed teardown never read as corrupt state" || bad "failed teardown raised corrupt-session-id"
+unset FAKE_TMUX_FAIL
+run_wd                                             # teardown retried and succeeds
+[ ! -e "$TS/sessions/orch-auto" ] && [ ! -e "$WDIR/session-id" ] && ok "teardown retried and completed" || bad "teardown retry failed"
+run_wd                                             # fresh launch
+grep -q -- '--session-id' <(keys) && ok "recovery completed with a fresh launch" || bad "no relaunch after retried teardown"
+
 echo "== W12c (e): HALT landing AFTER session creation -> no prompt, then clean teardown and relaunch"
 reset; open_row
 export FAKE_TMUX_MAKE_HALT_ON=new-session FAKE_TMUX_HALT_PATH="$R/.orchestrator/HALT"

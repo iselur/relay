@@ -146,9 +146,15 @@ respawn() {
   # session down instead; the next tick launches fresh with a new id.
   if [ "$(get "$WD/launched")" != "$sid" ]; then
     halted && return 0
-    tmux kill-session -t "$SESSION" 2>/dev/null
-    rm -f "$WD/session-id"
-    note "incomplete launch detected (id $sid never received its prompt); removed the empty session, will relaunch next tick"
+    # The id is dropped only once the empty session is verifiably gone: dropping it while the
+    # session survives a failed kill would read as corrupt-session-id next tick and permanently
+    # refuse recovery. A failed teardown keeps the state and simply retries next tick.
+    if tmux kill-session -t "$SESSION" 2>/dev/null || ! session_exists; then
+      rm -f "$WD/session-id"
+      note "incomplete launch detected (id $sid never received its prompt); removed the empty session, will relaunch next tick"
+    else
+      note "incomplete launch detected but kill-session failed; keeping state, will retry teardown next tick"
+    fi
     return 0
   fi
   # A respawn storm (claude dying instantly every tick) refreshes last-run each time and would
