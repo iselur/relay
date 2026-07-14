@@ -245,4 +245,21 @@ PATH="$tmp/bin:$PATH" \
   || fail "a 150-line body (exactly at the cap) was refused"
 assert_file "$run_dir/PLAN-013.md"
 
+# Same exact boundaries WITH a terminal newline — both spellings of "150 lines" must agree.
+if PATH="$tmp/bin:$PATH" \
+  CODEX_STUB_ARGS="$args_file" \
+  CODEX_STUB_PROMPT="$prompt_file" \
+  CODEX_STUB_STDOUT="$oversized"$'\n' \
+    scripts/codex-plan --out "$run_dir" 'oversized plan, terminated' >/dev/null 2>&1; then
+  fail "a newline-terminated 151-line body was accepted (cap is 150)"
+fi
+assert_no_file "$run_dir/PLAN-014.md"
+PATH="$tmp/bin:$PATH" \
+  CODEX_STUB_ARGS="$args_file" \
+  CODEX_STUB_PROMPT="$prompt_file" \
+  CODEX_STUB_STDOUT="$at_cap"$'\n' \
+    scripts/codex-plan --out "$run_dir" 'plan at the cap, terminated' >/dev/null \
+  || fail "a newline-terminated 150-line body was refused"
+assert_file "$run_dir/PLAN-015.md"
+
 echo "PASS codex_plan.sh"
