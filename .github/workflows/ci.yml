@@ -5,6 +5,9 @@ on:
   push:
     branches: [main, integration]
 
+permissions:
+  contents: read
+
 # The job key AND its name must both be exactly `ci`: the branch ruleset on
 # `main` and `integration` requires a status check with the context `ci`, and
 # GitHub Actions derives that context from the job name. Renaming this job, or
@@ -16,5 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up dispatcher venv
+        # dispatch_gate4.sh / dispatch_parallel.sh look for .venv/bin/python with
+        # pyyaml + jsonschema importable; without it they SKIP LOUDLY instead of
+        # running. Installing the pinned deps here lets them execute for real.
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --disable-pip-version-check -r scripts/requirements.txt
       - name: Run tests
         run: ./scripts/test
