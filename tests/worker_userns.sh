@@ -16,6 +16,12 @@ sudo -n true 2>/dev/null || { echo "SKIP worker_userns.sh: passwordless sudo una
 
 OP_HOME=$(getent passwd "${ORCH_OPERATOR_USER:-$(id -un)}" | cut -d: -f6)
 [ -n "$OP_HOME" ] && [ -d "$OP_HOME" ] || { echo "SKIP worker_userns.sh: cannot resolve operator home"; exit 77; }
+
+# Owner-only sentinel so U1 always executes at least one read assertion, even on a box where
+# every listed credential file is absent (round-1 review: zero assertions must never PASS).
+SENT="$OP_HOME/.userns-drill-sentinel"
+echo "userns-sentinel" > "$SENT" && chmod 600 "$SENT" || { echo "FAIL cannot create sentinel"; exit 1; }
+trap 'rm -f "$SENT"' EXIT
 fails=0
 ok()  { echo "  ok: $1"; }
 bad() { echo "  FAIL: $1"; fails=1; }
@@ -30,7 +36,7 @@ run_as_worker_root() { # $1 = shell snippet run as fake-root inside the namespac
 }
 
 echo "== U1: worker with fake root in a user namespace cannot read the operator's credentials"
-for secret in "$OP_HOME/.config/gh/hosts.yml" "$OP_HOME/.claude.json" "$OP_HOME/.ssh/id_ed25519"; do
+for secret in "$SENT" "$OP_HOME/.config/gh/hosts.yml" "$OP_HOME/.claude.json" "$OP_HOME/.ssh/id_ed25519"; do
   [ -e "$secret" ] || { echo "  skip $secret — absent on this box (nothing proved, NOT a pass)"; continue; }
   out=$(run_as_worker_root "cat '$secret'")
   if printf '%s' "$out" | grep -qi 'permission denied\|no such file'; then

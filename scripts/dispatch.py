@@ -527,15 +527,158 @@ ISO_WORKTREES = Path("/srv/codexwork/worktrees")
 CODEX_PKG = OPERATOR_HOME / ".local/lib/node_modules/@openai/codex"  # npm layout; bind-mounted RO to /opt/codex
 
 
+def _group_is_private(gid: int) -> bool:
+    """True iff gid is the operator's PRIMARY group AND nobody but the operator belongs to it.
+    Ubuntu's user-private-group scheme (umask 002) makes npm-installed files 664 with exactly
+    such a group; anything looser fails. Membership is checked from BOTH sides (round-4 review):
+    gr_mem lists supplementary members, but a user whose PRIMARY gid is this group never appears
+    there — so passwd is also scanned. The worker must not be a member either way."""
+    import grp
+    import pwd
+    try:
+        g = grp.getgrgid(gid)
+        op = pwd.getpwuid(os.getuid())
+    except KeyError:
+        return False
+    if gid != op.pw_gid or any(m != op.pw_name for m in g.gr_mem):
+        return False
+    try:
+        for u in pwd.getpwall():   # users whose PRIMARY group is this gid (absent from gr_mem)
+            if u.pw_gid == gid and u.pw_name != op.pw_name:
+                return False
+    except OSError:
+        return False
+    try:
+        if pwd.getpwnam(WORKER_USER).pw_gid == gid:
+            return False
+    except KeyError:
+        pass
+    return True
+
+
+def _has_extended_acl(p: Path) -> bool:
+    """True if p carries a named POSIX ACL (a `user:NAME:` / `group:NAME:` entry beyond the base
+    owner/group/other). Such an entry can grant another principal write while leaving uid:gid:mode
+    unchanged — invisible to a mode check, and it turns the mode's group bits into an ACL MASK
+    (round-4 review). An entry that cannot be read is treated as extended (fail closed)."""
+    try:
+        return "system.posix_acl_access" in os.listxattr(p, follow_symlinks=False)
+    except OSError as e:
+        import errno
+        # xattrs unsupported / none present -> no named ACL; anything else -> untrusted
+        return e.errno not in (errno.ENOTSUP, errno.ENODATA)
+
+
+def _trusted_ancestry(start: Path) -> bool:
+    """Walk from `start` (a mount source's PARENT, already fully resolved — no symlinks) up to '/'.
+    Each directory must be owned by root/operator and un-plantable, or a principal who controls it
+    could rename/replace the source after the checks and before systemd mounts it (round-4 review:
+    the pathname controller, not just the target). World/group-writable is tolerated ONLY with the
+    sticky bit set — sticky stops non-owners renaming or deleting entries they do not own (this is
+    what makes /tmp and some /home layouts safe ancestors). No named ACL. The mount source itself
+    and its contents are checked STRICTLY elsewhere (sticky does not stop ADDING files, so it is
+    not sufficient for the source dir)."""
+    cur = start
+    while True:
+        try:
+            st = cur.lstat()
+        except OSError:
+            return False
+        if st.st_uid not in (0, os.getuid()):
+            return False
+        sticky = bool(st.st_mode & 0o1000)
+        if (st.st_mode & 0o002) and not sticky:
+            return False
+        if (st.st_mode & 0o020) and not sticky and not _group_is_private(st.st_gid):
+            return False
+        if _has_extended_acl(cur):
+            return False
+        if cur == cur.parent:   # reached /
+            return True
+        cur = cur.parent
+
+
+def _trusted_runtime_file(p: Path, want_exec: bool = True) -> Path | None:
+    """Vet a file root will bind-mount into the worker service: resolve symlinks, then require a
+    regular file owned by root or the operator, not world-writable, and group-writable ONLY when
+    that group is verifiably private to the operator (_group_is_private — round-2 review: on a box
+    where the operator's primary group has other members, "group-writable is fine" is an
+    unenforced assumption, so it is enforced here). Executable when it will be exec'd directly.
+    Returns the resolved real path, or None."""
+    import stat as stat_m
+    try:
+        real = p.resolve(strict=True)
+        st = real.stat()
+    except OSError:
+        return None
+    if not stat_m.S_ISREG(st.st_mode) or (st.st_mode & 0o002):
+        return None
+    if (st.st_mode & 0o020) and not _group_is_private(st.st_gid):
+        return None
+    if st.st_uid not in (0, os.getuid()):
+        return None
+    if _has_extended_acl(real) or not _trusted_ancestry(real.parent):
+        return None
+    if want_exec and not os.access(real, os.X_OK):
+        return None
+    return real
+
+
+def trusted_runtime_tree(root: Path) -> bool:
+    """Every byte of a bind-mounted DIRECTORY is executed inside the worker service, so the whole
+    tree — not just the entry file — must be un-plantable by the worker or any non-trust principal
+    (round-3 review: npm mode mounts the package dir, whose launcher runs a separate vendor binary
+    from inside the mount; trust-checking only node+entry left that binary swappable). Require of
+    every entry: owned by root or the operator; not world-writable; group-writable only when the
+    group is operator-private; and NO symlink whose resolved target escapes the tree (an external
+    target can change without moving the tree fingerprint). The root dir itself is checked too."""
+    import stat as stat_m
+    try:
+        real_root = root.resolve(strict=True)
+    except OSError:
+        return False
+    if not _trusted_ancestry(real_root.parent):   # a plantable PARENT dir defeats the whole tree
+        return False
+    for p in [real_root, *real_root.rglob("*")]:
+        try:
+            st = p.lstat()
+        except OSError:
+            return False
+        if st.st_uid not in (0, os.getuid()):
+            return False
+        if st.st_mode & 0o002:
+            return False
+        if (st.st_mode & 0o020) and not _group_is_private(st.st_gid):
+            return False
+        if _has_extended_acl(p):   # a named ACL grants write invisibly to a mode check
+            return False
+        if stat_m.S_ISLNK(st.st_mode):
+            try:
+                tgt = p.resolve(strict=True)
+                tgt.relative_to(real_root)   # ValueError if it escapes the mounted tree
+            except (OSError, ValueError):
+                return False
+    return True
+
+
 def worker_codex_runtime():
-    """How an ISOLATED worker runs Codex: (argv prefix, read-only bind mounts), or None when this
-    box has no worker-launchable install. The worker cannot read the operator's home (that IS the
-    boundary), so root bind-mounts the runtime past it. Two layouts are launchable: the npm
-    package (needs a system node — the worker cannot reach ~/.local), or a native single ELF
-    binary. None must refuse at launch: the old npm-only assumption died opaquely in namespace
-    setup on a native-install box, identically on every retry (dev-box feedback, R51)."""
-    if (CODEX_PKG / "bin/codex.js").is_file() and Path("/usr/bin/node").is_file():
-        return ["/usr/bin/node", "/opt/codex/bin/codex.js"], [(str(CODEX_PKG), "/opt/codex")]
+    """How an ISOLATED worker runs Codex: (argv prefix, read-only bind mounts, entry file), or
+    None when this box has no worker-launchable install. The worker cannot read the operator's
+    home (that IS the boundary), so root bind-mounts the runtime past it. Two layouts are
+    launchable: the npm package (needs a system node — the worker cannot reach ~/.local), or a
+    native single ELF binary. Candidates are vetted (_trusted_runtime_file, and the WHOLE mounted
+    tree via trusted_runtime_tree for npm) and fingerprinted at launch so _run refuses a runtime
+    that changed under it. None must refuse at launch: the old npm-only assumption died opaquely
+    in namespace setup on a native-install box, identically on every retry (dev-box feedback,
+    R51)."""
+    node = _trusted_runtime_file(Path("/usr/bin/node"))
+    entry = _trusted_runtime_file(CODEX_PKG / "bin/codex.js", want_exec=False)
+    if node and entry and trusted_runtime_tree(CODEX_PKG):
+        # Bind and exec the RESOLVED real paths, never the unresolved strings (round-5 review): a
+        # symlink component the checks followed could be repointed before systemd resolves the
+        # bind source. `node` and the package root below are both already symlink-resolved.
+        return ([str(node), "/opt/codex/bin/codex.js"],
+                [(str(CODEX_PKG.resolve()), "/opt/codex")], entry)
     import shutil
     cands = [OPERATOR_HOME / ".codex/bin/codex", OPERATOR_HOME / ".local/bin/codex",
              Path("/usr/local/bin/codex"), Path("/usr/bin/codex")]
@@ -543,15 +686,68 @@ def worker_codex_runtime():
     if which:
         cands.append(Path(which))
     for cand in cands:
+        real = _trusted_runtime_file(cand)
+        if real is None:
+            continue
         try:
-            real = cand.resolve(strict=True)
             with real.open("rb") as fh:
                 elf = fh.read(4) == b"\x7fELF"
         except OSError:
             continue
         if elf:  # an npm shim here would still need node; only a real binary is self-sufficient
-            return ["/opt/codex/codex"], [(str(real), "/opt/codex/codex")]
+            return ["/opt/codex/codex"], [(str(real), "/opt/codex/codex")], real
     return None
+
+
+def runtime_fingerprint(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _tree_fingerprint(root: Path) -> str:
+    """Deterministic hash of a whole directory tree (names, modes, symlink targets, contents).
+    The npm layout bind-mounts the PACKAGE DIRECTORY, whose launcher executes a separate vendor
+    binary from inside the mount — hashing only the entry file left every other mounted byte
+    unpinned (round-2 review). Special files taint the hash by type+name."""
+    import stat as stat_m
+    h = hashlib.sha256()
+    for p in sorted(root.rglob("*")):
+        rel = str(p.relative_to(root)).encode()
+        st = p.lstat()
+        # Owner/group/mode are part of the identity (round-3 review): a mode or ownership flip that
+        # opens a file to another principal must move the hash even when the bytes are unchanged.
+        meta = f"{st.st_uid}:{st.st_gid}:{oct(st.st_mode)}:".encode()
+        if stat_m.S_ISLNK(st.st_mode):
+            h.update(b"L" + rel + meta + os.readlink(p).encode())
+        elif stat_m.S_ISREG(st.st_mode):
+            h.update(b"F" + rel + meta)
+            with p.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+        elif stat_m.S_ISDIR(st.st_mode):
+            h.update(b"D" + rel + meta)
+        else:
+            h.update(b"X" + rel + meta)
+    return h.hexdigest()
+
+
+def pin_runtime_sources(rt_argv: list, rt_binds: list) -> dict:
+    """path -> fingerprint for EVERYTHING the worker service will execute: every bind-mount
+    source (file or whole tree) plus the host-side interpreter when argv[0] is not itself under a
+    pinned mount (npm mode runs /usr/bin/node from the host /usr). _run recomputes these
+    immediately before starting the service; the residual hash->mount window is milliseconds and
+    writable only by operator/root — the box's trust root — which content re-hashing at use time
+    covers at least as well as device/inode pinning would."""
+    pins = {}
+    for src, _dst in rt_binds:
+        sp = Path(src)
+        pins[src] = _tree_fingerprint(sp) if sp.is_dir() else runtime_fingerprint(sp)
+    if not rt_argv[0].startswith("/opt/codex"):
+        pins[rt_argv[0]] = runtime_fingerprint(Path(rt_argv[0]))
+    return pins
 
 
 def isolation_available() -> bool:
@@ -749,14 +945,32 @@ def cmd_launch(spec_id: str) -> None:
 
     # Same fail-fast doctrine for the worker's Codex runtime: an isolated launch without one dies
     # in namespace setup AFTER the attempt is claimed — opaquely, identically on every retry.
-    if iso and worker_codex_runtime() is None:
-        die("REFUSING to launch: no worker-launchable Codex runtime on this box.\n"
-            "  Isolated workers need EITHER the npm package\n"
-            "  (~/.local/lib/node_modules/@openai/codex + a system node at /usr/bin/node)\n"
-            "  OR a native codex ELF binary (~/.codex/bin, ~/.local/bin, /usr/local/bin,\n"
-            "  /usr/bin, or on PATH).\n"
-            "  Fix: npm install -g --prefix ~/.local @openai/codex   (plus a system node),\n"
-            "       or install the native binary. Then relaunch.", 15)
+    # Resolution is vetted, then PROBED under the real service hardening (an ELF-magic check alone
+    # accepts wrong-arch/broken binaries — round-1 review), then pinned by hash for _run.
+    runtime_record = None
+    if iso:
+        rt = worker_codex_runtime()
+        if rt is None:
+            die("REFUSING to launch: no worker-launchable Codex runtime on this box.\n"
+                "  Isolated workers need EITHER the npm package\n"
+                "  (~/.local/lib/node_modules/@openai/codex + a system node at /usr/bin/node)\n"
+                "  OR a native codex ELF binary (~/.codex/bin, ~/.local/bin, /usr/local/bin,\n"
+                "  /usr/bin, or on PATH) — owned by root/operator, not group/world-writable.\n"
+                "  Fix: npm install -g --prefix ~/.local @openai/codex   (plus a system node),\n"
+                "       or install the native binary. Then relaunch.", 15)
+        rt_argv, rt_binds, rt_entry = rt
+        probe = isolated_run(f"codex-rtprobe-{spec_id}", [*rt_argv, "--version"], cwd=None,
+                             rw_paths=[], private_network=True, ceiling_s=120,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, binds=rt_binds)
+        if probe.returncode != 0:
+            die("REFUSING to launch: the resolved Codex runtime failed its probe under the real "
+                f"service hardening (exit {probe.returncode}).\n"
+                f"  Runtime: {rt_entry}\n"
+                f"  Probe stderr: {(probe.stderr or b'').decode('utf-8', 'replace').strip()[-400:]}",
+                15)
+        runtime_record = {"argv": rt_argv, "binds": [list(b) for b in rt_binds],
+                          "entry": str(rt_entry),
+                          "pins": pin_runtime_sources(rt_argv, rt_binds)}
 
     ctx = preflight(spec_id)
     spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
@@ -816,6 +1030,8 @@ def cmd_launch(spec_id: str) -> None:
         "regression_command": spec.get("regression_command"),
         "regression_test_paths": spec.get("regression_test_paths", []),
         "hard_ceiling_hours": ceiling_h, "remediation": remediation,
+        # The probed-and-pinned runtime; _run refuses to execute anything else (round-1 review).
+        "worker_runtime": runtime_record,
         # T2: the frozen decision + why it was allowed. `exposure_accepted` is the operator's
         # knowing "yes, run this as me" — provenance never overstates the boundary.
         "isolation": iso, "exposure_accepted": (not iso and exposed),
@@ -934,12 +1150,40 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             # ProtectSystem=strict + ReadWritePaths confine writes and InaccessiblePaths=the operator's home
             # + DAC confine reads. --output-last-message is dropped (worker can't write the operator's home);
             # the final message is recovered from the JSONL stream.
-            runtime = worker_codex_runtime()
-            if runtime is None:
-                finish("failed_worker_error", ERR_WORKER,
-                       detail="no worker-launchable Codex runtime (launch preflight should have "
-                              "refused); install the npm package + system node, or a native binary")
-            argv_prefix, binds = runtime
+            rt = lc.get("worker_runtime")
+            if rt:
+                # Re-verify every pinned source immediately before the service starts (probe->run
+                # TOCTOU, round-2 review). No pins, a stale pin, or a runtime that lost its file
+                # trust all refuse — fail closed.
+                pins = rt.get("pins") or {}
+                stale = []
+                for src, want in pins.items():
+                    sp = Path(src)
+                    try:
+                        got = _tree_fingerprint(sp) if sp.is_dir() else runtime_fingerprint(sp)
+                    except OSError:
+                        got = "<unreadable>"
+                    if got != want:
+                        stale.append(src)
+                entry_ok = _trusted_runtime_file(Path(rt["entry"]), want_exec=False) is not None
+                # Re-verify whole-tree trust for every mounted DIRECTORY, not just the entry file
+                # (round-3 review): a vendor file inside the mount could have flipped to
+                # worker-writable since launch even if its bytes still match a pin.
+                tree_ok = all(trusted_runtime_tree(Path(src)) for src, _dst in rt["binds"]
+                              if Path(src).is_dir())
+                if stale or not pins or not entry_ok or not tree_ok:
+                    finish("failed_worker_error", ERR_WORKER,
+                           detail="Codex runtime changed, vanished or lost trust between launch "
+                                  f"and run (stale: {stale or 'no pins recorded'}, "
+                                  f"tree_ok={tree_ok}); refusing")
+                argv_prefix, binds = rt["argv"], [tuple(b) for b in rt["binds"]]
+            else:  # launch record predates runtime pinning: resolve live
+                runtime = worker_codex_runtime()
+                if runtime is None:
+                    finish("failed_worker_error", ERR_WORKER,
+                           detail="no worker-launchable Codex runtime (npm package + system "
+                                  "node, or a native ELF binary)")
+                argv_prefix, binds, _entry = runtime
             argv = [*argv_prefix, *codex_args, "-s", "danger-full-access", prompt]
             wc = isolated_run(
                 lc["worker_unit"], argv, cwd=str(wt),
@@ -981,9 +1225,10 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             finish("interrupted", ERR_QUOTA, worker_exit=wc.returncode,
                    detail="Codex quota/rate-limit hit mid-attempt; re-launch as a fresh attempt "
                           "after capacity returns. Never hand-finish this worktree.")
+        # NEVER inline stderr here: result.json is pushed as provenance and raw worker stderr can
+        # carry secrets (round-1 review). await shows a local-only tail from the gitignored file.
         finish("failed_worker_error", ec, worker_exit=wc.returncode,
-               detail=f"worker error class={ec}; stderr tail: "
-                      f"{stderr_txt[-800:].strip() or '(empty)'}")
+               detail=f"worker error class={ec}; stderr kept in raw/worker-stderr.txt")
 
     # --- D5 path-safety gate: reject planted symlinks/special files BEFORE any operator-context step
     # touches worker output (no later the operator process should be able to follow a link into the operator's files).
@@ -1482,7 +1727,8 @@ def cmd_status(attempt_id: str) -> None:
 
 
 # ================================================================ await =======
-def cmd_await(attempt_id: str, interval: int = 5, max_wait: int = 8 * 3600) -> None:
+def cmd_await(attempt_id: str, interval: int = 5, max_wait: int = 8 * 3600,
+              show_stderr: bool = False) -> None:
     spec_id, n = parse_attempt_id(attempt_id)
     unit = unit_name(spec_id, n)
     waited = 0
@@ -1503,6 +1749,15 @@ def cmd_await(attempt_id: str, interval: int = 5, max_wait: int = 8 * 3600) -> N
                     out["worker_exit"] = r["worker_exit"]
             except Exception:
                 pass
+            if show_stderr and status in ("failed_worker_error", "interrupted"):
+                # OPT-IN local display only (round-2 review: stdout reaches automation logs too).
+                # raw/ is gitignored; this never enters provenance.
+                try:
+                    tail = (att / "raw" / "worker-stderr.txt").read_text()[-800:].strip()
+                    if tail:
+                        out["stderr_tail_local"] = tail
+                except OSError:
+                    pass
             print(json.dumps(out))
             sys.exit(0 if status == "passed_pr_opened" else 1)
         # Unit gone but state not terminal => crash/interrupted.
@@ -2062,9 +2317,14 @@ def main() -> None:
     for name in ("launch",):
         p = sub.add_parser(name)
         p.add_argument("spec_id")
-    for name in ("status", "await", "cancel", "merge", "_run"):
+    for name in ("status", "cancel", "merge", "_run"):
         p = sub.add_parser(name)
         p.add_argument("attempt_id")
+    pw = sub.add_parser("await")
+    pw.add_argument("attempt_id")
+    pw.add_argument("--show-stderr", action="store_true",
+                    help="on failure, also print a LOCAL tail of raw/worker-stderr.txt "
+                         "(may contain secrets; never persisted)")
     ph = sub.add_parser("health")
     ph.add_argument("attempt_id")
     ph.add_argument("--minutes", type=int, default=HEALTH_INACTIVITY_MIN,
@@ -2080,7 +2340,7 @@ def main() -> None:
     elif args.cmd == "status":
         cmd_status(args.attempt_id)
     elif args.cmd == "await":
-        cmd_await(args.attempt_id)
+        cmd_await(args.attempt_id, show_stderr=args.show_stderr)
     elif args.cmd == "cancel":
         cmd_cancel(args.attempt_id)
     elif args.cmd == "merge":

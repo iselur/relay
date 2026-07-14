@@ -13,6 +13,7 @@ proves them), **configured assumptions** (set up outside this repo, verified man
 | No isolation → no launch; launching unisolated requires an explicit override variable, and its use is recorded in the evidence | `tests/isolation_fail_closed.sh` |
 | A missing, skipped, or empty test result fails the gate before review; worker-edited required tests are restored from the orchestrator's checkout before grading (detection against accidental skips — see gap 3 for the malicious case) | `tests/test_attestation.sh` |
 | A worker holding fake root inside its own user namespace still cannot read or write the owner's home; the userns exception is the packaged capability-stripping AppArmor profile, not the global sysctl | `tests/worker_userns.sh` (box-only) |
+| The Codex runtime bind-mounted into the worker service (npm package tree or native binary) is vetted before launch and re-vetted in `_run`: root/operator-owned, not world-writable, group-writable only when the group is operator-private, no named POSIX ACL, no symlink escaping the tree; resolved real paths are bound and every mounted byte plus the host interpreter is fingerprinted so a change between check and run is refused | `tests/codex_runtime.sh` |
 | Worker changes outside the spec's declared scope are rejected | `tests/dispatch_gate4.sh`, `tests/scope_glob.sh` |
 | A verdict is bound to the exact diff and base; a stale base is refused | `tests/dispatch_gate4.sh` |
 | The rulebook and repo prose cannot silently grow back | `tests/rulebook_cap.sh`, `tests/prose_cap.sh`, `tests/plain_language.sh` |
@@ -55,6 +56,18 @@ proves them), **configured assumptions** (set up outside this repo, verified man
    files owned by the account that writes them. Treat them as good-faith provenance.
 5. **The dispatcher currently targets this repository.** Pointing workers at an arbitrary product
    repo is planned but not yet a tested interface.
+6. **Runtime trust assumes a single-trust-principal box.** The Codex-runtime vetting (above) proves
+   the mount source is writable only by root or the operator, and rejects named ACLs and
+   world/group-writable paths. Two residuals remain, out of the deployment threat model — a
+   private VPS whose only accounts are the owner, root, and the confined `codex-worker`, with the
+   runtime under the owner's home (unreachable by the worker): (a) `_group_is_private()` reads
+   group membership via NSS; a directory service that disables enumeration (e.g. SSSD) could hide a
+   user who shares the owner's primary group, so a *group-writable* runtime could be writable by
+   another principal. Keep the runtime non-group-writable, or owner-private-group, on a multi-user
+   box. (b) The final millisecond-scale window between the last check and systemd resolving the
+   mount is accepted for sources proven writable only by root/operator. Both close only matter if a
+   second, non-trusted human account exists on the box; neither is exploitable in the single-owner
+   model this system is built for.
 
 ## Scope
 
