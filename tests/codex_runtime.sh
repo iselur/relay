@@ -154,6 +154,42 @@ else:
     print("  ok: tree hash moves on a mode flip with identical bytes")
 shutil.rmtree(home, ignore_errors=True)
 
+# 10. round-4: a named POSIX ACL on a vendor file untrusts the tree (write granted invisibly to a
+#     mode check). Uses setfacl + `nobody`; skips if either is unavailable.
+import shutil as _sh, subprocess
+home = pathlib.Path(tempfile.mkdtemp()); pkg = mkpkg(home)
+if _sh.which("setfacl") and subprocess.run(["id", "nobody"], capture_output=True).returncode == 0:
+    if subprocess.run(["setfacl", "-m", "u:nobody:rwx", str(pkg / "vendor/codex-native")],
+                      capture_output=True).returncode == 0:
+        if d.trusted_runtime_tree(pkg):
+            fails.append("named ACL granting nobody:rwx did NOT untrust the tree")
+        else:
+            print("  ok: named ACL untrusts the tree")
+    else:
+        print("  skip: setfacl failed (no ACL support on this fs)")
+else:
+    print("  skip: setfacl or nobody absent")
+shutil.rmtree(home, ignore_errors=True)
+
+# 11. round-4: a NON-sticky world-writable ancestor untrusts the source (rename-parent attack),
+#     while a sticky world-writable ancestor (like /tmp) does NOT — sticky blocks the rename.
+base = pathlib.Path(tempfile.mkdtemp())
+mid = base / "mid"; mid.mkdir(); pkg = mkpkg(mid)
+th_before = d.trusted_runtime_tree(pkg)
+mid.chmod(0o777)   # world-writable, NO sticky -> attacker can replace pkg
+if not th_before:
+    fails.append("baseline: clean nested tree rejected before chmod")
+elif d.trusted_runtime_tree(pkg):
+    fails.append("non-sticky world-writable parent did NOT untrust the source")
+else:
+    print("  ok: non-sticky world-writable parent untrusts the source")
+mid.chmod(0o1777)  # now sticky -> safe again
+if not d.trusted_runtime_tree(pkg):
+    fails.append("sticky world-writable parent wrongly untrusts the source")
+else:
+    print("  ok: sticky world-writable parent (like /tmp) is accepted")
+shutil.rmtree(base, ignore_errors=True)
+
 for f in fails:
     print(f"  FAIL {f}")
 sys.exit(1 if fails else 0)

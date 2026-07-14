@@ -528,10 +528,11 @@ CODEX_PKG = OPERATOR_HOME / ".local/lib/node_modules/@openai/codex"  # npm layou
 
 
 def _group_is_private(gid: int) -> bool:
-    """True iff gid is the operator's PRIMARY group, its member list names nobody but the
-    operator, and it is not the worker's primary group. Ubuntu's user-private-group scheme
-    (umask 002) makes npm-installed files 664 with exactly such a group; anything looser — a
-    shared group, the worker as primary or supplementary member — fails the check."""
+    """True iff gid is the operator's PRIMARY group AND nobody but the operator belongs to it.
+    Ubuntu's user-private-group scheme (umask 002) makes npm-installed files 664 with exactly
+    such a group; anything looser fails. Membership is checked from BOTH sides (round-4 review):
+    gr_mem lists supplementary members, but a user whose PRIMARY gid is this group never appears
+    there — so passwd is also scanned. The worker must not be a member either way."""
     import grp
     import pwd
     try:
@@ -542,11 +543,59 @@ def _group_is_private(gid: int) -> bool:
     if gid != op.pw_gid or any(m != op.pw_name for m in g.gr_mem):
         return False
     try:
+        for u in pwd.getpwall():   # users whose PRIMARY group is this gid (absent from gr_mem)
+            if u.pw_gid == gid and u.pw_name != op.pw_name:
+                return False
+    except OSError:
+        return False
+    try:
         if pwd.getpwnam(WORKER_USER).pw_gid == gid:
             return False
     except KeyError:
         pass
     return True
+
+
+def _has_extended_acl(p: Path) -> bool:
+    """True if p carries a named POSIX ACL (a `user:NAME:` / `group:NAME:` entry beyond the base
+    owner/group/other). Such an entry can grant another principal write while leaving uid:gid:mode
+    unchanged — invisible to a mode check, and it turns the mode's group bits into an ACL MASK
+    (round-4 review). An entry that cannot be read is treated as extended (fail closed)."""
+    try:
+        return "system.posix_acl_access" in os.listxattr(p, follow_symlinks=False)
+    except OSError as e:
+        import errno
+        # xattrs unsupported / none present -> no named ACL; anything else -> untrusted
+        return e.errno not in (errno.ENOTSUP, errno.ENODATA)
+
+
+def _trusted_ancestry(start: Path) -> bool:
+    """Walk from `start` (a mount source's PARENT, already fully resolved — no symlinks) up to '/'.
+    Each directory must be owned by root/operator and un-plantable, or a principal who controls it
+    could rename/replace the source after the checks and before systemd mounts it (round-4 review:
+    the pathname controller, not just the target). World/group-writable is tolerated ONLY with the
+    sticky bit set — sticky stops non-owners renaming or deleting entries they do not own (this is
+    what makes /tmp and some /home layouts safe ancestors). No named ACL. The mount source itself
+    and its contents are checked STRICTLY elsewhere (sticky does not stop ADDING files, so it is
+    not sufficient for the source dir)."""
+    cur = start
+    while True:
+        try:
+            st = cur.lstat()
+        except OSError:
+            return False
+        if st.st_uid not in (0, os.getuid()):
+            return False
+        sticky = bool(st.st_mode & 0o1000)
+        if (st.st_mode & 0o002) and not sticky:
+            return False
+        if (st.st_mode & 0o020) and not sticky and not _group_is_private(st.st_gid):
+            return False
+        if _has_extended_acl(cur):
+            return False
+        if cur == cur.parent:   # reached /
+            return True
+        cur = cur.parent
 
 
 def _trusted_runtime_file(p: Path, want_exec: bool = True) -> Path | None:
@@ -568,6 +617,8 @@ def _trusted_runtime_file(p: Path, want_exec: bool = True) -> Path | None:
         return None
     if st.st_uid not in (0, os.getuid()):
         return None
+    if _has_extended_acl(real) or not _trusted_ancestry(real.parent):
+        return None
     if want_exec and not os.access(real, os.X_OK):
         return None
     return real
@@ -586,6 +637,8 @@ def trusted_runtime_tree(root: Path) -> bool:
         real_root = root.resolve(strict=True)
     except OSError:
         return False
+    if not _trusted_ancestry(real_root.parent):   # a plantable PARENT dir defeats the whole tree
+        return False
     for p in [real_root, *real_root.rglob("*")]:
         try:
             st = p.lstat()
@@ -596,6 +649,8 @@ def trusted_runtime_tree(root: Path) -> bool:
         if st.st_mode & 0o002:
             return False
         if (st.st_mode & 0o020) and not _group_is_private(st.st_gid):
+            return False
+        if _has_extended_acl(p):   # a named ACL grants write invisibly to a mode check
             return False
         if stat_m.S_ISLNK(st.st_mode):
             try:
