@@ -35,8 +35,12 @@ Review its output.
 
 ## 4. Codex CLI (Claude, human for the login)
 
-Install the Codex CLI. **[HUMAN]** `codex login --device-auth` on your Codex subscription (not an API
-key). Claude: confirm `codex login status`, then a trivial `codex exec` round-trips.
+Install the Codex CLI — either layout works for isolated workers: the npm package
+(`npm install -g --prefix ~/.local @openai/codex`, which also needs a system node at
+`/usr/bin/node`) or the native binary installer. **[HUMAN]** `codex login --device-auth` on your
+Codex subscription (not an API key). Claude: confirm `codex login status`, then a trivial
+`codex exec` round-trips. (`dispatch launch` verifies a worker-launchable runtime exists and
+refuses with instructions if not.)
 
 ## 5. Worker isolation — the load-bearing security step (Claude)
 

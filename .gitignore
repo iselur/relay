@@ -42,3 +42,6 @@ __pycache__/
 # --- private: never publish (operator, 2026-07-13) ---
 .orchestrator/REQUEST-LEDGER.md
 .orchestrator/REQUEST-LEDGER.md.lock
+
+# Claude-produced review artifacts for the operator (diagrams, drafts) — local only
+claude-out/

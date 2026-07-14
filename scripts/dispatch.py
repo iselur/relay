@@ -524,7 +524,34 @@ OPERATOR_USER, OPERATOR_HOME = _resolve_operator()
 WORKER_USER = "codex-worker"
 WORKER_HOME = Path("/home/codex-worker")
 ISO_WORKTREES = Path("/srv/codexwork/worktrees")
-CODEX_PKG = OPERATOR_HOME / ".local/lib/node_modules/@openai/codex"  # bind-mounted RO to /opt/codex
+CODEX_PKG = OPERATOR_HOME / ".local/lib/node_modules/@openai/codex"  # npm layout; bind-mounted RO to /opt/codex
+
+
+def worker_codex_runtime():
+    """How an ISOLATED worker runs Codex: (argv prefix, read-only bind mounts), or None when this
+    box has no worker-launchable install. The worker cannot read the operator's home (that IS the
+    boundary), so root bind-mounts the runtime past it. Two layouts are launchable: the npm
+    package (needs a system node — the worker cannot reach ~/.local), or a native single ELF
+    binary. None must refuse at launch: the old npm-only assumption died opaquely in namespace
+    setup on a native-install box, identically on every retry (dev-box feedback, R51)."""
+    if (CODEX_PKG / "bin/codex.js").is_file() and Path("/usr/bin/node").is_file():
+        return ["/usr/bin/node", "/opt/codex/bin/codex.js"], [(str(CODEX_PKG), "/opt/codex")]
+    import shutil
+    cands = [OPERATOR_HOME / ".codex/bin/codex", OPERATOR_HOME / ".local/bin/codex",
+             Path("/usr/local/bin/codex"), Path("/usr/bin/codex")]
+    which = shutil.which("codex")
+    if which:
+        cands.append(Path(which))
+    for cand in cands:
+        try:
+            real = cand.resolve(strict=True)
+            with real.open("rb") as fh:
+                elf = fh.read(4) == b"\x7fELF"
+        except OSError:
+            continue
+        if elf:  # an npm shim here would still need node; only a real binary is self-sufficient
+            return ["/opt/codex/codex"], [(str(real), "/opt/codex/codex")]
+    return None
 
 
 def isolation_available() -> bool:
@@ -720,6 +747,17 @@ def cmd_launch(spec_id: str) -> None:
               "!!! its credentials and its network. You asked for this (ORCH_ALLOW_UNISOLATED=1).\n"
               "!!! It is recorded in launch.json and in the reviewer's evidence.", file=sys.stderr)
 
+    # Same fail-fast doctrine for the worker's Codex runtime: an isolated launch without one dies
+    # in namespace setup AFTER the attempt is claimed — opaquely, identically on every retry.
+    if iso and worker_codex_runtime() is None:
+        die("REFUSING to launch: no worker-launchable Codex runtime on this box.\n"
+            "  Isolated workers need EITHER the npm package\n"
+            "  (~/.local/lib/node_modules/@openai/codex + a system node at /usr/bin/node)\n"
+            "  OR a native codex ELF binary (~/.codex/bin, ~/.local/bin, /usr/local/bin,\n"
+            "  /usr/bin, or on PATH).\n"
+            "  Fix: npm install -g --prefix ~/.local @openai/codex   (plus a system node),\n"
+            "       or install the native binary. Then relaunch.", 15)
+
     ctx = preflight(spec_id)
     spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
 
@@ -831,7 +869,8 @@ def _run(attempt_id: str) -> None:
         write_state(spec_id, {"attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
                               "spec_digest": lc["spec_digest"], "status": status,
                               "error_class": err_class, "unit": unit_name(spec_id, n),
-                              **{k: extra[k] for k in ("worker_commit", "pr_url") if k in extra}})
+                              **{k: extra[k] for k in ("worker_commit", "pr_url", "detail",
+                                                       "worker_exit") if k in extra}})
         sys.exit(0 if status == "passed_pr_opened" else 1)
 
     try:
@@ -895,13 +934,18 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             # ProtectSystem=strict + ReadWritePaths confine writes and InaccessiblePaths=the operator's home
             # + DAC confine reads. --output-last-message is dropped (worker can't write the operator's home);
             # the final message is recovered from the JSONL stream.
-            argv = ["/usr/bin/node", "/opt/codex/bin/codex.js", *codex_args,
-                    "-s", "danger-full-access", prompt]
+            runtime = worker_codex_runtime()
+            if runtime is None:
+                finish("failed_worker_error", ERR_WORKER,
+                       detail="no worker-launchable Codex runtime (launch preflight should have "
+                              "refused); install the npm package + system node, or a native binary")
+            argv_prefix, binds = runtime
+            argv = [*argv_prefix, *codex_args, "-s", "danger-full-access", prompt]
             wc = isolated_run(
                 lc["worker_unit"], argv, cwd=str(wt),
                 rw_paths=[str(wt), str(WORKER_HOME / ".codex")],
                 private_network=False, ceiling_s=ceiling_s, stdout=ev, stderr=er,
-                binds=[(str(CODEX_PKG), "/opt/codex")])
+                binds=binds)
         else:
             # Fallback (fresh box / CI): same-user launch with Codex's bwrap sandbox.
             scrubbed = {
@@ -938,7 +982,8 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                    detail="Codex quota/rate-limit hit mid-attempt; re-launch as a fresh attempt "
                           "after capacity returns. Never hand-finish this worktree.")
         finish("failed_worker_error", ec, worker_exit=wc.returncode,
-               detail=f"worker error class={ec}")
+               detail=f"worker error class={ec}; stderr tail: "
+                      f"{stderr_txt[-800:].strip() or '(empty)'}")
 
     # --- D5 path-safety gate: reject planted symlinks/special files BEFORE any operator-context step
     # touches worker output (no later the operator process should be able to follow a link into the operator's files).
@@ -1445,8 +1490,20 @@ def cmd_await(attempt_id: str, interval: int = 5, max_wait: int = 8 * 3600) -> N
         st = read_state(spec_id) or {}
         status = st.get("status") if st.get("attempt_id") == attempt_id else None
         if status in TERMINAL:
-            print(json.dumps({"attempt_id": attempt_id, "status": status,
-                              "error_class": st.get("error_class")}))
+            # Surface the WHY and the evidence path, not just the class — an opaque error_class
+            # sent an operator around five blind relaunches (dev-box feedback, R51).
+            att = ATTEMPTS / spec_id / str(n)
+            out = {"attempt_id": attempt_id, "status": status,
+                   "error_class": st.get("error_class"), "detail": st.get("detail"),
+                   "evidence": str(att)}
+            try:  # result.json carries the full record; state may hold only a summary
+                r = json.loads((att / "result.json").read_text())
+                out["detail"] = r.get("detail", out["detail"])
+                if "worker_exit" in r:
+                    out["worker_exit"] = r["worker_exit"]
+            except Exception:
+                pass
+            print(json.dumps(out))
             sys.exit(0 if status == "passed_pr_opened" else 1)
         # Unit gone but state not terminal => crash/interrupted.
         if status in LIVE and not unit_active(unit):
