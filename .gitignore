@@ -40,3 +40,4 @@ __pycache__/
 .orchestrator/decisions/MEASUREMENT-layer/
 .orchestrator/continue-logs/
 .orchestrator/plans/drafts/
+.orchestrator/REQUEST-LEDGER.md.lock

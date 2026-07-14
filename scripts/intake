@@ -1,33 +1,93 @@
 #!/usr/bin/env bash
 # Intake gate (R29 rule 1): no task starts without a one-line goal AND a checkable definition of
-# done. This script is the only sanctioned way to open a ledger row; it REFUSES incomplete intake,
-# so "I'll define done later" cannot happen silently.
+# done. This script is the only sanctioned way to open or close a ledger row; it REFUSES incomplete
+# intake, so "I'll define done later" cannot happen silently. `close` requires evidence, and
+# `stale` surfaces rows that never reached done — a stalled request is a process failure to raise
+# with the operator, never noise to swallow (that silent drop is the failure R29 exists to prevent).
 #
-# Usage: scripts/intake -g "one-line goal" -d "done when <checkable criterion>"
-# Prints the new request id. The ledger itself is private (gitignored).
+# Usage:
+#   scripts/intake -g "one-line goal" -d "done when <checkable criterion>"   # open; prints new id
+#   scripts/intake close <id> "<completion evidence>"                        # open -> done
+#   scripts/intake stale             # list rows not yet done; exit 1 if any (run at session end)
+# The ledger is private (gitignored); it is created with a header on first use.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 LEDGER=".orchestrator/REQUEST-LEDGER.md"
-goal="" done_when=""
-while getopts "g:d:" opt; do
-  case "$opt" in
-    g) goal="$OPTARG" ;;
-    d) done_when="$OPTARG" ;;
-    *) exit 2 ;;
-  esac
-done
+HEADER='| id | date | request | lane | plan-ref | status | completion-evidence |'
 
 fail() { echo "INTAKE REFUSED: $1" >&2; exit 1; }
 
-[ -n "$goal" ]      || fail "missing -g goal. One line: what is being asked."
-[ -n "$done_when" ] || fail "missing -d definition of done. A CHECKABLE criterion — if you cannot state one, ask the operator before starting. Refusing to start is correct (R29)."
-case "$goal" in *$'\n'*) fail "goal must be ONE line" ;; esac
-[ "${#done_when}" -ge 10 ] || fail "definition of done too thin to be checkable: '$done_when'"
-[ -f "$LEDGER" ] || fail "$LEDGER not found (private file; create it on this box first)"
+# One row per line, one table: fields may not contain newlines/CR (a row IS a line) or '|' (the
+# column separator — a crafted field could forge columns, a status, or a whole row). A field of
+# pure whitespace is an empty field.
+check_field() { # $1 field name, $2 value
+  case "$2" in
+    *'|'*)           fail "$1 must not contain '|' (ledger column separator)" ;;
+    *$'\n'*|*$'\r'*) fail "$1 must be ONE line" ;;
+  esac
+  [ -n "${2//[[:space:]]/}" ] || fail "$1 is empty or whitespace-only"
+}
 
-last=$(grep -oE '^\| R[0-9]+' "$LEDGER" | grep -oE '[0-9]+' | sort -n | tail -1)
-id="R$(( ${last:-0} + 1 ))"
-printf '| %s | %s | %s | — | — | open | DONE WHEN: %s |\n' \
-  "$id" "$(date +%m-%d)" "$goal" "$done_when" >> "$LEDGER"
-echo "$id"
+mkdir -p "$(dirname "$LEDGER")"
+[ -f "$LEDGER" ] || printf '%s\n' "$HEADER" > "$LEDGER"
+
+# Serialize writers on a sidecar lock (locking the ledger fd itself would break across close's
+# rewrite+mv): concurrent intakes must not mint the same id or interleave a rewrite.
+exec 9>>"$LEDGER.lock"
+flock 9
+
+case "${1:-}" in
+  close)
+    id="${2:-}" evidence="${3:-}"
+    [ -n "$id" ] || fail "close needs an id: scripts/intake close R8 \"<evidence>\""
+    check_field "completion evidence" "$evidence"
+    grep -q "^| $id " "$LEDGER" || fail "no ledger row for $id"
+    grep -q "^| $id .*| open |" "$LEDGER" || fail "$id is not open (already closed?)"
+    tmp=$(mktemp)
+    while IFS= read -r line; do
+      if [[ $line == "| $id "* && $line == *"| open |"* ]]; then
+        line=${line/"| open |"/"| done |"}
+        line="${line% |}; EVIDENCE: $evidence |"
+      fi
+      printf '%s\n' "$line"
+    done < "$LEDGER" > "$tmp"
+    mv "$tmp" "$LEDGER"
+    echo "$id done"
+    ;;
+  stale)
+    if grep -E '^\| R[0-9]+ \|.*\| (open|in-progress) \|' "$LEDGER"; then
+      echo "^ rows that never reached done — surface to the operator (R29)" >&2
+      exit 1
+    fi
+    echo "no open rows"
+    ;;
+  open|-*|"")
+    [ "${1:-}" = "open" ] && shift
+    goal="" done_when=""
+    while getopts "g:d:" opt; do
+      case "$opt" in
+        g) goal="$OPTARG" ;;
+        d) done_when="$OPTARG" ;;
+        *) exit 2 ;;
+      esac
+    done
+    shift $((OPTIND - 1))
+    [ $# -eq 0 ] || fail "unexpected extra arguments: $*"
+    [ -n "$goal" ]      || fail "missing -g goal. One line: what is being asked."
+    [ -n "$done_when" ] || fail "missing -d definition of done. A CHECKABLE criterion — if you cannot state one, ask the operator before starting. Refusing to start is correct (R29)."
+    check_field "goal" "$goal"
+    check_field "definition of done" "$done_when"
+    [ "${#done_when}" -ge 10 ] || fail "definition of done too thin to be checkable: '$done_when'"
+    # `|| true`: a header-only ledger (first use) has no rows — that is a valid start (id R1),
+    # not an error; without it, pipefail + set -e kill the first-ever intake.
+    last=$(grep -oE '^\| R[0-9]+' "$LEDGER" | grep -oE '[0-9]+' | sort -n | tail -1 || true)
+    id="R$(( ${last:-0} + 1 ))"
+    printf '| %s | %s | %s | — | — | open | DONE WHEN: %s |\n' \
+      "$id" "$(date +%Y-%m-%d)" "$goal" "$done_when" >> "$LEDGER"
+    echo "$id"
+    ;;
+  *)
+    fail "unknown subcommand '${1}' (use: -g/-d to open, close, or stale)"
+    ;;
+esac
