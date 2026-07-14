@@ -1,4 +1,4 @@
-# orchestrator — your AI engineering manager
+# orchestrator — AI engineering manager using two vendors (claude and codex) to get you best results
 
 **You bring the idea. One AI manages the work; another builds it.** You approve a small spec, a
 sandboxed worker implements it, hard checks and a reviewer from the other vendor judge the result,
