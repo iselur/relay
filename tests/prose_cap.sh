@@ -37,8 +37,11 @@ declare -A cap=(
 total_lines=0
 total_bytes=0
 for f in "${md_files[@]}"; do
-  lines=$(awk 'END { print NR }' -- "$f")   # NR counts a final unterminated line; wc -l does not
+  lines=$(awk 'END { print NR }' < "$f")   # NR counts a final unterminated line; wc -l does not
   bytes=$(wc -c < "$f")
+  case "$lines" in
+    ''|*[!0-9]*) bad "could not count lines in $f — a cap that cannot count must not pass"; continue ;;
+  esac
   total_lines=$((total_lines + lines))
   total_bytes=$((total_bytes + bytes))
   if [ -z "${cap[$f]:-}" ]; then
@@ -51,7 +54,9 @@ for f in "${md_files[@]}"; do
 done
 
 # 2. Totals: 600 lines AND 60,000 bytes — the byte cap stops one-line walls of text that a line
-#    count cannot see.
+#    count cannot see. A zero total means the counting broke (this exact check once passed
+#    vacuously with "0/600" because awk was invoked wrong) — zero is a failure, not a clean repo.
+[ "$total_lines" -gt 0 ] || bad "total tracked markdown counted as 0 lines — the count is broken, not the repo empty"
 [ "$total_lines" -le 600 ]   && ok "total tracked markdown: $total_lines/600 lines" \
   || bad "total tracked markdown is $total_lines lines — cap is 600. Delete before you add."
 [ "$total_bytes" -le 60000 ] && ok "total tracked markdown: $total_bytes/60000 bytes" \

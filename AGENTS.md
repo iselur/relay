@@ -12,8 +12,8 @@ merges.
 
 - **Dispatcher:** Python 3 (`scripts/dispatch.py`), venv in `.venv/` (gitignored), deps pinned in
   `scripts/requirements.txt`. Thin bash wrapper `scripts/dispatch`.
-- **Repo tests / CI:** bash. `./scripts/test` runs `tests/*.sh`; the CI job is named exactly `ci`
-  (required status check on `main` and `integration` — do not rename it or add a matrix).
+- **Repo tests / CI:** bash. The test command is `./scripts/test` (runs `tests/*.sh`); the CI job
+  is named exactly `ci` (required check on `main` and `integration` — never rename or add a matrix).
 
 ## Conventions
 
@@ -40,7 +40,3 @@ merges.
   refuses a third round). Codex-authored work is reviewed by Claude — worker diffs by the bound
   reviewer in the dispatcher, plans in-session — under the same two-round cap.
   Plan drafts go through `scripts/codex-plan` — it refuses a plan body over 150 lines.
-
-## Test command
-
-`./scripts/test`
