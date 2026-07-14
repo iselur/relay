@@ -745,8 +745,8 @@ def cmd_launch(spec_id: str) -> None:
     })
 
     try:
-        git("fetch", "--quiet", "origin", approval.get("base_branch", "integration"))
-        base_sha = git("rev-parse", f"origin/{approval.get('base_branch', 'integration')}")
+        git("fetch", "--quiet", "origin", approval.get("base_branch", "ready-for-main"))
+        base_sha = git("rev-parse", f"origin/{approval.get('base_branch', 'ready-for-main')}")
         branch = f"codex/{attempt_id}"
         # T2: use the FROZEN decision from preflight. Never recompute — a second call to
         # isolation_available() here is exactly the downgrade path we are closing.
@@ -769,7 +769,7 @@ def cmd_launch(spec_id: str) -> None:
     atomic_write(att_dir / "launch.json", json.dumps({
         "attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
         "spec_digest": digest, "base_sha": base_sha, "branch": branch,
-        "base_branch": approval.get("base_branch", "integration"),
+        "base_branch": approval.get("base_branch", "ready-for-main"),
         "worktree": str(wt), "worker_model": approval.get("worker_model", "gpt-5.6-sol"),
         "worker_effort": approval.get("worker_reasoning_effort", "high"),
         "reviewer_model": approval.get("reviewer_model", "claude-fable-5"),
@@ -1076,7 +1076,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
     # a FRESH attempt off the new base (all gates re-run) — never a hand-rebase of a reviewed
     # worktree (that would carry a stale review verdict). This is the last check before the attempt
     # becomes visible, so the base cannot move between the check and the push in a way that matters.
-    base_branch = lc.get("base_branch", "integration")
+    base_branch = lc.get("base_branch", "ready-for-main")
     current_base, moved = base_moved(wt, base_branch, lc["base_sha"])
     if moved:
         finish("stale_base", ERR_STALE_BASE, worker_commit=worker_commit,
@@ -1092,7 +1092,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                detail="head moved after review")
     git("push", "-u", "origin", lc["branch"], cwd=wt)
     pr = run(["gh", "pr", "create", "--draft", "--base",
-              "integration", "--head", lc["branch"],
+              "ready-for-main", "--head", lc["branch"],
               "--title", f"{spec_id}: {load_spec(spec_id).get('title', '')}",
               "--body", pr_body(spec_id, lc, worker_commit)], cwd=str(ROOT))
     pr_url = (pr.stdout or "").strip().splitlines()[-1] if pr.returncode == 0 else None
@@ -1729,7 +1729,7 @@ def cmd_metrics() -> None:
 
 # ================================================================= merge =======
 # Plan-scoped autonomy (Level 1.5, ratified by the operator 2026-07-13). The orchestrator may merge an
-# attempt's PR to `integration` WITHOUT a per-PR human click — but ONLY through this fail-closed
+# attempt's PR to `ready-for-main` WITHOUT a per-PR human click — but ONLY through this fail-closed
 # path, and ONLY while the AUTONOMY grant is present. Every correctness gate still applies, plus the
 # merge-time base-check that closes the post-PR stale-base hole (SOL, G4-A): after a sibling PR
 # integrates, a still-open parallel PR's reviewer verdict is bound to an obsolete base, and CI alone
@@ -1763,7 +1763,7 @@ def _pr_number(pr_url: str) -> str:
 
 
 def cmd_merge(attempt_id: str) -> None:
-    """Auto-merge a PASSED attempt's PR to integration under the AUTONOMY grant. Fail-closed:
+    """Auto-merge a PASSED attempt's PR to ready-for-main under the AUTONOMY grant. Fail-closed:
     every check must pass or it refuses without merging. Structured exit codes for the caller."""
     grant = load_autonomy()
     if grant is None:
@@ -1782,7 +1782,7 @@ def cmd_merge(attempt_id: str) -> None:
         die(f"{attempt_id} status is {result.get('status')}, not passed_pr_opened; refuse.", 13)
 
     lc = json.loads((att / "launch.json").read_text())
-    base_branch = lc.get("base_branch", "integration")
+    base_branch = lc.get("base_branch", "ready-for-main")
     base_sha = result.get("base_sha") or lc.get("base_sha")
     worker_commit = result.get("worker_commit")
     pr_url = result.get("pr_url")
@@ -1791,7 +1791,7 @@ def cmd_merge(attempt_id: str) -> None:
     # Grant bounds (defense in depth; already enforced at launch, re-checked at the merge boundary).
     if base_branch == "main":
         die("main promotion is human-only; never auto-merged.", 12)
-    if base_branch != grant.get("target_branch", "integration"):
+    if base_branch != grant.get("target_branch", "ready-for-main"):
         die(f"target branch {base_branch} != grant target; refuse.", 12)
     spec = load_spec(spec_id)
     if spec.get("risk_class") not in grant.get("allowed_risk_class", ["low"]):
@@ -1901,10 +1901,10 @@ def _provenance_paths(spec_id: str, digest: str) -> list[str]:
 def _commit_provenance(spec_ids: list[str]) -> str | None:
     """Auto-commit the tracked provenance for the given specs: branch → PR → ci → merge.
     Returns the PR url (or None if nothing to commit). Runs AFTER all worker merges so the
-    integration tip only moves when no sibling attempt merge could go stale because of it."""
+    ready-for-main tip only moves when no sibling attempt merge could go stale because of it."""
     branch = f"orch/prov-{'-'.join(s.replace('SPEC-', '') for s in spec_ids)}"
-    git("checkout", "--quiet", "integration")
-    git("pull", "--quiet", "--ff-only", "origin", "integration")
+    git("checkout", "--quiet", "ready-for-main")
+    git("pull", "--quiet", "--ff-only", "origin", "ready-for-main")
     run(["git", "branch", "-D", branch], cwd=str(ROOT))  # tolerate leftovers
     git("checkout", "--quiet", "-b", branch)
     try:
@@ -1919,7 +1919,7 @@ def _commit_provenance(spec_ids: list[str]) -> str | None:
             f"approval(s), attempt evidence, and any escalations. Raw logs stay gitignored; "
             f"integrity provable via tracked raw-sha256.txt.")
         git("push", "-u", "origin", branch)
-        pr = run(["gh", "pr", "create", "--base", "integration", "--head", branch,
+        pr = run(["gh", "pr", "create", "--base", "ready-for-main", "--head", branch,
                   "--title", f"provenance: {ids}",
                   "--body", "Auto-committed provenance (dispatch integrate, Gate 4 / "
                             "Level 1.5 grant). Spec + approvals + attempt evidence + "
@@ -1943,8 +1943,8 @@ def _commit_provenance(spec_ids: list[str]) -> str | None:
                 f"{mg.stderr.strip()}", 20)
         return pr_url
     finally:
-        git("checkout", "--quiet", "integration")
-        git("pull", "--quiet", "--ff-only", "origin", "integration")
+        git("checkout", "--quiet", "ready-for-main")
+        git("pull", "--quiet", "--ff-only", "origin", "ready-for-main")
 
 
 def cmd_integrate(attempt_ids: list[str]) -> None:
@@ -1963,7 +1963,7 @@ def cmd_integrate(attempt_ids: list[str]) -> None:
     order = _topo_specs(list(by_spec))
     report = {"integrated": [], "provenance_pr": None}
 
-    git("checkout", "--quiet", "integration")
+    git("checkout", "--quiet", "ready-for-main")
     for sid in order:
         aid = f"{sid}-{by_spec[sid]}"
         mg = run([str(ROOT / "scripts" / "dispatch"), "merge", aid])
@@ -1977,10 +1977,10 @@ def cmd_integrate(attempt_ids: list[str]) -> None:
                                     "escalation": str(path)}
             print(json.dumps(report, indent=2))
             sys.exit(mg.returncode)
-        git("pull", "--quiet", "--ff-only", "origin", "integration")
+        git("pull", "--quiet", "--ff-only", "origin", "ready-for-main")
         ts = run(["./scripts/test"], cwd=str(ROOT))
         if ts.returncode != 0:
-            path = escalate(sid, f"post-merge suite FAILED on integration after {aid} — "
+            path = escalate(sid, f"post-merge suite FAILED on ready-for-main after {aid} — "
                                  f"stop; human decision required",
                             {"test_tail": ((ts.stdout or "") + (ts.stderr or ""))[-2000:]})
             report["stopped_at"] = {"attempt_id": aid, "suite": "FAILED",

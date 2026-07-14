@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Repo-level test entry point. This is what CI runs, and it is the hard merge
-# gate for `main` and `integration`.
+# gate for `main` and `ready-for-main`.
 #
 # Individual specs declare their own `test_command`; that is what a worker must
 # drive to exit 0 inside its worktree. This script is the repo's own suite and

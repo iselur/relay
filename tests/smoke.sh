@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Guards the CI contract itself.
 #
-# The branch ruleset on `main` and `integration` requires a status check whose
+# The branch ruleset on `main` and `ready-for-main` requires a status check whose
 # context is exactly `ci`. GitHub derives that context from the job name, so a
 # rename here would not fail CI — it would make CI silently stop reporting under
 # the name the ruleset waits for, and every PR would block forever with no error

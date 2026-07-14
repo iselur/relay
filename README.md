@@ -19,7 +19,7 @@ The [visual explanation](how-it-works.html) shows the whole process on one page.
 
 | Who | Job |
 |---|---|
-| owner (you) | Chooses the work, approves specs, and alone merges `integration` to `main` |
+| owner (you) | Chooses the work, approves specs, and alone merges `ready-for-main` to `main` |
 | orchestrator (Claude) | Manages the backlog, records evidence, and opens passing pull requests |
 | worker (Codex) | Implements each spec in an isolated worktree and runs the required tests |
 
