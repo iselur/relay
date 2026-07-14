@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+# Auto-resume watchdog (R39, brief PLAN-002). A systemd --user timer runs `watchdog check` every
+# ~10 minutes. Bash-only and zero-quota: it never invokes a model; it inspects local state and
+# drives tmux. The supervised session is a long-lived INTERACTIVE claude — never `claude -p`
+# (R23: print mode exits at end of turn and orphans its background work).
+#
+# Behaviors, in the brief's order of precedence:
+#   HALT      .orchestrator/HALT present -> strict no-op. Checked at entry, after the lock, and
+#             again inside every function that mutates state, touches tmux, or raises an alert.
+#   (a)       pending work + no session  -> create session, launch claude with a chosen
+#             --session-id (deterministic recovery target), paste the tracked resume prompt.
+#   (b)       claude exited in the pane  -> relaunch with --resume <recorded id>. A recorded id
+#             that is CORRUPT fails visibly (alert, no relaunch — the brief forbids guessing);
+#             --continue runs only when no id was ever recorded, and alerts, because it cannot
+#             prove which conversation it picked.
+#   (c)       recognized usage wait      -> no input before the reset time; after it, observe
+#             mode records the event, active mode sends one retry. Classifier failures scope to
+#             this behavior only — they never disable (a), (b), (d), or HALT.
+#   (d)       pending work idle too long, and no live attempt -> local ALERT record + journal
+#             always; external delivery is best-effort and never blocks supervision.
+set -uo pipefail
+
+ROOT="${ORCH_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+WD="${ORCH_WATCHDOG_DIR:-$ROOT/.orchestrator/watchdog}"
+SESSION="${ORCH_TMUX_SESSION:-orch-auto}"
+FRAMING_DIR="$ROOT/scripts/lib/usage-framings"
+HALT="$ROOT/.orchestrator/HALT"
+# Typed into the pane RELATIVE to the session cwd ($ROOT): no absolute path ever reaches the
+# shell line, so a hostile checkout path cannot inject through it. pipe-pane still needs one
+# absolute path, so a quote anywhere in our paths refuses to run at all (path-neutral, honestly).
+PROMPT_REL="scripts/lib/watchdog-resume-prompt.txt"
+case "$ROOT$WD" in *\'*) echo "watchdog: refusing to run: checkout/state path contains a quote" >&2; exit 1 ;; esac
+
+now()    { date +%s; }
+halted() { [ -e "$HALT" ]; }
+note()   { echo "watchdog: $*"; }   # journald keeps the timer unit's stdout
+
+# ---- state helpers ------------------------------------------------------------------------------
+# Every state write is tmp+mv on the same filesystem: an interrupted check can leave a stray tmp
+# file, never a half-written value a later check would trust.
+put() { # $1 file, $2 content
+  local t; t=$(mktemp "$WD/.tmp.XXXXXX") && printf '%s\n' "$2" > "$t" && chmod 600 "$t" && mv "$t" "$1"
+}
+get() { cat "$1" 2>/dev/null || true; }
+
+# ---- alerts -------------------------------------------------------------------------------------
+# An alert is FIRST a local record and a journal line; external delivery is layered on top and its
+# failure never blocks anything. Payloads carry no work content: host, type, and the short
+# sanitized message only. Delivery requires an https URL AND a token (the owner's alert-channel
+# gate supplies both); anything less keeps the local record and sends nothing.
+alert_deliver() { # $1 incident file, $2 type, $3 message
+  halted && return 0
+  grep -q '^sent=' "$1" 2>/dev/null && return 0
+  [ -n "${ALERT_URL:-}" ] && [ -n "${ALERT_TOKEN:-}" ] || return 0
+  case "$ALERT_URL" in https://*) ;; *) note "ALERT_URL is not https; delivery disabled"; return 0 ;; esac
+  if curl -fsS -m 10 -H "Authorization: Bearer $ALERT_TOKEN" \
+       -d "host=$(hostname) type=$2 $3" "$ALERT_URL" >/dev/null 2>&1; then
+    put "$1" "$(cat "$1")
+sent=$(now)"
+  else
+    note "alert delivery failed for $2; incident retained, will retry next tick"
+  fi
+}
+alert_raise() { # $1 type, $2 sanitized message, [$3 extra key=value line]
+  halted && return 0
+  local f="$WD/ALERT-$1"
+  if [ ! -e "$f" ]; then
+    put "$f" "ts=$(now)
+type=$1
+msg=$2${3:+
+$3}"
+    note "ALERT[$1]: $2"
+  fi
+  alert_deliver "$f" "$1" "$2"
+}
+alert_sweep() {
+  # Undelivered incidents whose raise-path may never re-run (fallback, usage, indeterminate)
+  # still retry delivery every tick until they land.
+  local f t m
+  for f in "$WD"/ALERT-*; do
+    [ -e "$f" ] || continue
+    grep -q '^sent=' "$f" && continue
+    t=${f##*/ALERT-}
+    m=$(sed -n 's/^msg=//p' "$f" | head -1)
+    alert_deliver "$f" "$t" "$m"
+  done
+}
+
+# ---- tmux/session -------------------------------------------------------------------------------
+session_exists() { tmux has-session -t "$SESSION" 2>/dev/null; }
+claude_alive() {
+  # The pane's foreground command is the shell itself iff nothing is running in it. This is
+  # PID-free on purpose: the safety rules ban acting on remembered process numbers.
+  local cmd; cmd=$(tmux display-message -p -t "$SESSION" '#{pane_current_command}' 2>/dev/null)
+  case "$cmd" in bash|sh|dash|zsh|"") return 1 ;; *) return 0 ;; esac
+}
+valid_uuid() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; }
+
+record_run() { put "$WD/last-run" "$(now)"; rm -f "$WD/ALERT-idle"; }
+bump_generation() { local g; g=$(get "$WD/generation"); put "$WD/generation" "$(( ${g:-0} + 1 ))"; }
+
+launch_new() {
+  halted && return 0
+  local sid; sid=$(uuidgen)
+  valid_uuid "$sid" || { note "uuidgen produced garbage; refusing to launch"; return 1; }
+  # uuidgen ran an EXTERNAL command, so a HALT created meanwhile is a real, testable window —
+  # re-check before the first mutation (round-2 review: this barrier must be deterministic).
+  halted && return 0
+  # The id is recorded BEFORE the session exists: if creation fails, the next tick simply mints a
+  # fresh id; but a session may never exist without its recovery id already on disk.
+  bump_generation
+  put "$WD/session-id" "$sid"
+  put "$WD/respawns" 0
+  # Failed actions are RETRIED next tick and never count as a run: a run that did not happen must
+  # not refresh last-run, or a persistently broken launch would suppress the idle alert forever.
+  tmux new-session -d -s "$SESSION" -c "$ROOT" -x 220 -y 50 \
+    || { note "new-session failed; will retry next tick"; return 1; }
+  tmux pipe-pane -o -t "$SESSION" "cat >> '$WD/transcript.log'" \
+    || note "pipe-pane failed; usage classifier is blind this generation"
+  halted && return 0
+  if tmux send-keys -t "$SESSION" \
+       "claude --session-id $sid --dangerously-skip-permissions \"\$(cat $PROMPT_REL)\"" Enter; then
+    # The launched marker is written ONLY after the prompt was delivered: a session whose
+    # conversation never started must never be --resume'd (the id names nothing).
+    put "$WD/launched" "$sid"
+    record_run
+    note "created session '$SESSION', launched claude --session-id $sid"
+  else
+    note "send-keys failed after session creation; the empty session will be torn down next tick"
+  fi
+}
+
+respawn() {
+  halted && return 0
+  # The launcher chose the conversation id itself and wrote it before the session existed, so a
+  # session with no valid recorded id can only mean foreign session or wiped state. There is NO
+  # legitimate "never recorded" case, therefore there is NO --continue in this program: guessing
+  # the most recent conversation under --dangerously-skip-permissions could resume the owner's.
+  local sid; sid=$(get "$WD/session-id")
+  if ! valid_uuid "${sid:-}"; then
+    alert_raise corrupt-session-id "session exists without a valid recorded id (foreign session or wiped state); refusing to relaunch"
+    return 1
+  fi
+  # An id without its launched marker names a conversation that never started (send-keys failed
+  # or HALT landed after session creation): --resume of it can only error forever. Tear the empty
+  # session down instead; the next tick launches fresh with a new id.
+  if [ "$(get "$WD/launched")" != "$sid" ]; then
+    halted && return 0
+    # The id is dropped only once the empty session is verifiably gone: dropping it while the
+    # session survives a failed kill would read as corrupt-session-id next tick and permanently
+    # refuse recovery. A failed teardown keeps the state and simply retries next tick.
+    if tmux kill-session -t "$SESSION" 2>/dev/null || ! session_exists; then
+      rm -f "$WD/session-id"
+      note "incomplete launch detected (id $sid never received its prompt); removed the empty session, will relaunch next tick"
+    else
+      note "incomplete launch detected but kill-session failed; keeping state, will retry teardown next tick"
+    fi
+    return 0
+  fi
+  # A respawn storm (claude dying instantly every tick) refreshes last-run each time and would
+  # otherwise never alert; count consecutive respawns and say so.
+  local n; n=$(get "$WD/respawns"); n=$(( ${n:-0} + 1 ))
+  halted && return 0
+  put "$WD/respawns" "$n"
+  if [ "$n" -gt 6 ]; then
+    alert_raise respawn-loop "claude has been relaunched $n consecutive times without recorded activity"
+  fi
+  bump_generation
+  halted && return 0
+  if tmux send-keys -t "$SESSION" \
+       "claude --resume $sid --dangerously-skip-permissions \"\$(cat $PROMPT_REL)\"" Enter; then
+    record_run
+    note "claude exited; resumed conversation $sid"
+  else
+    note "send-keys failed on respawn; will retry next tick"
+  fi
+}
+
+# ---- pending predicate --------------------------------------------------------------------------
+# Canonical source: scripts/intake watchdog-state (PENDING/IDLE/INDETERMINATE). The one exception:
+# a genuinely live attempt (state file says launching/running AND its unit is actually active)
+# counts as pending even with no open row, so a prematurely closed row cannot orphan real work.
+# Malformed running-state (no parseable attempt id) is reported, and counts as pending: fail
+# closed is "resume and look", never "assume idle".
+live_attempt() {
+  local sf aid
+  for sf in "$ROOT/.orchestrator/state/"*.json; do
+    [ -e "$sf" ] || continue
+    grep -qE '"status":[[:space:]]*"(launching|running)"' "$sf" || continue
+    aid=$(sed -nE 's/.*"attempt_id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$sf" | head -1)
+    [ -n "$aid" ] || { echo "MALFORMED"; return 0; }
+    if systemctl --user is-active "codex-$aid" >/dev/null 2>&1; then echo "$aid"; return 0; fi
+  done
+  return 0
+}
+
+# ---- usage-limit classifier (behavior c only) ---------------------------------------------------
+# Consumes new transcript bytes each tick (consumed bytes can never re-arm anything). A framing
+# fixture is a sed -nE script in scripts/lib/usage-framings/*.sed that prints a UTC reset epoch
+# when — and only when — the raw CLI limit framing matches. The set ships EMPTY: until a real
+# capture is approved (follow-up row, gate 9), nothing classifies, and limit-LIKE text raises one
+# re-verification incident per pane generation. Failures here scope to the retry send alone.
+usage_unknown_once() { # $1 current generation, $2 message — at most one incident per generation
+  local f="$WD/ALERT-usage-unknown"
+  if [ -e "$f" ] && grep -qx "gen=$1" "$f"; then return 0; fi
+  rm -f "$f"
+  alert_raise usage-unknown "$2" "gen=$1"
+}
+check_cli_version() {
+  # Pinning is on the framing FIXTURE, never the version string (round-1 brief review, finding 1):
+  # a version change raises one re-verification incident and stops nothing.
+  ls "$FRAMING_DIR"/*.sed >/dev/null 2>&1 || return 0
+  local ver prev
+  ver=$(claude --version 2>/dev/null | head -1)
+  [ -n "$ver" ] || return 0
+  prev=$(get "$WD/claude-version")
+  if [ -n "$prev" ] && [ "$ver" != "$prev" ]; then
+    rm -f "$WD/ALERT-cli-version"
+    alert_raise cli-version "claude CLI changed ($prev -> $ver); re-verify the usage framing at the next natural limit"
+  fi
+  [ "$ver" = "$prev" ] || put "$WD/claude-version" "$ver"
+}
+scan_usage() {
+  local log="$WD/transcript.log"
+  [ -e "$log" ] || return 0
+  check_cli_version
+  local size off gen
+  size=$(stat -c %s "$log" 2>/dev/null) || return 0
+  off=$(get "$WD/transcript.offset"); off=${off:-0}
+  gen=$(get "$WD/generation"); gen=${gen:-0}
+  # Bounded transcript: keep the last 1MB once it passes 5MB. The offset moves WITH the kept
+  # bytes — already-consumed content stays consumed (rescanning it could re-arm an old wait).
+  if [ "$size" -gt 5242880 ]; then
+    local keep=1048576 t
+    t=$(mktemp "$WD/.tmp.XXXXXX") && tail -c "$keep" "$log" > "$t" && chmod 600 "$t" && mv "$t" "$log"
+    off=$(( off - (size - keep) )); [ "$off" -lt 0 ] && off=0
+    put "$WD/transcript.offset" "$off"
+    size=$(stat -c %s "$log")
+  fi
+  if [ "$size" -lt "$off" ]; then
+    # The transcript shrank outside our own rotation: something else touched it. Fail closed for
+    # the classifier (consume nothing, keep the retry disabled), say so, supervise on.
+    usage_unknown_once "$gen" "transcript shrank outside rotation; classifier state reset"
+    put "$WD/transcript.offset" "$size"
+    return 0
+  fi
+  [ "$size" -le "$off" ] && return 0
+  local new
+  new=$(tail -c +"$((off + 1))" "$log" | sed -E 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][^\x07]*\x07//g')
+  put "$WD/transcript.offset" "$size"
+  local fx epoch
+  for fx in "$FRAMING_DIR"/*.sed; do
+    [ -e "$fx" ] || continue
+    epoch=$(printf '%s\n' "$new" | sed -nE -f "$fx" | head -1)
+    [ -n "$epoch" ] || continue
+    local t; t=$(now)
+    if [[ "$epoch" =~ ^[0-9]{9,11}$ ]] && [ "$epoch" -gt $((t - 86400)) ] && [ "$epoch" -lt $((t + 604800)) ]; then
+      put "$WD/usage-wait" "$epoch $gen $(basename "$fx") $((off + 1)):$size"
+      note "recognized usage limit (framing $(basename "$fx")); waiting until epoch $epoch"
+    else
+      # Matched framing but a nonsense deadline: fail closed for the retry only.
+      usage_unknown_once "$gen" "approved framing produced an invalid reset epoch"
+    fi
+    return 0
+  done
+  if printf '%s\n' "$new" | grep -qiE 'usage limit|rate limit|limit reached|out of (usage|quota)'; then
+    usage_unknown_once "$gen" "limit-like output with no approved framing; retry stays disabled"
+  fi
+}
+
+handle_usage_wait() {
+  [ -e "$WD/usage-wait" ] || return 0
+  local epoch gen fr cur
+  read -r epoch gen fr < "$WD/usage-wait" || true
+  cur=$(get "$WD/generation"); cur=${cur:-0}
+  if ! [[ "${epoch:-}" =~ ^[0-9]+$ ]] || ! [[ "${gen:-}" =~ ^[0-9]+$ ]]; then
+    # A corrupt wait must not reach the send branch: discard it, disable the retry, say so.
+    rm -f "$WD/usage-wait"
+    usage_unknown_once "$cur" "corrupt usage-wait state discarded; retry stays disabled"
+    return 0
+  fi
+  # A new pane generation cannot inherit a previous generation's wait.
+  if [ "$gen" != "$cur" ]; then rm -f "$WD/usage-wait"; return 0; fi
+  [ "$(now)" -lt "$epoch" ] && return 0
+  rm -f "$WD/usage-wait"
+  if [ "$USAGE_RETRY_MODE" = "active" ]; then
+    halted && return 0
+    if tmux send-keys -t "$SESSION" \
+         "The usage window has reset. Continue the pending orchestrator work; run scripts/watchdog heartbeat when you begin." Enter; then
+      record_run
+      note "usage window reset; sent one retry prompt"
+    else
+      note "send-keys failed for the post-reset retry; the wait is consumed, supervision continues"
+    fi
+  else
+    rm -f "$WD/ALERT-usage-would-retry"
+    alert_raise usage-would-retry "observation mode: usage window reset; a retry WOULD have been sent"
+  fi
+}
+
+# ---- idle alert (behavior d) --------------------------------------------------------------------
+idle_check() { # $1 open row ids (may be empty), $2 live attempt id (may be empty)
+  [ -n "${2:-}" ] && return 0     # a genuinely active attempt IS activity; never alert over it
+  local last act base t
+  last=$(get "$WD/last-run"); act=$(get "$WD/activity")
+  base=${last:-0}; [ "${act:-0}" -gt "$base" ] 2>/dev/null && base=$act
+  [ "$base" -eq 0 ] && return 0   # nothing ever launched on this install; (a) fires first
+  t=$(now)
+  if [ $((t - base)) -ge "$IDLE_ALERT_SECONDS" ]; then
+    # Re-alert at most once per further idle interval.
+    local f="$WD/ALERT-idle" sent
+    if [ -e "$f" ]; then
+      sent=$(sed -n 's/^sent=//p' "$f" | tail -1)
+      if [ -n "$sent" ] && [ $((t - sent)) -ge "$IDLE_ALERT_SECONDS" ]; then rm -f "$f"; fi
+    fi
+    alert_raise idle "idle_seconds=$((t - base)) open_rows=${1:-none}"
+  fi
+}
+
+# ---- main ---------------------------------------------------------------------------------------
+check() {
+  halted && exit 0
+  mkdir -p "$WD"; chmod 700 "$WD"
+  # Local config, never tracked: IDLE_ALERT_SECONDS, USAGE_RETRY_MODE, ALERT_URL, ALERT_TOKEN.
+  [ -r "$WD/env" ] && . "$WD/env"
+  IDLE_ALERT_SECONDS="${IDLE_ALERT_SECONDS:-21600}"
+  USAGE_RETRY_MODE="${USAGE_RETRY_MODE:-observe}"
+
+  halted && exit 0                  # immediately before opening the lock (round-2 review)
+  exec 9>>"$WD/lock"
+  flock -n 9 || exit 0              # single flight: an overlapping check is a successful no-op
+  halted && exit 0
+
+  local state_line state ids attempt
+  state_line=$("$ROOT/scripts/intake" watchdog-state --ids 2>/dev/null) || true
+  state=${state_line%% *}
+  ids=${state_line#"$state"}; ids=${ids# }
+  case "$state" in
+    PENDING|IDLE) ;;
+    INDETERMINATE|*)
+      # An unreadable ledger is indeterminate, not idle: say so, launch nothing.
+      alert_raise intake-indeterminate "intake ledger unreadable, malformed, or watchdog-state broken"
+      alert_sweep
+      exit 0 ;;
+  esac
+  attempt=$(live_attempt)
+  if [ "$attempt" = "MALFORMED" ]; then
+    alert_raise state-malformed "a dispatcher state file says launching/running but has no parseable attempt id"
+  fi
+
+  local pending=0
+  [ "$state" = "PENDING" ] && pending=1
+  [ -n "$attempt" ] && pending=1
+  if [ "$pending" -eq 1 ]; then
+    if ! session_exists; then
+      launch_new                                                 # (a)
+    elif ! claude_alive; then
+      respawn                                                    # (b)
+    else
+      scan_usage                                                 # (c)
+      handle_usage_wait
+    fi
+    [ "$attempt" = "MALFORMED" ] && attempt=""
+    idle_check "$ids" "$attempt"                                 # (d)
+  fi
+  alert_sweep
+}
+
+case "${1:-check}" in
+  check) check ;;
+  heartbeat)
+    # Written by the resumed session when it begins/completes REAL work (advisory: suppresses
+    # false idle alerts; it can never create, authorize, or gate work). Also resets the
+    # respawn-storm counter: recorded activity means the relaunches are working.
+    halted && exit 0
+    mkdir -p "$WD"; chmod 700 "$WD"
+    put "$WD/activity" "$(now)"
+    put "$WD/respawns" 0
+    ;;
+  *) echo "usage: watchdog [check|heartbeat]" >&2; exit 2 ;;
+esac
