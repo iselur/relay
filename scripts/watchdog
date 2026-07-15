@@ -7,6 +7,10 @@
 # Behaviors, in the brief's order of precedence:
 #   HALT      .orchestrator/HALT present -> strict no-op. Checked at entry, after the lock, and
 #             again inside every function that mutates state, touches tmux, or raises an alert.
+#   STANDBY   any claude process outside this watchdog's own pane (an owner session, attached or
+#             not; a background job) -> supervision pauses for the tick and resumes by itself once
+#             none remain (owner decision 2026-07-15: automation never works beside the owner).
+#             HALT stays the manual switch and is checked first; alert delivery still retries.
 #   (a)       pending work + no session  -> create session, launch claude with a chosen
 #             --session-id (deterministic recovery target), paste the tracked resume prompt.
 #   (b)       claude exited in the pane  -> relaunch with --resume <recorded id>. A recorded id
@@ -101,6 +105,36 @@ valid_uuid() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 
 record_run() { put "$WD/last-run" "$(now)"; rm -f "$WD/ALERT-idle"; }
 bump_generation() { local g; g=$(get "$WD/generation"); put "$WD/generation" "$(( ${g:-0} + 1 ))"; }
+
+# ---- user-presence standby (owner decision 2026-07-15) --------------------------------------------
+# The watchdog must never work beside the owner: ANY claude process it does not supervise —
+# interactive or background job, attached or not — parks supervision for the tick. The only claude
+# that is OURS is one whose parent chain reaches the supervised pane's pid; everything else is a
+# user session. Failing toward standby is the safe direction (it can only launch LESS, never more),
+# so an unreadable pane pid or a process that vanishes mid-walk counts as foreign for this tick and
+# is simply re-resolved on the next.
+user_claude_present() {
+  local pids pane_pid pid p depth
+  pids=$(pgrep -x claude 2>/dev/null) || return 1
+  [ -n "$pids" ] || return 1
+  pane_pid=""
+  if session_exists; then
+    pane_pid=$(tmux display-message -p -t "$SESSION" '#{pane_pid}' 2>/dev/null) || pane_pid=""
+    [[ "$pane_pid" =~ ^[0-9]+$ ]] || pane_pid=""
+  fi
+  for pid in $pids; do
+    [ -n "$pane_pid" ] || return 0
+    p=$pid depth=0
+    while [ "$depth" -lt 64 ]; do
+      [ "$p" = "$pane_pid" ] && continue 2
+      p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d '[:space:]') || p=""
+      case "$p" in ''|0|1) break ;; esac
+      depth=$((depth + 1))
+    done
+    return 0
+  done
+  return 1
+}
 
 launch_new() {
   halted && return 0
@@ -333,6 +367,24 @@ check() {
   exec 9>>"$WD/lock"
   flock -n 9 || exit 0              # single flight: an overlapping check is a successful no-op
   halted && exit 0
+
+  # Auto mutual exclusion: a user's claude anywhere on the box means launch, respawn, retry,
+  # rotation, and the idle alert all wait. The marker exists so the journal says each flip once,
+  # not once per tick; alert delivery still retries, because standby pauses supervision, never
+  # observability. last-run is untouched — a standby tick is not a run. Detection happens before
+  # anything in the tick spawns claude itself (check_cli_version runs only past this point), so
+  # the watchdog never stands down for its own version probe.
+  if user_claude_present; then
+    if [ ! -e "$WD/standby" ]; then
+      put "$WD/standby" "$(now)"
+      note "standby: a user claude session is running; supervision paused until it exits"
+    fi
+    alert_sweep
+    exit 0
+  elif [ -e "$WD/standby" ]; then
+    rm -f "$WD/standby"
+    note "standby cleared: no user claude session running; supervision resumed"
+  fi
 
   local state_line state ids attempt
   state_line=$("$ROOT/scripts/intake" watchdog-state --ids 2>/dev/null) || true

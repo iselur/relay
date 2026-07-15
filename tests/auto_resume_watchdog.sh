@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Hermetic drill for the auto-resume watchdog (R39 brief, hermetic behavior gate). Everything runs
-# under a scratch root with fake claude/tmux/systemctl/curl/uuidgen/loginctl on PATH: no real
-# claude, no real tmux server, no user units, no network, no repository runtime state. The fakes
+# under a scratch root with fake claude/tmux/systemctl/curl/uuidgen/loginctl/pgrep/ps on PATH: no
+# real claude, no real tmux server, no user units, no network, no repository runtime state — and no
+# real process table, or the claude session RUNNING this drill would trip the standby guard. The fakes
 # RECORD every invocation, so assertions are about what the watchdog actually did. The fake claude
 # answers --version only and FAILS the run if anything ever truly executes it beyond that.
 set -uo pipefail
@@ -48,7 +49,10 @@ case "$cmd" in
   new-session)    touch "$S/sessions/$name"; echo bash > "$S/sessions/$name.cmd" ;;
   send-keys)      printf '%s\n' "${args[*]}" >> "$S/sessions/$name.keys"
                   echo claude > "$S/sessions/$name.cmd" ;;
-  display-message) cat "$S/sessions/$name.cmd" 2>/dev/null || echo bash ;;
+  display-message) case "${args[0]:-}" in
+                     '#{pane_pid}') cat "$S/sessions/$name.panepid" 2>/dev/null || exit 1 ;;
+                     *) cat "$S/sessions/$name.cmd" 2>/dev/null || echo bash ;;
+                   esac ;;
   pipe-pane)      : ;;
   kill-session)   rm -f "$S/sessions/$name" "$S/sessions/$name."* ;;
   *) exit 0 ;;
@@ -91,6 +95,28 @@ cat > "$F/loginctl" <<'FAKE'
 #!/usr/bin/env bash
 echo "Linger=yes"
 FAKE
+
+cat > "$F/pgrep" <<'FAKE'
+#!/usr/bin/env bash
+# Answers only `pgrep -x claude`, from FAKE_CLAUDE_PIDS (space-separated). Unset means an empty
+# process table: the real one would show the claude running this very drill and park everything.
+echo "pgrep $*" >> "$FAKE_TMUX_STATE/invocations.log"
+if [ "${1:-}" = "-x" ] && [ "${2:-}" = "claude" ] && [ -n "${FAKE_CLAUDE_PIDS:-}" ]; then
+  printf '%s\n' $FAKE_CLAUDE_PIDS
+  exit 0
+fi
+exit 1
+FAKE
+
+cat > "$F/ps" <<'FAKE'
+#!/usr/bin/env bash
+# Answers only `ps -o ppid= -p <pid>` from the FAKE_PS_MAP file ("pid ppid" per line); an unmapped
+# pid fails the lookup, like a process that exited between pgrep and the walk.
+pid=""
+while (($#)); do case "$1" in -p) pid=$2; shift 2 ;; *) shift ;; esac; done
+[ -n "$pid" ] && [ -n "${FAKE_PS_MAP:-}" ] || exit 1
+awk -v p="$pid" '$1 == p { print " " $2; found=1 } END { exit found ? 0 : 1 }' "$FAKE_PS_MAP"
+FAKE
 chmod +x "$F"/*
 
 export FAKE_TMUX_STATE="$TS" FAKE_ACTIVE_UNITS="$tmp/active-units" FAKE_CURL_LOG="$tmp/curl.log" FAKE_UUID_COUNT="$tmp/uuid-count"
@@ -105,7 +131,7 @@ reset() { # fresh state between scenarios
   mkdir -p "$TS/sessions" "$R/.orchestrator/state" "$R/scripts/lib/usage-framings"
   rm -f "$FAKE_CURL_LOG" "$FAKE_ACTIVE_UNITS" "$FAKE_UUID_COUNT" "$LEDGER.lock"
   printf '%s\n' "$HEADER" > "$LEDGER"
-  unset FAKE_CURL_EXIT FAKE_TMUX_FAIL FAKE_CLAUDE_VERSION 2>/dev/null || true
+  unset FAKE_CURL_EXIT FAKE_TMUX_FAIL FAKE_CLAUDE_VERSION FAKE_CLAUDE_PIDS FAKE_PS_MAP 2>/dev/null || true
 }
 open_row() { (cd "$R" && scripts/intake -g "${1:-drill goal}" -d "done when the drill criterion holds" >/dev/null); }
 keys() { cat "$TS/sessions/orch-auto.keys" 2>/dev/null || true; }
@@ -511,5 +537,68 @@ unset FAKE_TMUX_FAIL
 run_wd
 [ "$(invoked new-session)" = "2" ] && [ -e "$WDIR/last-run" ] && ok "launch retried and succeeded next tick" || bad "no retry after failure"
 [ ! -e "$TS/breach.log" ] && ok "claude was never executed beyond --version" || bad "HERMETIC BREACH: $(cat "$TS/breach.log")"
+
+echo "== W18: user-presence standby — a foreign claude parks the watchdog, resumes when it exits"
+reset; open_row
+export FAKE_CLAUDE_PIDS="4242"                     # a claude the watchdog does not supervise
+run_wd
+[ "$(invoked new-session)" = "0" ] && [ -z "$(keys)" ] && ok "standby: no launch while a user claude runs" || bad "standby launched anyway"
+[ -e "$WDIR/standby" ] && ok "standby marker written" || bad "no standby marker"
+n_notes=$(grep -c 'supervision paused' "$tmp/wd.log")
+run_wd
+[ "$(grep -c 'supervision paused' "$tmp/wd.log")" = "$n_notes" ] && ok "one journal note per flip, not per tick" || bad "standby note repeated every tick"
+[ ! -e "$WDIR/last-run" ] && ok "standby ticks never counted as runs" || bad "standby refreshed last-run"
+unset FAKE_CLAUDE_PIDS
+run_wd
+[ ! -e "$WDIR/standby" ] && ok "standby cleared once the user claude exited" || bad "standby stuck after the user claude exited"
+[ "$(invoked new-session)" = "1" ] && ok "supervision resumed with a launch on the next tick" || bad "no launch after standby cleared"
+
+echo "== W18b: the watchdog's own supervised claude never triggers standby; respawn is standby-gated"
+reset; open_row
+run_wd                                             # launch: session up, pane runs claude
+echo 500 > "$TS/sessions/orch-auto.panepid"        # the pane's shell pid, as tmux would report it
+printf '510 500\n' > "$tmp/ps-map"                 # claude 510 is a child of the pane shell
+export FAKE_CLAUDE_PIDS="510" FAKE_PS_MAP="$tmp/ps-map"
+run_wd
+[ ! -e "$WDIR/standby" ] && ok "own supervised claude: no standby" || bad "watchdog stood down for its own claude"
+dead_pane                                          # supervised claude exits...
+export FAKE_CLAUDE_PIDS="4242"                     # ...while a foreign claude is running
+n_before=$(keys | wc -l)
+run_wd
+[ "$(keys | wc -l)" = "$n_before" ] && [ -e "$WDIR/standby" ] && ok "dead pane + foreign claude: respawn deferred to standby" || bad "respawn ran during standby"
+unset FAKE_CLAUDE_PIDS FAKE_PS_MAP
+run_wd
+grep -q -- '--resume' <(keys) && ok "respawn happened once the user claude exited" || bad "no respawn after standby cleared"
+
+echo "== W18c: unreadable pane pid while a claude runs -> fail toward standby, never launch"
+reset; open_row
+run_wd                                             # session exists but never recorded a pane pid
+export FAKE_CLAUDE_PIDS="4242"
+run_wd
+[ -e "$WDIR/standby" ] && ok "pane pid unknown + claude present: stood down" || bad "unknown pane pid did not stand down"
+unset FAKE_CLAUDE_PIDS
+
+echo "== W18d: HALT wins over standby — strict no-op, not even a standby marker"
+reset; open_row
+touch "$R/.orchestrator/HALT"
+export FAKE_CLAUDE_PIDS="4242"
+run_wd
+unset FAKE_CLAUDE_PIDS
+[ ! -d "$WDIR" ] && ok "HALT before standby: no state written at all" || bad "HALT run still wrote state"
+rm -f "$R/.orchestrator/HALT"
+
+echo "== W18e: standby suppresses the idle alert but never delivery retries"
+reset; open_row
+run_wd                                             # launch records last-run
+alert_env
+echo "$(( $(date +%s) - 30000 ))" > "$WDIR/last-run"
+printf 'ts=1\ntype=drill\nmsg=stranded incident from before standby\n' > "$WDIR/ALERT-drill"
+last_before=$(cat "$WDIR/last-run")
+export FAKE_CLAUDE_PIDS="4242"
+run_wd
+unset FAKE_CLAUDE_PIDS
+[ ! -e "$WDIR/ALERT-idle" ] && ok "standby: idle alert suppressed" || bad "idle alert fired during standby"
+grep -q '^sent=' "$WDIR/ALERT-drill" && ok "standby: stranded incident still delivered by the sweep" || bad "standby blocked the delivery sweep"
+[ "$(cat "$WDIR/last-run")" = "$last_before" ] && ok "standby left last-run untouched" || bad "standby changed last-run"
 
 if [ "$fails" -eq 0 ]; then echo "PASS auto_resume_watchdog.sh"; else echo "FAIL auto_resume_watchdog.sh"; exit 1; fi
