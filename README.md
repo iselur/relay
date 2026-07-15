@@ -1,4 +1,4 @@
-# Orchestrator
+# Claude + Codex Orchestrator
 
 This repo lets you get maximum from your Claude and Codex **subscriptions** 💸 (no API key needed) and
 makes two great models work together with minimum oversight.
