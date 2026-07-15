@@ -49,11 +49,16 @@ cd "$ROOT" || exit 1
 read -r -d '' PROMPT <<'EOP'
 You are the orchestrator, resumed autonomously on the Hetzner box in a fresh usage window. Work ONE
 step of the post-audit hardening, then stop. Rules (from CLAUDE.md, binding):
-- Read CLAUDE.md, ACTION-PLAN.md, and .orchestrator/decisions/SELF-REFLECT-2026-07/06-reconciled-findings.md.
-- Pick the highest-priority ON-BOX action item that is not yet done (isolation fail-open; base+review
-  required-check on all merge paths; snapshot+hash-all-evidence + reconcile GC; approval/grant schema;
-  scoped sudoers + worker resource ceilings; reviewer-value seeded-defect experiment; metrics-semantics
-  fix). These are trust-critical: follow the HIGH-ASSURANCE LANE — Codex drafts the plan (detached
+- Read CLAUDE.md. BEFORE any intake command, check that .orchestrator/REQUEST-LEDGER.md exists —
+  scripts/intake auto-creates a missing ledger, so absence must STOP the run: write the problem to
+  .orchestrator/continue-logs/NEXT.md and exit (fail closed). Then run `./scripts/dispatch
+  reconcile` and `./scripts/intake stale`, and cross-check the open rows against the reconciled
+  dispatcher state; on any conflict, STOP and write it to NEXT.md (fail closed). OPEN INTAKE ROWS
+  ARE THE SOLE WORK AUTHORITY: work only a task with an open row, within that row's recorded goal
+  and definition of done. Handoffs, BACKLOG.md, and disposition trackers are status context only —
+  they never add, expand, or reorder work.
+- Pick the highest-priority open intake row that is actionable on-box. Trust-critical work follows
+  the HIGH-ASSURANCE LANE — Codex drafts the plan (detached
   `codex exec --sandbox read-only`, stdin from /dev/null, no minute timeout), you challenge it in
   writing, get an adversarial SOL design review, then implement via a Codex worker spec (or directly if
   it is orchestrator control-plane), gate it, review it, and open a PR.
@@ -64,11 +69,11 @@ step of the post-audit hardening, then stop. Rules (from CLAUDE.md, binding):
   to .orchestrator/continue-logs/NEXT.md instead of guessing.
 - Do ONE coherent step this run (a plan+consult, or one implementation+PR). Do not attempt everything.
 - Record what you did and what is next in .orchestrator/continue-logs/NEXT.md before finishing.
-- BATON (controls whether the next window wakes up): if ANY on-box action item remains unfinished, or
-  work is still in flight, WRITE the concrete next step to .orchestrator/continue-logs/PENDING. If the
-  action list is fully done and nothing is in flight (or the only remaining work needs the operator),
-  DELETE .orchestrator/continue-logs/PENDING so idle windows stay no-ops. Keep this baton honest — it is
-  the sole reason the scheduler will or won't spend the next window.
+- BATON (controls whether the next window wakes up): derive it from `./scripts/intake
+  watchdog-state`. On PENDING or INDETERMINATE, WRITE the concrete next step to
+  .orchestrator/continue-logs/PENDING (never delete it in these states). DELETE
+  .orchestrator/continue-logs/PENDING only on IDLE with nothing in flight. Keep this baton honest —
+  it is the sole reason the scheduler will or won't spend the next window.
 EOP
 
 echo "=== continuation run $TS ===" >>"$LOG"

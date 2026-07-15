@@ -94,6 +94,13 @@ mkdir -p "$out_dir"
 
 # Treat plans and their provenance logs as allocated artifacts. This preserves
 # failed-run diagnostics instead of reusing and overwriting their identifier.
+# B17: allocation must be atomic across concurrent detached runs — two runs that both scan
+# before either writes would mint the same PLAN-NNN and overwrite each other's plan and
+# provenance. The lock is held from the scan through the claim below; the claim itself is an
+# exclusive create (noclobber) of the .stdout file, so the ID is occupied on disk before the
+# lock is released and a later scan can never re-mint it.
+exec 8>>"$out_dir/.plan-id.lock"
+flock 8
 max_id=0
 shopt -s nullglob
 for artifact in "$out_dir"/PLAN-*; do
@@ -108,6 +115,10 @@ printf -v plan_id 'PLAN-%03d' "$((max_id + 1))"
 plan_path="$out_dir/$plan_id.md"
 stdout_path="$out_dir/$plan_id.stdout"
 stderr_path="$out_dir/$plan_id.stderr"
+# Claim the ID while still holding the lock: exclusive create fails if it somehow exists.
+( set -o noclobber; : > "$stdout_path" ) 2>/dev/null \
+  || die "plan id $plan_id is already claimed ($stdout_path exists); retry"
+flock -u 8
 
 case "$tier" in
   small)
