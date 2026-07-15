@@ -56,5 +56,5 @@ untouched → in scope → tests actually ran → cross-vendor review), and open
   `--author`, refuses Codex-authored artifacts, counts rounds, refuses a fourth). Codex-authored work
   is reviewed by Claude — worker diffs by the bound reviewer in the dispatcher, plans in-session —
   under the same three-round cap.
-- Plans go through `scripts/codex-plan`: `--small` (cap 40), default (cap 250), `--brief` (cap 400,
-  and it refuses a brief missing any required section). Tiers and triggers: CLAUDE.md rule 5.
+- Plans go through `scripts/codex-plan --brief` (cap 400; refuses a brief missing any required
+  section). Legacy `--small`/default tiers still run if explicitly invoked. Trigger: CLAUDE.md rule 5.

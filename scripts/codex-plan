@@ -12,7 +12,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/codex-plan [--small|--brief] [--context FILE]... [--out DIR] [--] [TASK...]
 
-Three tiers, matching the rulebook (CLAUDE.md). Ambiguity picks the HIGHER tier.
+The rulebook (CLAUDE.md rule 5) names one tier: --brief. The lighter tiers remain for plans the
+owner explicitly asks for. Ambiguity picks the HIGHER tier.
   --small     one reversible spec, one bounded component        cap  40 lines
   (default)   a non-trivial single spec, decision-complete      cap 250 lines
   --brief     a program: coordinated specs, a handoff gate,     cap 400 lines

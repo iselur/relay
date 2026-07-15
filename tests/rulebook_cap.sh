@@ -7,10 +7,10 @@ cd "$(dirname "$0")/.."
 
 fails=0
 lines=$(wc -l < CLAUDE.md)
-if [ "$lines" -le 80 ]; then
-  echo "  ok: CLAUDE.md is $lines lines (cap 80)"
+if [ "$lines" -le 65 ]; then
+  echo "  ok: CLAUDE.md is $lines lines (cap 65)"
 else
-  echo "  FAIL: CLAUDE.md is $lines lines — cap is 80. A rule must REPLACE something, not stack (R26/R29)."
+  echo "  FAIL: CLAUDE.md is $lines lines — cap is 65. A rule must REPLACE something, not stack (R26/R29)."
   fails=1
 fi
 
