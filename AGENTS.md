@@ -9,7 +9,7 @@ only file that maps a role to a vendor — swapping a model is an edit here, nev
 |---|---|---|
 | owner | the human | approves specs, merges `main` |
 | orchestrator | Claude Code on this box | dispatches, reviews worker diffs, reports |
-| worker | Codex CLI (`gpt-5.6-sol`) | research, drafts, implementation, tests |
+| worker | Codex CLI (`gpt-5.6-luna`) | research, drafts, implementation, tests (BUILD phase) |
 | reviewer | whichever vendor did NOT author the work | never self-review, never same-vendor review |
 
 ## What this repo is
@@ -38,7 +38,9 @@ untouched → in scope → tests actually ran → cross-vendor review), and open
 
 ## Codex on this box
 
-- Invocation: `codex exec -m gpt-5.6-sol -c model_reasoning_effort=high -c service_tier=priority
+- Model split: worker BUILD runs `gpt-5.6-luna` (dispatcher default); plans (`scripts/codex-plan`)
+  and reviews (`scripts/review`) stay `gpt-5.6-sol`.
+- Invocation: `codex exec -m <model per split above> -c model_reasoning_effort=high -c service_tier=priority
   --sandbox read-only --skip-git-repo-check - <prompt.txt` — prompt on stdin always (argv dies
   over 130KB). Web search: `-c tools.web_search=true`. The priority tier is a speed setting only.
 - Consultations run detached (background or `systemd-run --user`) and may legitimately take hours —

@@ -1885,7 +1885,7 @@ def cmd_launch(spec_id: str) -> None:
         "needs_network": spec.get("needs_network", False),
         "base_sha": base_sha, "branch": branch,
         "base_branch": approval.get("base_branch", AUTOMATION_BASE),
-        "worktree": str(wt), "worker_model": approval.get("worker_model", "gpt-5.6-sol"),
+        "worktree": str(wt), "worker_model": approval.get("worker_model", "gpt-5.6-luna"),
         "worker_effort": approval.get("worker_reasoning_effort", "high"),
         "reviewer_model": approval.get("reviewer_model", "claude-fable-5"),
         "reviewer_effort": approval.get("reviewer_effort", "high"),
