@@ -73,6 +73,28 @@ check("empty role model refuses launch (exit 2)", load_result() == "exit2")
 bad = copy.deepcopy(good); bad["vendor_map"]["some-model"] = "other-vendor"
 scratch.write_text(json.dumps(bad))
 check("vendor outside claude|codex refuses launch (exit 2)", load_result() == "exit2")
+# Round-1 review, finding 3: a config that is not valid UTF-8 must refuse with exit 2, not an
+# uncaught decode traceback.
+scratch.write_bytes(b'\xff\xfe{ not utf-8 }')
+check("non-UTF-8 config refuses launch (exit 2)", load_result() == "exit2")
+# Round-1 review, finding 1: vendor RELATIONSHIPS are validated, not just vendor values. A known
+# vendor prefix declared as the other vendor is the misdeclaration that would allow same-vendor
+# review to pass — refused. And every model the config names must be declared in vendor_map.
+bad = copy.deepcopy(good); bad["vendor_map"]["gpt-5.6-sol"] = "claude"
+scratch.write_text(json.dumps(bad))
+check("gpt model declared as claude vendor refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["vendor_map"]["claude-opus-4-8"] = "codex"
+scratch.write_text(json.dumps(bad))
+check("claude model declared as codex vendor refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); del bad["vendor_map"][bad["roles"]["worker"]["model"]]
+scratch.write_text(json.dumps(bad))
+check("role model missing from vendor_map refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); del bad["vendor_map"][bad["reviewer_failover"]["fallback_model"]]
+scratch.write_text(json.dumps(bad))
+check("failover model missing from vendor_map refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["cli_aliases"]["claude-fable-5"] = 7
+scratch.write_text(json.dumps(bad))
+check("non-string CLI alias refuses launch (exit 2)", load_result() == "exit2")
 
 scratch.write_text(json.dumps(good))
 check("valid config loads cleanly", load_result() == "ok")

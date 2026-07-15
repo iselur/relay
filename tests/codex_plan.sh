@@ -375,4 +375,23 @@ grep -q 'concurrent plan ONE' "$conc_dir"/PLAN-002.md "$conc_dir"/PLAN-003.md 2>
 grep -q 'concurrent plan TWO' "$conc_dir"/PLAN-002.md "$conc_dir"/PLAN-003.md 2>/dev/null \
   || fail "concurrent plan TWO missing from the allocated ids (an overwrite ate it)"
 
+# R71 (round-1 review): the WHOLE models config is validated before drafting — a copy of the
+# script beside a config missing a required section must refuse, even though its own
+# roles.spec_author.model value is present and readable.
+mkdir -p "$tmp/gutted/scripts"
+cp -p scripts/codex-plan scripts/models_check.py "$tmp/gutted/scripts/"
+"$PY" - scripts/models.json "$tmp/gutted/scripts/models.json" <<'GUT'
+import json, sys
+cfg = json.load(open(sys.argv[1])); del cfg["vendor_map"]
+json.dump(cfg, open(sys.argv[2], "w"))
+GUT
+if PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$tmp/gut-args" CODEX_STUB_PROMPT="$tmp/gut-prompt" \
+    "$tmp/gutted/scripts/codex-plan" --small --out "$tmp/gutted-out" 'should refuse' \
+    >"$tmp/gutted.out" 2>&1; then
+  fail "codex-plan drafted with a config missing vendor_map: $(cat "$tmp/gutted.out")"
+fi
+grep -qi 'models config' "$tmp/gutted.out" \
+  || fail "gutted-config refusal did not name the models config: $(cat "$tmp/gutted.out")"
+[ ! -e "$tmp/gutted-out" ] || fail "gutted-config refusal still created an output dir"
+
 echo "PASS codex_plan.sh"

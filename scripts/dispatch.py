@@ -26,6 +26,7 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -100,58 +101,32 @@ ATTEMPT_APPROVAL_SCHEMA = {
         "note": {"type": "string"},
     },
 }
-# R71: scripts/models.json shape. All six rev-4 roles are REQUIRED — a config that lost a role is
-# treated as corrupt, not defaulted. vendor_map is closed-world (enum), so a model outside claude/
-# codex vendors cannot be smuggled in; scripts/review refuses any model absent from the map.
-_MODEL_ROLE_SCHEMA = {
-    "type": "object", "required": ["model", "effort"], "additionalProperties": False,
-    "properties": {"model": {"type": "string", "minLength": 1},
-                   "effort": {"type": "string", "minLength": 1}},
-}
-MODEL_CONFIG_SCHEMA = {
-    "type": "object",
-    "required": ["schema_version", "roles", "reviewer_failover", "cli_aliases", "vendor_map"],
-    "additionalProperties": False,
-    "properties": {
-        "schema_version": {"const": "1"},
-        "roles": {
-            "type": "object", "additionalProperties": False,
-            "required": ["orchestrator", "spec_author", "utility_subagent", "worker",
-                         "bound_reviewer", "orchestrator_artifact_reviewer"],
-            "properties": {r: _MODEL_ROLE_SCHEMA for r in (
-                "orchestrator", "spec_author", "utility_subagent", "worker",
-                "bound_reviewer", "orchestrator_artifact_reviewer")},
-        },
-        "reviewer_failover": {
-            "type": "object", "additionalProperties": False,
-            "required": ["trigger_model", "fallback_model"],
-            "properties": {"trigger_model": {"type": "string", "minLength": 1},
-                           "fallback_model": {"type": "string", "minLength": 1}},
-        },
-        "cli_aliases": {"type": "object",
-                        "additionalProperties": {"type": "string", "minLength": 1}},
-        "vendor_map": {"type": "object",
-                       "additionalProperties": {"enum": ["claude", "codex"]}},
-    },
-}
-
-
 def load_model_config() -> dict:
-    """Load and schema-validate scripts/models.json (R71). Fail closed on ANY error — a missing,
-    unreadable, malformed, or schema-invalid config refuses the launch; nothing falls back to a
-    hard-coded model. Called once in cmd_launch(); the values are frozen into launch.json, so
-    editing the config mid-run cannot change a running attempt (lc freeze semantics)."""
+    """Load and validate scripts/models.json (R71). Fail closed on ANY error — a missing,
+    unreadable, non-UTF-8, malformed, or invalid config refuses the launch with exit 2; nothing
+    falls back to a hard-coded model. Validation lives in scripts/models_check.py, the ONE
+    validator every consumer shares (round-1 review: the shell consumers must check the whole
+    config, not one path — a second schema here would drift from theirs). Called once in
+    cmd_launch(); the values are frozen into launch.json, so editing the config mid-run cannot
+    change a running attempt (lc freeze semantics)."""
     try:
-        raw = MODEL_CONFIG.read_text()
-    except OSError as exc:
+        spec = importlib.util.spec_from_file_location(
+            "models_check", ROOT / "scripts" / "models_check.py")
+        models_check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(models_check)
+    except Exception as exc:
+        die(f"models validator missing or broken (scripts/models_check.py): {exc} — fail closed")
+    try:
+        raw = MODEL_CONFIG.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         die(f"models config missing or unreadable ({MODEL_CONFIG}): {exc} — fail closed")
     try:
         cfg = json.loads(raw)
     except json.JSONDecodeError as exc:
         die(f"models config is not valid JSON ({MODEL_CONFIG}): {exc} — fail closed")
-    errs = [e.message for e in Draft202012Validator(MODEL_CONFIG_SCHEMA).iter_errors(cfg)]
+    errs = models_check.validate(cfg)
     if errs:
-        die(f"models config schema-invalid ({MODEL_CONFIG}): " + "; ".join(sorted(errs)))
+        die(f"models config invalid ({MODEL_CONFIG}): " + "; ".join(errs))
     return cfg
 
 

@@ -30,12 +30,14 @@ die() {
   exit 2
 }
 
-# R71: the spec/plan-author model comes from the machine config (scripts/models.json). Fail
-# closed — a missing, unreadable, or incomplete config refuses to draft; no hard-coded fallback.
-MODELS_CFG="$(dirname "$(realpath "$0")")/models.json"
+# R71: the spec/plan-author model comes from the machine config, fetched through
+# scripts/models_check.py — which validates the WHOLE config first (round-1 review), not just
+# this one value. Fail closed — any config problem refuses to draft; no hard-coded fallback.
+SCRIPTS_DIR="$(dirname "$(realpath "$0")")"
+MODELS_CFG="$SCRIPTS_DIR/models.json"
 [ -f "$MODELS_CFG" ] || die "models config missing: $MODELS_CFG (fail closed)"
-MODEL=$(jq -re '.roles.spec_author.model // empty' "$MODELS_CFG") \
-  || die "models config unreadable or roles.spec_author.model missing: $MODELS_CFG"
+MODEL=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" get roles.spec_author.model) \
+  || die "models config invalid, or roles.spec_author.model unusable: $MODELS_CFG"
 
 while (($#)); do
   case "$1" in
