@@ -49,11 +49,12 @@ cd "$ROOT" || exit 1
 read -r -d '' PROMPT <<'EOP'
 You are the orchestrator, resumed autonomously on the Hetzner box in a fresh usage window. Work ONE
 step of the post-audit hardening, then stop. Rules (from CLAUDE.md, binding):
-- Read CLAUDE.md, ACTION-PLAN.md, and .orchestrator/decisions/SELF-REFLECT-2026-07/06-reconciled-findings.md.
-- Pick the highest-priority ON-BOX action item that is not yet done (isolation fail-open; base+review
-  required-check on all merge paths; snapshot+hash-all-evidence + reconcile GC; approval/grant schema;
-  scoped sudoers + worker resource ceilings; reviewer-value seeded-defect experiment; metrics-semantics
-  fix). These are trust-critical: follow the HIGH-ASSURANCE LANE — Codex drafts the plan (detached
+- Read CLAUDE.md, .orchestrator/BACKLOG.md, and the current audit disposition tracker at
+  .orchestrator/reviews/codex-audit-2026-07-15/disposition.md (if a newer handoff exists in
+  ~/orchestrator-private/, prefer it for queued-work state).
+- Pick the highest-priority not-yet-done item from the active workstream (currently backlog item 8,
+  the 2026-07-15 audit remediation: mediums B9-B17, then docs; B8 waits on the owner). These are
+  trust-critical: follow the HIGH-ASSURANCE LANE — Codex drafts the plan (detached
   `codex exec --sandbox read-only`, stdin from /dev/null, no minute timeout), you challenge it in
   writing, get an adversarial SOL design review, then implement via a Codex worker spec (or directly if
   it is orchestrator control-plane), gate it, review it, and open a PR.
