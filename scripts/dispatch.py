@@ -50,6 +50,31 @@ WORKTREES = ROOT / ".worktrees"
 HALT = ORCH / "HALT"
 SPEC_SCHEMA = SPECS / "spec.schema.json"
 VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
+# Approval artifact shapes (B1). Approvals were trusted by digest+instance equality only, and the
+# per-attempt high-risk approval by mere file EXISTENCE — an empty or garbage file authorized a
+# high-risk dispatch. Both are now schema-validated AND bound to this spec/instance (and attempt).
+APPROVAL_SCHEMA = {
+    "type": "object",
+    "required": ["spec_id", "spec_digest", "instance_id", "approver", "approved_scope"],
+    "properties": {
+        "spec_id": {"type": "string", "minLength": 1},
+        "spec_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "instance_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "approver": {"type": "string", "minLength": 1},
+        "approved_scope": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    },
+}
+ATTEMPT_APPROVAL_SCHEMA = {
+    "type": "object",
+    "required": ["spec_id", "spec_digest", "instance_id", "attempt", "approver"],
+    "properties": {
+        "spec_id": {"type": "string", "minLength": 1},
+        "spec_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "instance_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "attempt": {"type": "integer", "minimum": 1},
+        "approver": {"type": "string", "minLength": 1},
+    },
+}
 VENV_PY = ROOT / ".venv" / "bin" / "python"
 EXECUTION_POLICY = ROOT / "tests" / "execution-policy.tsv"
 TEST_RUNTIME_ROOT = Path("/opt/orchestrator-test-runtime")
@@ -332,7 +357,18 @@ def approval_for(digest: str) -> dict | None:
     p = APPROVALS / f"{digest}.json"
     if not p.exists():
         return None
-    return json.loads(p.read_text())
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        die(f"approval artifact {p.name} is not valid JSON; refuse.", 6)
+
+
+def _validate_approval(obj: dict, schema: dict, label: str, code: int) -> None:
+    """Schema-validate an approval artifact (B1). Fail-closed: any shape error refuses the launch."""
+    errs = [("/".join(str(x) for x in e.path) + ": " if e.path else "") + e.message
+            for e in Draft202012Validator(schema).iter_errors(obj)]
+    if errs:
+        die(f"{label} schema-invalid:\n  - " + "\n  - ".join(errs), code)
 
 
 def preflight(spec_id: str) -> dict:
@@ -358,6 +394,7 @@ def preflight(spec_id: str) -> dict:
     if approval is None:
         die(f"no approval artifact for digest {digest} (spec unapproved or edited since "
             f"approval). Expected {APPROVALS / (digest + '.json')}.", 6)
+    _validate_approval(approval, APPROVAL_SCHEMA, f"approval {digest[:12]}…", 6)
     if approval.get("spec_digest") != digest:
         die("approval artifact's spec_digest does not match the current spec file.", 6)
 
@@ -515,6 +552,23 @@ def remediation_preflight(spec_id: str, spec: dict, digest: str, n: int) -> dict
         if not pa.exists():
             die(f"high-risk spec: attempt {n} needs the operator's per-dispatch approval artifact "
                 f"({pa}); refusing to launch.", 17)
+        # B1: existence is not authorization. Parse + schema-validate + bind to this
+        # spec/instance/attempt — an empty or mismatched file must NOT authorize a high-risk dispatch.
+        try:
+            pa_obj = json.loads(pa.read_text())
+        except Exception:
+            die(f"per-dispatch approval {pa.name} is not valid JSON; refuse.", 17)
+        _validate_approval(pa_obj, ATTEMPT_APPROVAL_SCHEMA, f"per-dispatch approval {pa.name}", 17)
+        pa_inst = ensure_instance()
+        if pa_obj.get("spec_digest") != digest:
+            die(f"per-dispatch approval {pa.name} spec_digest does not match the current spec; "
+                f"refuse.", 17)
+        if pa_obj.get("instance_id") != pa_inst["instance_id"]:
+            die(f"per-dispatch approval {pa.name} is not bound to this instance "
+                f"({pa_inst['instance_id'][:12]}…); refuse.", 17)
+        if pa_obj.get("attempt") != n:
+            die(f"per-dispatch approval {pa.name} attempt={pa_obj.get('attempt')} != launching "
+                f"attempt {n}; refuse.", 17)
 
     if k == 0:
         return None  # initial attempt (or only infrastructure re-launches so far)
