@@ -189,6 +189,15 @@ check("failover trigger accepts only the full model-not-found discriminator",
       and not d.reviewer_model_unavailable(json.dumps(
           {"type": "result", "is_error": True, "api_error_status": 404,
            "result": "The requested resource was not found"}))              # unrelated 404 string
+      and not d.reviewer_model_unavailable(json.dumps(
+          {"type": "result", "is_error": True, "api_error_status": 404,
+           "result": "There's an issue with the selected model"}))          # only ONE phrase (round-3)
+      and not d.reviewer_model_unavailable(json.dumps(
+          {"type": "result", "is_error": True, "api_error_status": 404,
+           "result": json.dumps(["issue with the selected model"])}))       # JSON-array body (round-3)
+      and not d.reviewer_model_unavailable(json.dumps(
+          {"type": "result", "is_error": True, "api_error_status": 404,
+           "result": "42"}))                                                 # JSON-scalar body
       and not d.reviewer_model_unavailable("not json")
       and not d.reviewer_model_unavailable(""))
 
@@ -298,6 +307,21 @@ check("failover: exhausted deadline refuses the fallback invocation (fail closed
       # fallback_returncode implying an invocation that never ran.
       and fo72["primary_returncode"] == 1 and "deadline exhausted" in fo72["fallback_refused"]
       and "fallback_returncode" not in fo72)
+
+# review.json provenance (round-3 finding 2): the canonical record binds the EFFECTIVE reviewer
+# model (post-failover) through the single tested writer used by the dispatch pipeline. Passing the
+# fallback model proves the recorded attribution follows the model that produced the verdict.
+attp = tmp / "attempts" / "SPEC-906" / "1"; (attp / "raw").mkdir(parents=True)
+d.write_review_record(attp, dict(good_verdict), d.REVIEWER_FALLBACK_MODEL)
+rec = json.loads((attp / "review.json").read_text())
+check("review.json binds effective_reviewer_model = the model that produced the verdict",
+      rec["effective_reviewer_model"] == d.REVIEWER_FALLBACK_MODEL and rec["verdict"] == "PASS"
+      # the writer copies the verdict — the reviewer's own object is not mutated with our key.
+      and "effective_reviewer_model" not in good_verdict)
+attn = tmp / "attempts" / "SPEC-907" / "1"; (attn / "raw").mkdir(parents=True)
+d.write_review_record(attn, None, d.REVIEWER_FALLBACK_MODEL)
+check("review.json for a null verdict is an empty record, no bogus attribution",
+      (attn / "review.json").read_text().strip() == "{}")
 
 sys.exit(1 if fails else 0)
 PY

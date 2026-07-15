@@ -2488,14 +2488,10 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
 
     # --- step 8: reviewer (bound, fail-closed) --------------------------------
     verdict, vraw = review(att, spec_id, lc, worker_commit, attestation)
-    # Round-2 review, finding 3: bind the EFFECTIVE reviewer model onto the canonical review record
-    # itself, not only result.json and the PR body. lc["reviewer_model"] was updated in place by
-    # review() on any failover, so this names the model that actually produced the verdict. The key
-    # is orchestrator-authored control-plane provenance (a namespaced addition alongside the
-    # reviewer's own fields); existing readers select specific keys and ignore it.
-    if verdict:
-        verdict["effective_reviewer_model"] = lc["reviewer_model"]
-    atomic_write(att / "review.json", json.dumps(verdict, indent=2) if verdict else "{}")
+    # Round-2 finding 3 / round-3 finding 2: bind the EFFECTIVE reviewer model onto the canonical
+    # review record through ONE tested writer (write_review_record), so the attribution is covered
+    # by a direct assertion rather than only as an incidental side effect of this pipeline.
+    write_review_record(att, verdict, lc["reviewer_model"])
     binary_result = (evaluate_binary_review(
         verdict.get("verdict"), verdict.get("criteria", []),
         verdict.get("scope_finding"), verdict.get("regression_finding"),
@@ -2767,6 +2763,20 @@ def evaluate_binary_review(verdict: str, criteria: list[dict], scope_finding: st
     return verdict
 
 
+def write_review_record(att: Path, verdict: "dict | None", effective_reviewer_model: str) -> None:
+    """Persist the canonical review.json, binding the EFFECTIVE reviewer model (the one that actually
+    produced the verdict, after any Fable→Opus failover) onto the record. This is the SINGLE writer
+    of review.json's provenance (round-3 review, finding 2): keeping it here lets a test assert the
+    attribution directly, instead of it being an untested side effect of the dispatch pipeline. The
+    verdict object is copied, never mutated, so the reviewer's own fields are left untouched; the
+    added key is namespaced control-plane provenance that existing key-selecting readers ignore. A
+    missing verdict writes an empty record with no bogus attribution."""
+    record = dict(verdict) if verdict else None
+    if record:
+        record["effective_reviewer_model"] = effective_reviewer_model
+    atomic_write(att / "review.json", json.dumps(record, indent=2) if record else "{}")
+
+
 # Round-2 review, finding 1: a bare `type=result + is_error + api_error_status 404` is NOT
 # specific enough — a missing/null/arbitrary-string `result` alongside those generic fields (any
 # unrelated 404 the CLI ever surfaces that way) would buy the diff a second reviewer roll. The
@@ -2802,13 +2812,20 @@ def reviewer_model_unavailable(stdout: str) -> bool:
     res = env.get("result")
     if not isinstance(res, str) or not res.strip():
         return False
+    # The genuine message is human prose that does NOT parse as JSON. Anything that decodes as
+    # valid JSON — an object, an array, or a scalar — is structured output or a malformed envelope,
+    # never the model-not-found text, and must never buy a retry (round-3 review: the object-only
+    # check let a JSON-array body like ["issue with the selected model"] slip through).
     try:
-        if isinstance(json.loads(res), dict):
-            return False
+        json.loads(res)
     except Exception:
-        pass
+        pass          # not JSON — a plain string, as the real message is
+    else:
+        return False  # decoded as JSON → not the human message
     low = res.lower()
-    return any(phrase in low for phrase in _MODEL_UNAVAILABLE_PHRASES)
+    # Require the COMPLETE captured signature — EVERY phrase, not just one fragment (round-3 review:
+    # `any()` let an unrelated 404 carrying only one phrase trigger the failover).
+    return all(phrase in low for phrase in _MODEL_UNAVAILABLE_PHRASES)
 
 
 def validate_review_verdict(verdict: dict, schema_obj: dict, lc: dict, wc: str) -> bool:
