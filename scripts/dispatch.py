@@ -23,12 +23,14 @@ Invariants (CLAUDE.md):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat as stat_module
 import subprocess
 import sys
 import tempfile
@@ -181,8 +183,21 @@ def run(cmd, **kw):
     return subprocess.run(cmd, **kw)
 
 
+# B4 finding 4: a planted `refs/replace/<oid>` transparently swaps a replacement tree/blob under
+# EVERY object read (git show/ls-tree/diff/cat-file) while `rev-parse HEAD` still reports the
+# original, attested commit hash — so enumeration and blob reads would grade replacement content
+# labelled as the real commit. `--no-replace-objects` + GIT_NO_REPLACE_OBJECTS=1 disable that
+# substitution. We apply them to the ONE git wrapper every call routes through, so no pinned read
+# can forget them; it is harmless for write commands (replace refs only affect object resolution).
+_GIT_READ_ENV = {"GIT_NO_REPLACE_OBJECTS": "1"}
+
+
+def _git_env() -> dict:
+    return {**os.environ, **_GIT_READ_ENV}
+
+
 def git(*args, cwd=ROOT, check=True):
-    cp = run(["git", *args], cwd=str(cwd))
+    cp = run(["git", "--no-replace-objects", *args], cwd=str(cwd), env=_git_env())
     if check and cp.returncode != 0:
         die(f"git {' '.join(args)} failed: {cp.stderr.strip()}")
     return cp.stdout.strip()
@@ -200,8 +215,10 @@ def sha256_file(path: Path) -> str:
 # PINNED GIT TREE (git ls-tree/git show <commit>), never Path.glob/read_bytes on tests/, and
 # refuse to grade at all if the working tree has drifted from that commit (grader_drift below).
 def git_show_bytes(commit: str, rel: str, cwd: Path = ROOT) -> bytes:
-    """Exact bytes of the committed blob at `commit`:`rel` — never the working-tree file."""
-    cp = run(["git", "show", f"{commit}:{rel}"], cwd=str(cwd), capture_output=True, text=False)
+    """Exact bytes of the committed blob at `commit`:`rel` — never the working-tree file. Reads
+    with replace-objects disabled (finding 4) so a planted replacement blob cannot be returned."""
+    cp = run(["git", "--no-replace-objects", "show", f"{commit}:{rel}"], cwd=str(cwd),
+             capture_output=True, text=False, env=_git_env())
     if cp.returncode != 0:
         stderr = (cp.stderr or b"").decode("utf-8", "replace")
         raise ValueError(f"git show {commit}:{rel} failed: {stderr.strip()}")
@@ -212,8 +229,9 @@ def git_ls_tree_sh(commit: str, subdir: str, cwd: Path = ROOT) -> list[tuple[str
     """(mode, type, path) for every *.sh entry directly inside subdir/ at commit — non-recursive,
     matching the old tests_dir.glob('*.sh') semantics (direct children only, not descended
     subdirectories). Includes symlinks/non-blobs so the caller can fail closed on them explicitly,
-    the same way the old code refused a symlinked test file."""
-    cp = run(["git", "ls-tree", "-z", commit, "--", f"{subdir}/"], cwd=str(cwd))
+    the same way the old code refused a symlinked test file. Replace-objects disabled (finding 4)."""
+    cp = run(["git", "--no-replace-objects", "ls-tree", "-z", commit, "--", f"{subdir}/"],
+             cwd=str(cwd), env=_git_env())
     if cp.returncode != 0:
         raise ValueError(f"git ls-tree {commit} -- {subdir}/ failed: {cp.stderr.strip()}")
     out = []
@@ -229,45 +247,145 @@ def git_ls_tree_sh(commit: str, subdir: str, cwd: Path = ROOT) -> list[tuple[str
     return sorted(out, key=lambda t: t[2])
 
 
+def committed_entry(commit: str, rel: str, cwd: Path = ROOT) -> tuple[str, str] | None:
+    """(mode, type) of the tree entry at exactly `commit`:`rel`, or None if absent. Used to prove a
+    committed grader input is a REGULAR blob (mode 100644/100755) and not a symlink (120000),
+    gitlink, or tree — finding 5: git show would happily hand back a symlink's target-path text as
+    'manifest' bytes. Replace-objects disabled (finding 4)."""
+    cp = run(["git", "--no-replace-objects", "ls-tree", "-z", commit, "--", rel],
+             cwd=str(cwd), env=_git_env())
+    if cp.returncode != 0:
+        return None
+    for entry in cp.stdout.split("\x00"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        fields = meta.split()
+        if len(fields) == 3 and path == rel:
+            return fields[0], fields[1]   # (mode, type)
+    return None
+
+
+def _is_regular_blob(meta: tuple[str, str] | None) -> bool:
+    return meta is not None and meta[1] == "blob" and meta[0] in ("100644", "100755")
+
+
 def grader_drift(commit: str, root: Path = ROOT) -> list[str]:
     """One description per grader-relevant difference between the working tree and `commit` —
-    empty means the working tree is byte-identical to the pinned commit for every path the grader
-    reads: tests/ (including tests/execution-policy.tsv) and scripts/test. Staged, unstaged,
-    deleted, and untracked-shadowing files all count. Callers MUST refuse to grade (fail closed)
-    when this returns anything non-empty: a dirty or partially-deleted tests/ checkout must never
-    be allowed to define or execute the "installed" suite that the attestation then labels with
-    `commit` (B4)."""
-    paths = ["tests", "scripts/test"]
+    empty means every path the grader reads (scripts/test, tests/execution-policy.tsv, tests/*.sh)
+    is present on disk as a regular non-symlink file whose BYTES are identical to the committed
+    blob, with no extra tests/*.sh shadowing the committed suite. Callers MUST refuse to grade
+    (fail closed) on any non-empty result (B4).
+
+    Finding 3: this does NOT use `git diff`/`git status` as a byte-identity oracle. Those consult
+    git's index and stat cache, which `assume-unchanged`/`skip-worktree` deliberately suppress, and
+    a staged-then-reverted change can net to 'clean'. Instead we read the committed blob bytes
+    (via git show, replace-objects off) and the working-tree bytes DIRECTLY off disk and compare
+    them — plus type and executable-mode — so nothing git's index says can hide a real difference."""
     problems: list[str] = []
-    diff = run(["git", "diff", "--name-status", "-z", commit, "--", *paths], cwd=str(root))
-    if diff.returncode != 0:
-        problems.append(f"git diff against {commit} failed (exit {diff.returncode}): "
-                        f"{diff.stderr.strip()}")
-    else:
-        toks = diff.stdout.split("\x00")
-        i = 0
-        while i < len(toks):
-            status = toks[i]
-            if not status:
-                i += 1
-                continue
-            if status.startswith("R"):
-                src, dst = toks[i + 1], toks[i + 2]
-                problems.append(f"tracked drift ({status}): {src} -> {dst}")
-                i += 3
-            else:
-                problems.append(f"tracked drift ({status}): {toks[i + 1]}")
-                i += 2
-    status_cp = run(["git", "status", "--porcelain=v2", "-z", "--untracked-files=all",
-                     "--", *paths], cwd=str(root))
-    if status_cp.returncode != 0:
-        problems.append(f"git status failed (exit {status_cp.returncode}): "
-                        f"{status_cp.stderr.strip()}")
-    else:
-        for entry in status_cp.stdout.split("\x00"):
-            if entry.startswith("? "):
-                problems.append(f"untracked grader file: {entry[2:]}")
+    committed: dict[str, bytes] = {}     # rel -> committed blob bytes (the grader files)
+
+    def _add_committed(rel: str) -> None:
+        meta = committed_entry(commit, rel, cwd=root)
+        if meta is None:
+            problems.append(f"grader input missing from commit {commit}: {rel}")
+            return
+        if not _is_regular_blob(meta):
+            problems.append(f"grader input is not a regular file at {commit}: {rel} "
+                            f"(mode {meta[0]}, type {meta[1]})")
+            return
+        committed[rel] = git_show_bytes(commit, rel, cwd=root)
+
+    _add_committed("scripts/test")
+    _add_committed("tests/execution-policy.tsv")
+    for mode, otype, path in git_ls_tree_sh(commit, "tests", cwd=root):
+        if otype != "blob" or mode not in ("100644", "100755"):
+            problems.append(f"required test is not a regular non-symlink file at {commit}: {path} "
+                            f"(mode {mode}, type {otype})")
+            continue
+        committed[path] = git_show_bytes(commit, path, cwd=root)
+
+    for rel, want in committed.items():
+        p = root / rel
+        try:
+            st = p.lstat()
+        except OSError:
+            problems.append(f"grader input committed at {commit} but missing on disk: {rel}")
+            continue
+        if stat_module.S_ISLNK(st.st_mode) or not stat_module.S_ISREG(st.st_mode):
+            problems.append(f"grader path on disk is a symlink or non-regular file: {rel}")
+            continue
+        try:
+            got = p.read_bytes()
+        except OSError as e:
+            problems.append(f"grader input unreadable on disk: {rel}: {e}")
+            continue
+        if got != want:
+            problems.append(f"working-tree bytes differ from commit {commit}: {rel}")
+        # mode drift: committed executables must stay executable and vice-versa (finding 3)
+        disk_exec = bool(st.st_mode & 0o111)
+        # rel's committed mode: 100755 for the tests (from ls-tree) / re-check scripts+manifest
+        meta = committed_entry(commit, rel, cwd=root)
+        want_exec = bool(meta and meta[0] == "100755")
+        if disk_exec != want_exec:
+            problems.append(f"working-tree mode differs from commit {commit}: {rel} "
+                            f"(disk {'exec' if disk_exec else 'non-exec'}, "
+                            f"commit {'exec' if want_exec else 'non-exec'})")
+
+    # An untracked/extra tests/*.sh that is NOT in the committed suite would still be run by
+    # `scripts/test`'s own `tests/*.sh` glob at integration time — refuse it (untracked-shadowing).
+    tests_dir = root / "tests"
+    try:
+        disk_sh = sorted(tests_dir.glob("*.sh"))
+    except OSError:
+        disk_sh = []
+    for p in disk_sh:
+        rel = str(p.relative_to(root))
+        if p.is_symlink() or not p.is_file():
+            problems.append(f"tests/ entry on disk is a symlink or non-regular file: {rel}")
+        elif rel not in committed:
+            problems.append(f"untracked test shadowing the committed suite: {rel}")
     return problems
+
+
+@contextlib.contextmanager
+def materialized_committed_test(commit: str, rel: str, root: Path = ROOT):
+    """Yield (path, bytes): the committed blob for `rel` written to an unpredictable, glob-invisible
+    path UNDER tests/ so a test's own `cd "$(dirname "$0")/.."` still resolves the repo root, while
+    $0 is NOT the stable, well-known ROOT/rel an attacker could swap between our hash check and
+    bash's open (finding 2 TOCTOU). The leading dot keeps it out of every `tests/*.sh` glob (the
+    runner's and execution_policy's), so it never joins or shadows the suite; it is chmod 0500 and
+    removed on exit. Callers hash THIS path before/after the run, so any tamper of the actually
+    executed bytes still fails the observation closed."""
+    data = git_show_bytes(commit, rel, cwd=root)
+    tests_dir = root / "tests"
+    fd, tmp = tempfile.mkstemp(dir=str(tests_dir), prefix=".b4run-", suffix=".sh")
+    p = Path(tmp)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(p, 0o500)
+        yield p, data
+    finally:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def integration_grade_gate(root: Path = ROOT) -> tuple[str, list[str]]:
+    """Finding 1 — the post-merge integration gate. Returns (merged_commit, drift_problems).
+
+    cmd_integrate re-runs the installed `./scripts/test` after each merge, but that runner globs and
+    executes the FILESYSTEM `tests/*.sh` + `scripts/test`. If the working tree has drifted from the
+    commit that just landed (a dirty/replaced scripts/test, altered manifest, deleted tracked test,
+    or untracked tests/*.sh), the suite would grade code the post-merge commit does not contain.
+    Resolve the merged commit and require grader_drift() empty before grading; the caller escalates
+    (never grades) on any non-empty result, exactly like launch and the candidate phases."""
+    commit = git("rev-parse", "HEAD", cwd=root)
+    return commit, grader_drift(commit, root)
 
 
 def execution_policy(root: Path = ROOT, commit: str | None = None) -> dict:
@@ -283,11 +401,19 @@ def execution_policy(root: Path = ROOT, commit: str | None = None) -> dict:
     entries and an empty installed suite fail closed. Unlisted tests are candidate-isolated.
     """
     if commit is None:
-        cp = run(["git", "rev-parse", "HEAD"], cwd=str(root))
+        cp = run(["git", "--no-replace-objects", "rev-parse", "HEAD"], cwd=str(root),
+                 env=_git_env())
         if cp.returncode != 0:
             raise ValueError(f"cannot resolve HEAD of {root}: {cp.stderr.strip()}")
         commit = cp.stdout.strip()
     manifest_rel = "tests/execution-policy.tsv"
+    # Finding 5: reject a committed symlink/non-regular manifest — git show would otherwise return a
+    # symlink's target-path string and we would parse THAT as policy text. The old filesystem code
+    # rejected symlinks/non-regular files; the pinned-tree read must too, for the manifest AND (in
+    # git_ls_tree_sh below) every required test blob.
+    if not _is_regular_blob(committed_entry(commit, manifest_rel, cwd=root)):
+        raise ValueError(f"execution policy is not a regular committed file at {commit}: "
+                         f"{manifest_rel} (symlink or non-blob rejected)")
     try:
         manifest_bytes = git_show_bytes(commit, manifest_rel, cwd=root)
     except ValueError as e:
@@ -1382,14 +1508,14 @@ def attestation_record(policy: dict, observations: dict[str, list[dict]]) -> dic
 def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
     """Run installed box drills as the operator, serialized, before candidate worktree creation.
 
-    Box-precondition tests inspect the REAL host (bwrap/AppArmor/ACL state) as the operator, so
-    they must execute at their real ROOT/tests path — not a materialized copy — for `cd
-    "$(dirname "$0")/.."` to resolve to the actual repo. That is safe here because cmd_launch calls
-    grader_drift() immediately before computing `policy`, and nothing runs between that check and
-    this function that could touch tests/: the filesystem is provably identical to
-    policy["installed_commit"]'s git tree at this point (B4). `before_test` is still hashed from
-    the live file and is checked against policy["test_sha256"][rel] downstream in attest_tests(),
-    so a hash mismatch here — however it happened — still fails closed."""
+    Box-precondition tests inspect the REAL host (bwrap/AppArmor/ACL state) as the operator and
+    self-locate via `cd "$(dirname "$0")/.."`, so they must run from a path UNDER tests/ — but
+    NOT the stable, well-known ROOT/rel that another operator-context process could swap between
+    the hash check and bash's open (finding 2 TOCTOU). We materialize the committed blob to an
+    unpredictable dotfile under tests/ (invisible to every *.sh glob), run THAT, and hash the
+    executed file before/after — so the graded bytes are the pinned commit's and any tamper of the
+    file we actually ran still fails the observation closed. The hashes are checked against
+    policy["test_sha256"][rel] (the committed hash) downstream in attest_tests()."""
     observations: dict[str, list[dict]] = {rel: [] for rel in policy["required"]}
     box_tests = [rel for rel in policy["required"]
                  if policy["modes"][rel] == "box-precondition"]
@@ -1402,20 +1528,20 @@ def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
     with open(lock, "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         for rel in box_tests:
-            test_path = ROOT / rel
             before_commit = git("rev-parse", "HEAD", cwd=ROOT)
-            before_test = sha256_file(test_path)
             before_manifest = sha256_file(EXECUTION_POLICY)
             started = now()
             log = att / "raw" / f"box-precondition-{Path(rel).stem}.log"
             env = {"HOME": str(OPERATOR_HOME), "USER": OPERATOR_USER,
                    "LOGNAME": OPERATOR_USER, "PATH": "/usr/local/bin:/usr/bin:/bin",
                    "LANG": "C.UTF-8", "ORCH_OPERATOR_USER": OPERATOR_USER}
-            with open(log, "w") as out:
-                cp = subprocess.run(["bash", str(test_path)], cwd=str(ROOT), env=env,
-                                    stdin=subprocess.DEVNULL, stdout=out,
-                                    stderr=subprocess.STDOUT)
-            after_test = sha256_file(test_path)
+            with materialized_committed_test(installed_commit, rel, ROOT) as (run_path, committed):
+                before_test = hashlib.sha256(committed).hexdigest()
+                with open(log, "w") as out:
+                    cp = subprocess.run(["bash", str(run_path)], cwd=str(ROOT), env=env,
+                                        stdin=subprocess.DEVNULL, stdout=out,
+                                        stderr=subprocess.STDOUT)
+                after_test = sha256_file(run_path)   # the bytes we actually executed
             after_manifest = sha256_file(EXECUTION_POLICY)
             after_commit = git("rev-parse", "HEAD", cwd=ROOT)
             status = _status_for_exit(cp.returncode)
@@ -1793,7 +1919,7 @@ def run_candidate_test_phases(lc: dict, wt: Path, worker_commit: str, att: Path,
         committed_bytes = git_show_bytes(policy["installed_commit"], rel, cwd=ROOT)
         test_before = hashlib.sha256(committed_bytes).hexdigest()
         manifest_before = policy["manifest_sha256"]
-        test_after_path = ROOT / rel  # overridden below when the run is a materialized blob
+        test_after = test_before   # overwritten with the hash of the bytes we ACTUALLY executed
         if phase == "candidate-isolated":
             if not runtime_ok:
                 log.write_text("trusted test runtime changed, vanished, or lost root-only trust\n")
@@ -1806,7 +1932,6 @@ def run_candidate_test_phases(lc: dict, wt: Path, worker_commit: str, att: Path,
                 materialized = materialized_dir / f"{Path(rel).stem}-{test_before[:12]}.sh"
                 materialized.write_bytes(committed_bytes)
                 materialized.chmod(0o755)
-                test_after_path = materialized
                 binds = [(runtime["root"], runtime["root"]),
                          (str(materialized), str(wt / rel))]
                 with open(log, "w") as out:
@@ -1818,28 +1943,30 @@ def run_candidate_test_phases(lc: dict, wt: Path, worker_commit: str, att: Path,
                         ceiling_s=ceiling_s, stdout=out, stderr=subprocess.STDOUT,
                         binds=binds, env_extra={"ORCH_TEST_PY": runtime["python"]})
                 rc = cp.returncode
+                test_after = sha256_file(materialized)   # the bytes actually bound + executed
             identity = WORKER_USER
             claim = ("installed test code exercised the exact candidate commit as codex-worker"
                      if assigned == "candidate-isolated" else
                      "isolated observation retained; box-precondition PASS alone grades the host boundary")
         else:
-            # candidate-read tests locate the installed repo via dirname("$0")/.. (INSTALLED_ROOT in
-            # plain_language.sh/prose_cap.sh), so they must run at their real tests/ path rather than
-            # a materialized copy elsewhere — grader_drift() above already proved ROOT/rel is
-            # byte-identical to the committed blob, so executing it here is provably equivalent to
-            # executing the pinned commit's content.
+            # candidate-read tests self-locate via dirname("$0")/.. (INSTALLED_ROOT in
+            # plain_language.sh/prose_cap.sh). Finding 2: execute the COMMITTED blob from an
+            # unpredictable dotfile UNDER tests/ — so `$0` is not the stable, well-known ROOT/rel an
+            # attacker could swap between our hash check and bash's open, while dirname("$0")/..
+            # still resolves the repo root. Hash the file we actually ran (below), not ROOT/rel.
             env = {"HOME": "/nonexistent", "USER": OPERATOR_USER, "LOGNAME": OPERATOR_USER,
                    "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
                    "GIT_NO_REPLACE_OBJECTS": "1", "ORCH_TEST_TARGET_ROOT": str(wt),
                    "ORCH_TEST_TARGET_COMMIT": worker_commit}
-            with open(log, "w") as out:
-                cp = subprocess.run(["bash", str(ROOT / rel)], cwd=str(ROOT), env=env,
-                                    stdin=subprocess.DEVNULL, stdout=out,
-                                    stderr=subprocess.STDOUT)
-            rc = cp.returncode
+            with materialized_committed_test(policy["installed_commit"], rel, ROOT) as (run_path, _cb):
+                with open(log, "w") as out:
+                    cp = subprocess.run(["bash", str(run_path)], cwd=str(ROOT), env=env,
+                                        stdin=subprocess.DEVNULL, stdout=out,
+                                        stderr=subprocess.STDOUT)
+                rc = cp.returncode
+                test_after = sha256_file(run_path)   # the bytes actually executed
             identity = execution_identity()
             claim = "installed policy read exact candidate Git blobs as data; no candidate bytes executed"
-        test_after = sha256_file(test_after_path)
         manifest_after = sha256_file(EXECUTION_POLICY)
         status = _status_for_exit(rc)
         if test_after != test_before or manifest_after != manifest_before:
@@ -3212,6 +3339,20 @@ def cmd_integrate(attempt_ids: list[str]) -> None:
             print(json.dumps(report, indent=2))
             sys.exit(mg.returncode)
         git("pull", "--quiet", "--ff-only", "origin", "ready-for-main")
+        # Finding 1: the just-merged commit is what would land. Refuse to grade it with the
+        # filesystem `./scripts/test` if the working tree has drifted from that commit — a
+        # dirty/replaced scripts/test, altered manifest, deleted tracked test, or untracked
+        # tests/*.sh could otherwise grade code the post-merge commit does not contain.
+        merged_commit, drift = integration_grade_gate()
+        if drift:
+            path = escalate(sid, f"integration grader drift after {aid}: the post-merge working "
+                                 f"tree differs from commit {merged_commit[:9]}; refusing to grade",
+                            {"merged_commit": merged_commit, "grader_drift": drift,
+                             "integrated_so_far": report["integrated"]})
+            report["stopped_at"] = {"attempt_id": aid, "grader_drift": drift,
+                                    "escalation": str(path)}
+            print(json.dumps(report, indent=2))
+            sys.exit(21)
         ts = run(["./scripts/test"], cwd=str(ROOT))
         if ts.returncode != 0:
             path = escalate(sid, f"post-merge suite FAILED on ready-for-main after {aid} — "
