@@ -104,6 +104,41 @@ def validate(cfg) -> list:
         # or dispatch could launch a model that scripts/review can never classify.
         for m in sorted(named_models - set(vm)):
             errs.append(f"model named in config but not declared in vendor_map: {m}")
+
+    # Cross-vendor role relationships (round-2 review, finding 1): the config itself must satisfy
+    # "the reviewer is never the same vendor as the author" for every review flow the repo runs —
+    # a same-vendor pairing is refused HERE, never left for a downstream CLI to trip over.
+    #   worker authors diffs        → bound reviewer (primary, failover trigger, and fallback)
+    #   orchestrator authors artifacts → orchestrator_artifact_reviewer (scripts/review)
+    #   spec_author authors plans   → the orchestrator reviews them in-session
+    def role_model(name):
+        entry = roles.get(name)
+        return entry.get("model") if isinstance(entry, dict) else None
+
+    def vendor(model):
+        v = vm.get(model) if isinstance(model, str) else None
+        return v if v in VENDORS else None
+
+    pairings = [
+        ("roles.worker", role_model("worker"),
+         "roles.bound_reviewer", role_model("bound_reviewer")),
+        ("roles.orchestrator", role_model("orchestrator"),
+         "roles.orchestrator_artifact_reviewer", role_model("orchestrator_artifact_reviewer")),
+        ("roles.spec_author", role_model("spec_author"),
+         "roles.orchestrator", role_model("orchestrator")),
+    ]
+    if isinstance(fo, dict):
+        pairings += [
+            ("roles.worker", role_model("worker"),
+             "reviewer_failover.trigger_model", fo.get("trigger_model")),
+            ("roles.worker", role_model("worker"),
+             "reviewer_failover.fallback_model", fo.get("fallback_model")),
+        ]
+    for author_key, author_model, reviewer_key, reviewer_model in pairings:
+        av, rv = vendor(author_model), vendor(reviewer_model)
+        if av is not None and av == rv:
+            errs.append(f"same-vendor review pairing: {author_key} ({author_model}) and "
+                        f"{reviewer_key} ({reviewer_model}) are both {av}")
     return errs
 
 

@@ -302,20 +302,22 @@ check("failover: 404 on a non-primary model does not retry (no failover-of-the-f
       verdict is None and len(calls) == 1
       and not (att71 / "raw" / "reviewer-failover.json").exists())
 
-# R71: a legacy launch record (predates the models config, so no trigger/fallback/alias fields)
-# must never fail over — .get() finds no trigger to match — and its model id must pass through
-# the alias map untouched.
+# R71 round-2 review: a legacy launch record (predates the models config, so no trigger/
+# fallback/alias fields) keeps EXACTLY the behavior it was launched under — the shipped Fable
+# CLI alias and the shipped Fable→Opus retirement retry. An in-flight attempt crossing the
+# upgrade is neither stranded (unaliased --model) nor stripped of its failover.
 calls = []
-d.run = notfound_run
+d.run = failover_run
 lc74 = {"worktree": str(repo), "base_sha": "b" * 40, "spec_digest": "d" * 64,
         "reviewer_model": "claude-fable-5", "reviewer_effort": "high"}
 att74 = tmp / "attempts" / "SPEC-908" / "1"; (att74 / "raw").mkdir(parents=True)
 verdict, raw = d.review(att74, "SPEC-908", lc74, "c" * 40)
-check("failover: legacy launch record without config fields never fails over",
-      verdict is None and len(calls) == 1
-      and calls[0][calls[0].index("--model") + 1] == "claude-fable-5"
-      and lc74["reviewer_model"] == "claude-fable-5"
-      and not (att74 / "raw" / "reviewer-failover.json").exists())
+check("legacy launch record keeps the shipped alias and Fable→Opus failover",
+      verdict is not None and verdict.get("verdict") == "PASS" and len(calls) == 2
+      and calls[0][calls[0].index("--model") + 1] == "fable"
+      and calls[1][calls[1].index("--model") + 1] == "claude-opus-4-8"
+      and lc74["reviewer_model"] == "claude-opus-4-8"
+      and (att74 / "raw" / "reviewer-failover.json").exists())
 
 # Deadline honesty: the timeout prefix is recomputed per invocation, so a fallback whose budget
 # was burned by the failing primary is REFUSED, not started with a stale allowance.

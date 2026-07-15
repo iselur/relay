@@ -58,6 +58,22 @@ VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
 # launch.json (lc), so a mid-run edit never changes a running attempt. Any read or validation
 # error refuses the launch — there is no silent hard-coded fallback.
 MODEL_CONFIG = ROOT / "scripts" / "models.json"
+# Pre-R71 launch records carry none of the frozen config fields. An attempt in flight across the
+# upgrade keeps EXACTLY the behavior it was launched under (round-2 review, finding 2): the
+# shipped Fable CLI alias and the shipped Fable→Opus retirement retry. These constants describe
+# those historical records — they are compatibility, not a fallback for config errors, and no
+# NEW launch ever reads them (cmd_launch always freezes the config's values).
+LEGACY_LAUNCH_DEFAULTS = {
+    "reviewer_failover_trigger": "claude-fable-5",
+    "reviewer_fallback_model": "claude-opus-4-8",
+    "cli_aliases": {"claude-fable-5": "fable"},
+}
+
+
+def lc_model_field(lc: dict, key: str):
+    """A frozen model field from the launch record, or — ONLY when the record predates the
+    config fields entirely — the shipped pre-config default for that key."""
+    return lc[key] if key in lc else LEGACY_LAUNCH_DEFAULTS[key]
 # Approval artifact shapes (B1). Approvals were trusted by digest+instance equality only, and the
 # per-attempt high-risk approval by mere file EXISTENCE — an empty or garbage file authorized a
 # high-risk dispatch. Both are now schema-validated AND bound to this spec/instance (and attempt).
@@ -2986,8 +3002,8 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
             *prefix,
             "claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema_obj),
             # R71: CLI alias from the frozen launch config; ids without an alias pass through
-            # unchanged. Older launch records predate the map — .get keeps them working as-is.
-            "--model", lc.get("cli_aliases", {}).get(model_id, model_id),
+            # unchanged. Pre-config launch records keep the shipped alias (round-2 review).
+            "--model", lc_model_field(lc, "cli_aliases").get(model_id, model_id),
             "--effort", lc["reviewer_effort"],
             # B16 round-2: cwd isolation alone does not strip user-level customizations. Verified
             # against the installed CLI (flags parse; envelope shape unchanged): --safe-mode drops
@@ -3013,9 +3029,10 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     if isinstance(cp, str):
         return None, cp
     # Reviewer-retirement failover (owner decision 2026-07-15; R71: the trigger/fallback pair now
-    # comes frozen from scripts/models.json via lc — launch records that predate the config carry
-    # no trigger, so they can never fire). The bound reviewer stays the pinned primary while the
-    # model exists; when the API retires it, this ONE deterministic signature — nonzero exit plus
+    # comes frozen from scripts/models.json via lc — launch records that predate the config keep
+    # the shipped pair via LEGACY_LAUNCH_DEFAULTS, unchanged behavior for in-flight attempts).
+    # The bound reviewer stays the pinned primary while the model exists; when the API retires
+    # it, this ONE deterministic signature — nonzero exit plus
     # the CLI's structured model-not-found envelope, from the pinned primary only — triggers a
     # single rerun on the fallback model. Nothing else retries: an auth failure, rate limit,
     # timeout, or malformed envelope must never buy the diff a second reviewer roll. The retry
@@ -3025,9 +3042,9 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     # review.json's sibling records, result.json, and the PR body all attribute the verdict to the
     # model that actually produced it (round-1 review: misattribution was blocking).
     if (cp.returncode != 0
-            and lc["reviewer_model"] == lc.get("reviewer_failover_trigger")
+            and lc["reviewer_model"] == lc_model_field(lc, "reviewer_failover_trigger")
             and reviewer_model_unavailable(cp.stdout)):
-        fallback_model = lc["reviewer_fallback_model"]
+        fallback_model = lc_model_field(lc, "reviewer_fallback_model")
         primary = cp
         from_model = lc["reviewer_model"]
         (att / "raw" / "review-envelope-primary.json").write_text(primary.stdout or "")

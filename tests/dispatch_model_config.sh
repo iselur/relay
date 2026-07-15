@@ -95,6 +95,40 @@ check("failover model missing from vendor_map refuses launch (exit 2)", load_res
 bad = copy.deepcopy(good); bad["cli_aliases"]["claude-fable-5"] = 7
 scratch.write_text(json.dumps(bad))
 check("non-string CLI alias refuses launch (exit 2)", load_result() == "exit2")
+# Round-2 review, finding 1: the config itself must satisfy "the reviewer is never the same
+# vendor as the author" for every review flow — same-vendor pairings refuse the launch.
+bad = copy.deepcopy(good)
+bad["roles"]["worker"]["model"] = "claude-sonnet-4-6"   # worker and bound reviewer both claude
+scratch.write_text(json.dumps(bad))
+check("same-vendor worker/bound-reviewer pairing refuses launch (exit 2)",
+      load_result() == "exit2")
+bad = copy.deepcopy(good)
+bad["reviewer_failover"]["fallback_model"] = "gpt-5.6-sol"   # codex fallback reviews codex worker
+scratch.write_text(json.dumps(bad))
+check("same-vendor worker/failover-fallback pairing refuses launch (exit 2)",
+      load_result() == "exit2")
+bad = copy.deepcopy(good)
+bad["roles"]["orchestrator_artifact_reviewer"]["model"] = "claude-opus-4-8"
+scratch.write_text(json.dumps(bad))
+check("same-vendor orchestrator/artifact-reviewer pairing refuses launch (exit 2)",
+      load_result() == "exit2")
+bad = copy.deepcopy(good)
+bad["roles"]["spec_author"]["model"] = "claude-sonnet-4-6"   # orchestrator reviews plans in-session
+scratch.write_text(json.dumps(bad))
+check("same-vendor spec-author/orchestrator pairing refuses launch (exit 2)",
+      load_result() == "exit2")
+# Round-2 review, finding 3: the models_check CLI itself (the shell consumers' path) must refuse
+# non-UTF-8 bytes with exit 2, not a decode traceback.
+import subprocess
+scratch.write_bytes(b'\xff\xfe{ not utf-8 }')
+cli = subprocess.run([sys.executable, "scripts/models_check.py", str(scratch),
+                      "get", "roles.spec_author.model"], capture_output=True, text=True)
+check("models_check CLI refuses non-UTF-8 config (exit 2, no value printed)",
+      cli.returncode == 2 and cli.stdout == "" and "unreadable" in cli.stderr)
+cli = subprocess.run([sys.executable, "scripts/models_check.py", str(scratch)],
+                     capture_output=True, text=True)
+check("models_check CLI validate-only mode also refuses non-UTF-8 (exit 2)",
+      cli.returncode == 2)
 
 scratch.write_text(json.dumps(good))
 check("valid config loads cleanly", load_result() == "ok")
