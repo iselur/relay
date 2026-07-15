@@ -828,8 +828,12 @@ def claim_slot(spec_id: str, launching_state: dict) -> None:
             for p in STATE.glob("*.json"):
                 try:
                     states.append(json.loads(p.read_text()))
-                except Exception:
-                    pass
+                except Exception as e:
+                    # B10: a malformed state file may BE a live attempt (truncated write,
+                    # mid-crash). Silently skipping it removes that attempt from the same-spec
+                    # and MAX_PARALLEL checks — fail the claim instead of guessing.
+                    die(f"state file {p} is unreadable ({e}); reconcile it before launching "
+                        f"(a malformed live attempt must not vanish from concurrency checks).", 8)
             live = [s for s in states if s.get("status") in LIVE]
             same = [s.get("attempt_id") for s in live if s.get("spec_id") == spec_id]
             if same:
@@ -2609,6 +2613,12 @@ def scope_check(wt: Path, base: str, wc: str, globs: list[str]) -> dict:
     # Finding 4: the scope gate parses this diff to decide what changed — a planted refs/replace
     # could otherwise rewrite the diff and hide an out-of-scope change. Read with replace off.
     cp = git_cp(["diff", "--name-status", "-z", f"{base}..{wc}"], cwd=wt)
+    # B14: a failing diff (bad ref, I/O error) yields empty stdout, which parsed as an empty
+    # change set and PASSED scope. A diff that did not run cannot certify anything — fail closed.
+    if cp.returncode != 0:
+        return {"approved_scope": globs, "changed": [], "out_of_scope": [],
+                "result": "FAIL",
+                "error": f"git diff exited {cp.returncode}: {(cp.stderr or '').strip()[:500]}"}
     toks = cp.stdout.split("\x00")
     changed, oos = [], []
     i = 0
@@ -2830,8 +2840,16 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
         "--disallowedTools", "Read", "Grep", "Glob", "Bash", "Write", "Edit", "NotebookEdit",
         "WebFetch", "WebSearch", "Task", "--permission-mode", "manual",
     ]
-    cp = run(cmd, input=req)
+    # B16 + reviewer isolation: run from an empty directory OUTSIDE this repo so the reviewer
+    # process loads no project rulebook, skills, or memory (it must see only spec+diff+evidence,
+    # and that context is pure token waste for a tools-denied one-shot). A nonzero exit is
+    # refused before any parse: an errored process's stdout — even schema-valid JSON — is not
+    # a verdict.
+    with tempfile.TemporaryDirectory(prefix="relay-review-") as neutral_cwd:
+        cp = run(cmd, input=req, cwd=neutral_cwd)
     (att / "raw" / "review-envelope.json").write_text(cp.stdout or "")
+    if cp.returncode != 0:
+        return None, cp.stdout
     try:
         verdict = json.loads(json.loads(cp.stdout)["result"])
     except Exception:
@@ -3740,8 +3758,10 @@ def cmd_integrate(attempt_ids: list[str]) -> None:
             # round-3: export GIT_NO_REPLACE_OBJECTS into the suite's environment — the grader
             # worktree shares the object store/refs-replace, so scripts/test and each tests/*.sh
             # it globs must read objects with replacement disabled too.
+            # B9: force strict mode — without it a box test returning 77 (skip) in the grader
+            # worktree counts as a pass, so the combined tree was never actually verified.
             ts = run([str(gtree / "scripts" / "test")], cwd=str(gtree),
-                     env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"})
+                     env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1", "ORCH_TEST_STRICT": "1"})
         if ts.returncode != 0:
             path = escalate(sid, f"post-merge suite FAILED on ready-for-main after {aid} — "
                                  f"stop; human decision required",
