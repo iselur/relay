@@ -8,7 +8,7 @@ only file that maps a role to a vendor — swapping a model is an edit here, nev
 | Role | Today | Note |
 |---|---|---|
 | owner | the human | approves specs, merges `main` |
-| orchestrator | Claude Code on this box | dispatches, reviews worker diffs, reports |
+| orchestrator | Claude Code on this box (Opus 4.8 high; Fable 5 default retired at owner direction 2026-07-15) | dispatches, reviews worker diffs, reports |
 | worker | Codex CLI (`gpt-5.6-luna`) | research, drafts, implementation, tests (BUILD phase) |
 | reviewer | whichever vendor did NOT author the work | never self-review, never same-vendor review |
 
