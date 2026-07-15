@@ -826,14 +826,21 @@ def claim_slot(spec_id: str, launching_state: dict) -> None:
         try:
             states = []
             for p in STATE.glob("*.json"):
+                if p.name.endswith(".health.json"):
+                    continue  # advisory health snapshot, never attempt state (B10 round-2)
                 try:
-                    states.append(json.loads(p.read_text()))
+                    parsed = json.loads(p.read_text())
                 except Exception as e:
-                    # B10: a malformed state file may BE a live attempt (truncated write,
-                    # mid-crash). Silently skipping it removes that attempt from the same-spec
-                    # and MAX_PARALLEL checks — fail the claim instead of guessing.
-                    die(f"state file {p} is unreadable ({e}); reconcile it before launching "
-                        f"(a malformed live attempt must not vanish from concurrency checks).", 8)
+                    # B10: a malformed canonical state file may BE a live attempt (truncated
+                    # write, mid-crash). Silently skipping it removes that attempt from the
+                    # same-spec and MAX_PARALLEL checks — fail the claim instead of guessing.
+                    die(f"state file {p} is unreadable ({e}); run `dispatch reconcile` — it "
+                        f"reports malformed state — and resolve it before launching (a "
+                        f"malformed live attempt must not vanish from concurrency checks).", 8)
+                if not isinstance(parsed, dict):
+                    die(f"state file {p} holds a non-object JSON value; run `dispatch "
+                        f"reconcile` and resolve it before launching (B10).", 8)
+                states.append(parsed)
             live = [s for s in states if s.get("status") in LIVE]
             same = [s.get("attempt_id") for s in live if s.get("spec_id") == spec_id]
             if same:
@@ -2837,15 +2844,24 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
         "claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema_obj),
         "--model", lc["reviewer_model"].replace("claude-fable-5", "fable"),
         "--effort", lc["reviewer_effort"],
+        # B16 round-2: cwd isolation alone does not strip user-level customizations. Verified
+        # against the installed CLI (flags parse; envelope shape unchanged): --safe-mode drops
+        # all customizations (skills/hooks/plugins), --tools "" leaves no tool surface,
+        # --strict-mcp-config with no --mcp-config yields zero MCP servers, and
+        # --no-session-persistence writes no transcript. The denylist stays as belt-and-braces.
+        "--safe-mode", "--tools", "", "--strict-mcp-config", "--no-session-persistence",
         "--disallowedTools", "Read", "Grep", "Glob", "Bash", "Write", "Edit", "NotebookEdit",
         "WebFetch", "WebSearch", "Task", "--permission-mode", "manual",
     ]
     # B16 + reviewer isolation: run from an empty directory OUTSIDE this repo so the reviewer
-    # process loads no project rulebook, skills, or memory (it must see only spec+diff+evidence,
-    # and that context is pure token waste for a tools-denied one-shot). A nonzero exit is
-    # refused before any parse: an errored process's stdout — even schema-valid JSON — is not
-    # a verdict.
+    # process loads no project rulebook or memory (it must see only spec+diff+evidence, and that
+    # context is pure token waste for a tools-denied one-shot). TMPDIR may point inside the repo,
+    # so the location is asserted, not assumed (round-2). A nonzero exit is refused before any
+    # parse: an errored process's stdout — even schema-valid JSON — is not a verdict.
     with tempfile.TemporaryDirectory(prefix="relay-review-") as neutral_cwd:
+        if Path(neutral_cwd).resolve().is_relative_to(ROOT.resolve()):
+            return None, (f"reviewer neutral cwd {neutral_cwd} resolves inside the repo "
+                          f"(TMPDIR misconfiguration); refusing to run the reviewer (B16)")
         cp = run(cmd, input=req, cwd=neutral_cwd)
     (att / "raw" / "review-envelope.json").write_text(cp.stdout or "")
     if cp.returncode != 0:
@@ -3236,8 +3252,22 @@ def cmd_reconcile() -> None:
             reconciled.append({"attempt_id": aid, "status": st.get("status"),
                                "unit_active": True, "note": "still running"})
     live_units, query_ok = _list_codex_units()
+    # B10 round-2: claim_slot refuses to launch over malformed canonical state and points here —
+    # so reconcile must SURFACE those files (all_states silently skips them). Report-only: the
+    # operator decides whether a corrupt file was a live attempt before removing it.
+    malformed = []
+    if STATE.exists():
+        for p in STATE.glob("*.json"):
+            if p.name.endswith(".health.json"):
+                continue
+            try:
+                if not isinstance(json.loads(p.read_text()), dict):
+                    malformed.append({"file": str(p), "error": "non-object JSON value"})
+            except Exception as e:
+                malformed.append({"file": str(p), "error": str(e)})
     print(json.dumps({"reconciled": reconciled, "live_units": live_units,
-                      "live_units_query_ok": query_ok}, indent=2))
+                      "live_units_query_ok": query_ok, "malformed_state": malformed},
+                     indent=2))
     # round-2 finding 2: a teardown that could not be verified clean OR a failed final live-units
     # query exits nonzero (fail closed) — reconcile must not return 0 while an orphan may still run.
     if not query_ok:
