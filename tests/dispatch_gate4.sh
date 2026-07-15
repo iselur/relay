@@ -15,7 +15,7 @@ if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
 fi
 
 "$PY" - <<'PY'
-import copy, importlib.util, inspect, json, tempfile, subprocess, pathlib, sys, types
+import copy, importlib.util, inspect, json, tempfile, subprocess, pathlib, sys, time, types
 
 spec = importlib.util.spec_from_file_location("d", "scripts/dispatch.py")
 d = importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
@@ -365,7 +365,7 @@ d.git = _tgit; d.run = _trun
 ratt = rtmp / "att"; ratt.mkdir()
 lc = {"regression_command": "python3 test_reg.py", "regression_test_paths": ["test_reg.py"],
       "base_sha": rbase, "attempt_id": "SPEC-R01-1"}
-reg = d.run_regression_gate(lc, rcand_wt, rcand, ratt, iso=False, ceiling_s=60)
+reg = d.run_regression_gate(lc, rcand_wt, rcand, ratt, iso=False, deadline_ts=time.time() + 60)
 check("regression gate: PASS when test fails on base + passes on candidate", reg["result"] == "PASS")
 check("regression gate: base run failed (caught the bug)", reg["base_exit"] != 0)
 check("regression gate: candidate run passed", reg["candidate_exit"] == 0)
@@ -376,7 +376,7 @@ sh("git", "add", "-A", cwd=rcand_wt); sh("git", "commit", "-qm", "vac", cwd=rcan
 rcand2 = subprocess.run(["git","rev-parse","HEAD"], cwd=str(rcand_wt), capture_output=True, text=True).stdout.strip()
 lc2 = {"regression_command": "python3 test_vac.py", "regression_test_paths": ["test_vac.py"],
        "base_sha": rbase, "attempt_id": "SPEC-R01-1"}
-reg2 = d.run_regression_gate(lc2, rcand_wt, rcand2, ratt, iso=False, ceiling_s=60)
+reg2 = d.run_regression_gate(lc2, rcand_wt, rcand2, ratt, iso=False, deadline_ts=time.time() + 60)
 check("regression gate: vacuous test (passes on base too) -> FAIL", reg2["result"] == "FAIL" and reg2["base_exit"] == 0)
 d.worktree_root = _orig_wtr; d.git = _orig_git; d.run = _orig_run
 
