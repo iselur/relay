@@ -151,8 +151,14 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
     wins, otherwise the config default (`or`, not .get(default) — an empty-string pin falls back
     instead of being trusted). The failover pair and alias map are always frozen from config.
     cmd_launch persists exactly this dict into launch.json, so a test asserts the precedence and
-    freeze directly rather than inferring it from a full launch."""
-    return {
+    freeze directly rather than inferring it from a full launch.
+
+    Round-3 review, finding 2: the RESOLVED pairing is revalidated here, because an approval pin
+    bypasses the config-level pairing checks in models_check. Never-same-vendor holds for what
+    can actually run: the worker vs the primary reviewer always, and vs the fallback whenever the
+    failover is armed (primary == trigger). Every model in a runnable pairing must be DECLARED in
+    vendor_map — an unmapped pin is refused, not guessed, exactly like the review side."""
+    resolved = {
         "worker_model": approval.get("worker_model") or cfg["roles"]["worker"]["model"],
         "worker_effort": (approval.get("worker_reasoning_effort")
                           or cfg["roles"]["worker"]["effort"]),
@@ -164,6 +170,24 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
         "reviewer_fallback_model": cfg["reviewer_failover"]["fallback_model"],
         "cli_aliases": cfg["cli_aliases"],
     }
+    vm = cfg["vendor_map"]
+    reviewers = [("reviewer_model", resolved["reviewer_model"])]
+    if resolved["reviewer_model"] == resolved["reviewer_failover_trigger"]:
+        reviewers.append(("reviewer_fallback_model", resolved["reviewer_fallback_model"]))
+    worker_vendor = vm.get(resolved["worker_model"])
+    if worker_vendor is None:
+        die(f"launch refused: worker_model {resolved['worker_model']!r} is not declared in "
+            f"vendor_map ({MODEL_CONFIG}) — an undeclared model cannot be vendor-checked")
+    for key, model in reviewers:
+        reviewer_vendor = vm.get(model)
+        if reviewer_vendor is None:
+            die(f"launch refused: {key} {model!r} is not declared in vendor_map "
+                f"({MODEL_CONFIG}) — an undeclared model cannot be vendor-checked")
+        if reviewer_vendor == worker_vendor:
+            die(f"launch refused: same-vendor pairing — worker_model "
+                f"{resolved['worker_model']!r} and {key} {model!r} are both {worker_vendor} "
+                f"(never-same-vendor review, CLAUDE.md)")
+    return resolved
 
 
 VENV_PY = ROOT / ".venv" / "bin" / "python"
