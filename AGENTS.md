@@ -1,7 +1,8 @@
 # AGENTS.md — conventions and commands
 
-Referenced by [CLAUDE.md](CLAUDE.md), which holds the operating rules in terms of ROLES. This is the
-only file that maps a role to a vendor — swapping a model is an edit here, never to the rulebook.
+Referenced by [CLAUDE.md](CLAUDE.md), which holds the operating rules in terms of ROLES. Humans read
+the role table here; machines read `scripts/models.json` (roles, failover, CLI aliases, vendor map).
+A model swap is one edit there, never to the rulebook; a new model also adds its vendor_map line.
 
 ## Who plays which role (today)
 
@@ -12,8 +13,8 @@ only file that maps a role to a vendor — swapping a model is an edit here, nev
 | worker | Codex CLI (`gpt-5.6-luna`) | research, drafts, implementation, tests (BUILD phase) |
 | reviewer | whichever vendor did NOT author the work | never self-review, never same-vendor review |
 
-Bound reviewer: `claude-fable-5` high while it resolves; on the API's model-not-found signature the
-dispatcher retries once as `claude-opus-4-8`, durably recorded (owner 2026-07-15: Fable while it lasts).
+Bound reviewer and its retirement failover: see `scripts/models.json` (owner 2026-07-15: Fable
+while it lasts; on the model-not-found signature the dispatcher retries once, durably recorded).
 
 ## What this repo is
 
@@ -41,8 +42,7 @@ untouched → in scope → tests actually ran → cross-vendor review), and open
 
 ## Codex on this box
 
-- Model split: worker BUILD runs `gpt-5.6-luna` (dispatcher default); plans (`scripts/codex-plan`)
-  and reviews (`scripts/review`) stay `gpt-5.6-sol`.
+- Model split (from `scripts/models.json`): worker BUILD `gpt-5.6-luna`; plans and reviews `gpt-5.6-sol`.
 - Invocation: `codex exec -m <model per split above> -c model_reasoning_effort=high -c service_tier=priority
   --sandbox read-only --skip-git-repo-check - <prompt.txt` — prompt on stdin always (argv dies
   over 130KB). Web search: `-c tools.web_search=true`. The priority tier is a speed setting only.

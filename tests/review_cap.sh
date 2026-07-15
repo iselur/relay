@@ -15,6 +15,9 @@ bad() { echo "  FAIL: $1"; fails=1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/repo/scripts" "$tmp/repo/.orchestrator"
 cp -p scripts/review "$tmp/repo/scripts/review"
+# scripts/review reads $ROOT/scripts/models.json (reviewer model + vendor map) and fails closed
+# without it; the copied script's ROOT is the temp repo, so the real config sits beside it.
+cp -p scripts/models.json "$tmp/repo/scripts/models.json"
 
 cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash
