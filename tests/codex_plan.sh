@@ -329,4 +329,31 @@ grep -q 'CONTEXT-HEAD' "$prompt_file" || fail "large prompt: the head of the con
 grep -q 'CONTEXT-TAIL' "$prompt_file" || fail "large prompt: the TAIL of the context was truncated"
 [ "$(wc -c <"$prompt_file")" -gt 130000 ] || fail "large prompt arrived truncated below the argv limit"
 
+# B17: concurrent runs must allocate DISTINCT plan ids. Hold the allocation lock ourselves so
+# both runs queue on it at the same scan point, release, then verify neither overwrote the other.
+# The claim (noclobber create of .stdout under the lock) is what makes this deterministic: the
+# second run's scan sees the first run's claimed id and mints the next one.
+conc_dir="$tmp/plans-conc"
+mkdir -p "$conc_dir"
+exec 7>>"$conc_dir/.plan-id.lock"
+flock 7
+PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$tmp/conc-args-1" CODEX_STUB_PROMPT="$tmp/conc-prompt-1" \
+  CODEX_STUB_STDOUT='concurrent plan ONE' \
+  scripts/codex-plan --small --out "$conc_dir" 'concurrent task one' >"$tmp/conc1.out" 2>&1 &
+conc_pid1=$!
+PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$tmp/conc-args-2" CODEX_STUB_PROMPT="$tmp/conc-prompt-2" \
+  CODEX_STUB_STDOUT='concurrent plan TWO' \
+  scripts/codex-plan --small --out "$conc_dir" 'concurrent task two' >"$tmp/conc2.out" 2>&1 &
+conc_pid2=$!
+sleep 1   # let both queue on the held lock before releasing it
+flock -u 7
+wait "$conc_pid1" || fail "concurrent run 1 failed: $(cat "$tmp/conc1.out")"
+wait "$conc_pid2" || fail "concurrent run 2 failed: $(cat "$tmp/conc2.out")"
+conc_plans=("$conc_dir"/PLAN-*.md)
+[ "${#conc_plans[@]}" -eq 2 ] || fail "expected 2 distinct concurrent plans, got: ${conc_plans[*]-none}"
+grep -q 'concurrent plan ONE' "$conc_dir"/PLAN-001.md "$conc_dir"/PLAN-002.md 2>/dev/null \
+  || fail "concurrent plan ONE missing from the allocated ids"
+grep -q 'concurrent plan TWO' "$conc_dir"/PLAN-001.md "$conc_dir"/PLAN-002.md 2>/dev/null \
+  || fail "concurrent plan TWO missing from the allocated ids (an overwrite ate it)"
+
 echo "PASS codex_plan.sh"
