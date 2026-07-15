@@ -23,10 +23,11 @@ def check(name, cond):
     if not cond: fails.append(name)
 
 # Stub the gates BEFORE the base-pin so we can drive preflight to exactly that point.
+# preflight() reads the spec through read_approved_spec() (single-read; B2 round-2), so stub THAT
+# seam: it returns (bytes, digest, parsed, errors).
 d.HALT = pathlib.Path("/nonexistent-halt-marker")
-d.validate_spec = lambda sid: ({"needs_network": False, "depends_on": [], "risk_class": "low",
-                                "in_scope": ["scripts/**"]}, [])
-d.spec_digest = lambda sid: "d" * 64
+d.read_approved_spec = lambda sid: (b"id: SPEC-X\n", "d" * 64,
+    {"needs_network": False, "depends_on": [], "risk_class": "low", "in_scope": ["scripts/**"]}, [])
 d.ensure_instance = lambda: {"instance_id": "0" * 32}
 
 def run_preflight(base):

@@ -25,9 +25,12 @@ def check(name, cond):
 
 DIG = "a" * 64
 d.HALT = pathlib.Path("/nonexistent-halt-marker")
-d.validate_spec = lambda sid: ({"needs_network": False, "depends_on": [], "risk_class": "low",
-                                "in_scope": ["scripts/**", "tests/**"]}, [])
-d.spec_digest = lambda sid: DIG
+# preflight() reads the spec through read_approved_spec() (single-read; B2 round-2): stub THAT seam
+# so this test exercises the approval-schema path, not spec parsing. Returns (bytes, digest, parsed,
+# errors).
+d.read_approved_spec = lambda sid: (b"id: SPEC-X\n", DIG,
+    {"needs_network": False, "depends_on": [], "risk_class": "low",
+     "in_scope": ["scripts/**", "tests/**"]}, [])
 d.ensure_instance = lambda: {"instance_id": "0" * 32}
 
 def valid_approval(**over):
