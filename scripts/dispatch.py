@@ -52,10 +52,11 @@ WORKTREES = ROOT / ".worktrees"
 HALT = ORCH / "HALT"
 SPEC_SCHEMA = SPECS / "spec.schema.json"
 VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
-# R69: where the bound reviewer lands when its pinned model is retired by the API (Fable 5
-# retirement, ~2026-07-19). Owner decision 2026-07-15: keep Fable while it resolves, fail over
-# to Opus 4.8 automatically — but only on the deterministic model-not-found signature.
-REVIEWER_FALLBACK_MODEL = "claude-opus-4-8"
+# R71: the machine source of truth for role→model mapping (rev-4 taxonomy), including the R69
+# bound-reviewer failover pair. Loaded ONCE per launch by load_model_config() and frozen into
+# launch.json (lc), so a mid-run edit never changes a running attempt. Any read or validation
+# error refuses the launch — there is no silent hard-coded fallback.
+MODEL_CONFIG = ROOT / "scripts" / "models.json"
 # Approval artifact shapes (B1). Approvals were trusted by digest+instance equality only, and the
 # per-attempt high-risk approval by mere file EXISTENCE — an empty or garbage file authorized a
 # high-risk dispatch. Both are now schema-validated AND bound to this spec/instance (and attempt).
@@ -99,6 +100,81 @@ ATTEMPT_APPROVAL_SCHEMA = {
         "note": {"type": "string"},
     },
 }
+# R71: scripts/models.json shape. All six rev-4 roles are REQUIRED — a config that lost a role is
+# treated as corrupt, not defaulted. vendor_map is closed-world (enum), so a model outside claude/
+# codex vendors cannot be smuggled in; scripts/review refuses any model absent from the map.
+_MODEL_ROLE_SCHEMA = {
+    "type": "object", "required": ["model", "effort"], "additionalProperties": False,
+    "properties": {"model": {"type": "string", "minLength": 1},
+                   "effort": {"type": "string", "minLength": 1}},
+}
+MODEL_CONFIG_SCHEMA = {
+    "type": "object",
+    "required": ["schema_version", "roles", "reviewer_failover", "cli_aliases", "vendor_map"],
+    "additionalProperties": False,
+    "properties": {
+        "schema_version": {"const": "1"},
+        "roles": {
+            "type": "object", "additionalProperties": False,
+            "required": ["orchestrator", "spec_author", "utility_subagent", "worker",
+                         "bound_reviewer", "orchestrator_artifact_reviewer"],
+            "properties": {r: _MODEL_ROLE_SCHEMA for r in (
+                "orchestrator", "spec_author", "utility_subagent", "worker",
+                "bound_reviewer", "orchestrator_artifact_reviewer")},
+        },
+        "reviewer_failover": {
+            "type": "object", "additionalProperties": False,
+            "required": ["trigger_model", "fallback_model"],
+            "properties": {"trigger_model": {"type": "string", "minLength": 1},
+                           "fallback_model": {"type": "string", "minLength": 1}},
+        },
+        "cli_aliases": {"type": "object",
+                        "additionalProperties": {"type": "string", "minLength": 1}},
+        "vendor_map": {"type": "object",
+                       "additionalProperties": {"enum": ["claude", "codex"]}},
+    },
+}
+
+
+def load_model_config() -> dict:
+    """Load and schema-validate scripts/models.json (R71). Fail closed on ANY error — a missing,
+    unreadable, malformed, or schema-invalid config refuses the launch; nothing falls back to a
+    hard-coded model. Called once in cmd_launch(); the values are frozen into launch.json, so
+    editing the config mid-run cannot change a running attempt (lc freeze semantics)."""
+    try:
+        raw = MODEL_CONFIG.read_text()
+    except OSError as exc:
+        die(f"models config missing or unreadable ({MODEL_CONFIG}): {exc} — fail closed")
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        die(f"models config is not valid JSON ({MODEL_CONFIG}): {exc} — fail closed")
+    errs = [e.message for e in Draft202012Validator(MODEL_CONFIG_SCHEMA).iter_errors(cfg)]
+    if errs:
+        die(f"models config schema-invalid ({MODEL_CONFIG}): " + "; ".join(sorted(errs)))
+    return cfg
+
+
+def resolve_launch_models(approval: dict, cfg: dict) -> dict:
+    """The launch-frozen model fields (R71), as ONE tested resolver: an approval's non-empty pin
+    wins, otherwise the config default (`or`, not .get(default) — an empty-string pin falls back
+    instead of being trusted). The failover pair and alias map are always frozen from config.
+    cmd_launch persists exactly this dict into launch.json, so a test asserts the precedence and
+    freeze directly rather than inferring it from a full launch."""
+    return {
+        "worker_model": approval.get("worker_model") or cfg["roles"]["worker"]["model"],
+        "worker_effort": (approval.get("worker_reasoning_effort")
+                          or cfg["roles"]["worker"]["effort"]),
+        "reviewer_model": (approval.get("reviewer_model")
+                           or cfg["roles"]["bound_reviewer"]["model"]),
+        "reviewer_effort": (approval.get("reviewer_effort")
+                            or cfg["roles"]["bound_reviewer"]["effort"]),
+        "reviewer_failover_trigger": cfg["reviewer_failover"]["trigger_model"],
+        "reviewer_fallback_model": cfg["reviewer_failover"]["fallback_model"],
+        "cli_aliases": cfg["cli_aliases"],
+    }
+
+
 VENV_PY = ROOT / ".venv" / "bin" / "python"
 EXECUTION_POLICY = ROOT / "tests" / "execution-policy.tsv"
 TEST_RUNTIME_ROOT = Path("/opt/orchestrator-test-runtime")
@@ -1802,6 +1878,9 @@ def cmd_launch(spec_id: str) -> None:
 
     ctx = preflight(spec_id)
     spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
+    # R71: role→model defaults come from scripts/models.json, read once here and frozen into lc
+    # below. An approval that explicitly pins a model still wins (owner decision 2026-07-15).
+    cfg = load_model_config()
     spec_bytes = ctx["spec_bytes"]   # the single buffer preflight read/hashed/parsed (B2 round-2)
 
     n = next_attempt(spec_id)
@@ -1911,10 +1990,10 @@ def cmd_launch(spec_id: str) -> None:
         "needs_network": spec.get("needs_network", False),
         "base_sha": base_sha, "branch": branch,
         "base_branch": approval.get("base_branch", AUTOMATION_BASE),
-        "worktree": str(wt), "worker_model": approval.get("worker_model", "gpt-5.6-luna"),
-        "worker_effort": approval.get("worker_reasoning_effort", "high"),
-        "reviewer_model": approval.get("reviewer_model", "claude-fable-5"),
-        "reviewer_effort": approval.get("reviewer_effort", "high"),
+        # R71: model fields from the ONE tested resolver — config defaults, approval pin wins,
+        # failover pair + alias map frozen here; review() reads only lc, never the live config.
+        "worktree": str(wt),
+        **resolve_launch_models(approval, cfg),
         "test_command": spec["test_command"], "approved_scope": approval["approved_scope"],
         "regression_command": spec.get("regression_command"),
         "regression_test_paths": spec.get("regression_test_paths", []),
@@ -2931,7 +3010,9 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
         cmd = [
             *prefix,
             "claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema_obj),
-            "--model", model_id.replace("claude-fable-5", "fable"),
+            # R71: CLI alias from the frozen launch config; ids without an alias pass through
+            # unchanged. Older launch records predate the map — .get keeps them working as-is.
+            "--model", lc.get("cli_aliases", {}).get(model_id, model_id),
             "--effort", lc["reviewer_effort"],
             # B16 round-2: cwd isolation alone does not strip user-level customizations. Verified
             # against the installed CLI (flags parse; envelope shape unchanged): --safe-mode drops
@@ -2956,32 +3037,36 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     cp = invoke_reviewer(lc["reviewer_model"])
     if isinstance(cp, str):
         return None, cp
-    # Fable-retirement failover (owner decision 2026-07-15). The pinned reviewer stays
-    # claude-fable-5 while the model exists; when the API retires it, this ONE deterministic
-    # signature — nonzero exit plus the CLI's structured model-not-found envelope, from the pinned
-    # primary only — triggers a single rerun on the fallback model. Nothing else retries: an auth
-    # failure, rate limit, timeout, or malformed envelope must never buy the diff a second reviewer
-    # roll. The retry cannot weaken the gate — it fires only when the primary produced no verdict
-    # at all (nonzero exit, verdict-bearing envelopes rejected by the trigger). Both envelopes,
-    # both exit codes, and an escalation record are kept, and lc["reviewer_model"] is updated
-    # IN PLACE so review.json's sibling records, result.json, and the PR body all attribute the
-    # verdict to the model that actually produced it (round-1 review: misattribution was blocking).
-    if (cp.returncode != 0 and lc["reviewer_model"] == "claude-fable-5"
+    # Reviewer-retirement failover (owner decision 2026-07-15; R71: the trigger/fallback pair now
+    # comes frozen from scripts/models.json via lc — launch records that predate the config carry
+    # no trigger, so they can never fire). The bound reviewer stays the pinned primary while the
+    # model exists; when the API retires it, this ONE deterministic signature — nonzero exit plus
+    # the CLI's structured model-not-found envelope, from the pinned primary only — triggers a
+    # single rerun on the fallback model. Nothing else retries: an auth failure, rate limit,
+    # timeout, or malformed envelope must never buy the diff a second reviewer roll. The retry
+    # cannot weaken the gate — it fires only when the primary produced no verdict at all (nonzero
+    # exit, verdict-bearing envelopes rejected by the trigger). Both envelopes, both exit codes,
+    # and an escalation record are kept, and lc["reviewer_model"] is updated IN PLACE so
+    # review.json's sibling records, result.json, and the PR body all attribute the verdict to the
+    # model that actually produced it (round-1 review: misattribution was blocking).
+    if (cp.returncode != 0
+            and lc["reviewer_model"] == lc.get("reviewer_failover_trigger")
             and reviewer_model_unavailable(cp.stdout)):
+        fallback_model = lc["reviewer_fallback_model"]
         primary = cp
         from_model = lc["reviewer_model"]
         (att / "raw" / "review-envelope-primary.json").write_text(primary.stdout or "")
         escalate(spec_id, "reviewer model retired; failed over to fallback for this attempt",
                  {"attempt": str(att), "from_model": from_model,
-                  "to_model": REVIEWER_FALLBACK_MODEL})
-        lc["reviewer_model"] = REVIEWER_FALLBACK_MODEL
-        cp = invoke_reviewer(REVIEWER_FALLBACK_MODEL)
+                  "to_model": fallback_model})
+        lc["reviewer_model"] = fallback_model
+        cp = invoke_reviewer(fallback_model)
         # Round-2 review, finding 2: the audit record is written AFTER the fallback runs so the
         # fallback's own outcome is preserved too — not just the primary's. A fallback that refuses
         # to start (deadline exhausted → a refusal string) or exits nonzero must leave a durable
         # trace; the earlier version recorded only the primary and silently lost a failed fallback.
         record = {
-            "from_model": from_model, "to_model": REVIEWER_FALLBACK_MODEL,
+            "from_model": from_model, "to_model": fallback_model,
             "trigger": "type=result is_error api_error_status=404 model-not-found",
             "primary_returncode": primary.returncode,
             "primary_stderr_tail": (primary.stderr or "")[-2000:], "created": now(),
