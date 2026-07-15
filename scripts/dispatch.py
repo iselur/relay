@@ -55,24 +55,29 @@ VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
 # high-risk dispatch. Both are now schema-validated AND bound to this spec/instance (and attempt).
 APPROVAL_SCHEMA = {
     "type": "object",
-    "required": ["spec_id", "spec_digest", "instance_id", "approver", "approved_scope"],
+    "required": ["spec_id", "spec_digest", "instance_id", "approver", "approved_scope",
+                 "risk_class", "timestamp"],
     "properties": {
         "spec_id": {"type": "string", "minLength": 1},
         "spec_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "instance_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
         "approver": {"type": "string", "minLength": 1},
-        "approved_scope": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "approved_scope": {"type": "array", "items": {"type": "string", "minLength": 1},
+                           "minItems": 1},
+        "risk_class": {"enum": ["low", "default", "high"]},
+        "timestamp": {"type": "string", "minLength": 1},
     },
 }
 ATTEMPT_APPROVAL_SCHEMA = {
     "type": "object",
-    "required": ["spec_id", "spec_digest", "instance_id", "attempt", "approver"],
+    "required": ["spec_id", "spec_digest", "instance_id", "attempt", "approver", "timestamp"],
     "properties": {
         "spec_id": {"type": "string", "minLength": 1},
         "spec_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "instance_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
         "attempt": {"type": "integer", "minimum": 1},
         "approver": {"type": "string", "minLength": 1},
+        "timestamp": {"type": "string", "minLength": 1},
     },
 }
 VENV_PY = ROOT / ".venv" / "bin" / "python"
@@ -397,6 +402,18 @@ def preflight(spec_id: str) -> dict:
     _validate_approval(approval, APPROVAL_SCHEMA, f"approval {digest[:12]}…", 6)
     if approval.get("spec_digest") != digest:
         die("approval artifact's spec_digest does not match the current spec file.", 6)
+    # Bind to the launching spec by id, not digest alone (B1): a digest collision or a copied
+    # artifact must not authorize a different spec.
+    if approval.get("spec_id") != spec_id:
+        die(f"approval spec_id={approval.get('spec_id')!r} != launching spec {spec_id!r}; refuse.", 6)
+    # Approved scope may not be BROADER than what the spec itself declares in_scope (B1). Glob-subset
+    # across arbitrary patterns is unsafe to infer, so require the conservative, provable relation:
+    # every approved glob must appear verbatim in the spec's in_scope. Anything else is refused.
+    spec_scope = set(spec.get("in_scope", []))
+    broader = [g for g in approval.get("approved_scope", []) if g not in spec_scope]
+    if broader:
+        die(f"approval approved_scope contains globs not in the spec's in_scope (broader than the "
+            f"spec authorizes): {broader}; refuse.", 6)
 
     # Instance binding (SOL, SHARE decision): an approval only authorizes on the instance that
     # created it. A digest matches identical spec text anywhere, so digest-only approval would let a
@@ -569,6 +586,9 @@ def remediation_preflight(spec_id: str, spec: dict, digest: str, n: int) -> dict
         if pa_obj.get("attempt") != n:
             die(f"per-dispatch approval {pa.name} attempt={pa_obj.get('attempt')} != launching "
                 f"attempt {n}; refuse.", 17)
+        if pa_obj.get("spec_id") != spec_id:
+            die(f"per-dispatch approval {pa.name} spec_id={pa_obj.get('spec_id')!r} != launching "
+                f"spec {spec_id!r}; refuse.", 17)
 
     if k == 0:
         return None  # initial attempt (or only infrastructure re-launches so far)

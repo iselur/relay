@@ -24,15 +24,17 @@ def check(name, cond):
 
 # Stub the gates BEFORE the base-pin so we can drive preflight to exactly that point.
 d.HALT = pathlib.Path("/nonexistent-halt-marker")
-d.validate_spec = lambda sid: ({"needs_network": False, "depends_on": []}, [])
+d.validate_spec = lambda sid: ({"needs_network": False, "depends_on": [],
+                                "in_scope": ["scripts/**"]}, [])
 d.spec_digest = lambda sid: "d" * 64
 d.ensure_instance = lambda: {"instance_id": "0" * 32}
 
 def run_preflight(base):
-    # A schema-valid, instance-bound approval (B1) so the base-pin check — not approval shape — is
-    # what this test exercises.
+    # A schema-valid, instance-bound, spec-bound, in-scope approval (B1) so the base-pin check — not
+    # approval shape — is what this test exercises.
     appr = {"spec_id": "SPEC-X", "spec_digest": "d" * 64, "instance_id": "0" * 32,
-            "approver": "val", "approved_scope": ["scripts/**"]}
+            "approver": "val", "approved_scope": ["scripts/**"], "risk_class": "low",
+            "timestamp": "2026-07-15T00:00:00Z"}
     if base is not None:
         appr["base_branch"] = base
     d.approval_for = lambda dig: appr

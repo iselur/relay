@@ -25,13 +25,15 @@ def check(name, cond):
 
 DIG = "a" * 64
 d.HALT = pathlib.Path("/nonexistent-halt-marker")
-d.validate_spec = lambda sid: ({"needs_network": False, "depends_on": []}, [])
+d.validate_spec = lambda sid: ({"needs_network": False, "depends_on": [],
+                                "in_scope": ["scripts/**", "tests/**"]}, [])
 d.spec_digest = lambda sid: DIG
 d.ensure_instance = lambda: {"instance_id": "0" * 32}
 
 def valid_approval(**over):
     a = {"spec_id": "SPEC-X", "spec_digest": DIG, "instance_id": "0" * 32,
-         "approver": "val", "approved_scope": ["scripts/**"]}
+         "approver": "val", "approved_scope": ["scripts/**"], "risk_class": "low",
+         "timestamp": "2026-07-15T00:00:00Z"}
     a.update(over); return a
 
 def run(approval):
@@ -41,7 +43,7 @@ def run(approval):
     except SystemExit as e:
         return f"exit{e.code}"
 
-check("valid, bound approval -> ok", run(valid_approval()) == "ok")
+check("valid, bound, in-scope approval -> ok", run(valid_approval()) == "ok")
 check("empty {} approval -> refused exit 6", run({}) == "exit6")
 check("approval missing approved_scope -> refused", run(valid_approval(approved_scope=None)) != "ok")
 check("approval with empty approved_scope [] -> refused",
@@ -54,6 +56,19 @@ check("approval bound to a different instance -> refused",
       run(valid_approval(instance_id="1" * 32)) == "exit6")
 check("approval with a non-matching spec_digest value -> refused",
       run(valid_approval(spec_digest="b" * 64)) == "exit6")
+# B1 round-1 review: bind spec_id, refuse broader scope, require risk_class + timestamp
+check("approval for a DIFFERENT spec_id -> refused",
+      run(valid_approval(spec_id="SPEC-OTHER")) == "exit6")
+check("approval approved_scope BROADER than spec in_scope -> refused",
+      run(valid_approval(approved_scope=["**"])) == "exit6")
+check("approval approved_scope with a glob not in in_scope -> refused",
+      run(valid_approval(approved_scope=["scripts/**", "/etc/**"])) == "exit6")
+check("approval subset of in_scope (both listed globs) -> ok",
+      run(valid_approval(approved_scope=["scripts/**", "tests/**"])) == "ok")
+check("approval missing risk_class -> refused", run(valid_approval(risk_class=None)) == "exit6")
+check("approval with invalid risk_class -> refused",
+      run(valid_approval(risk_class="critical")) == "exit6")
+check("approval missing timestamp -> refused", run(valid_approval(timestamp=None)) == "exit6")
 
 print(f"\n{'PASS' if not fails else 'FAIL'}: B1 approval validation ({len(fails)} failed)")
 import sys; sys.exit(1 if fails else 0)
