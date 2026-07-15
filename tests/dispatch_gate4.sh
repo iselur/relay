@@ -90,11 +90,49 @@ check("stop-early on identical findings -> refused exit 18",
       preflight("SPEC-T07", "default", 3)[0] == "exit18")
 check("stop-early wrote escalation", any(d.ESCALATIONS.glob("SPEC-T07-*.json")))
 
-# --- High-risk per-dispatch approval ---------------------------------------------------------
+# --- High-risk per-dispatch approval (B1: validated + bound, not existence-only) -------------
+_real_ensure_instance = d.ensure_instance                # restored before the instance-binding block
+d.ensure_instance = lambda: {"instance_id": "0" * 32}   # deterministic instance for binding checks
+PA = d.APPROVALS / ("d" * 64 + ".attempt-1.json")
+def valid_pa(**over):
+    base = {"spec_id": "SPEC-T08", "spec_digest": "d" * 64, "instance_id": "0" * 32,
+            "attempt": 1, "approver": "val", "risk_class": "high",
+            "timestamp": "2026-07-15T00:00:00Z"}
+    base.update(over); return json.dumps(base)
+
 check("high risk attempt 1 without per-dispatch approval -> refused exit 17",
       preflight("SPEC-T08", "high", 1)[0] == "exit17")
-(d.APPROVALS / ("d" * 64 + ".attempt-1.json")).write_text(json.dumps({"approver": "val", "attempt": 1}))
-check("high risk attempt 1 WITH per-dispatch approval -> allowed",
+
+# B1: an existing-but-empty/garbage file must NOT authorize
+PA.write_text("{}")
+check("empty {} per-dispatch approval -> refused (not existence-only)",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text("not json at all")
+check("garbage (non-JSON) per-dispatch approval -> refused",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text(valid_pa(spec_digest="e" * 64))
+check("per-dispatch approval with wrong spec_digest -> refused",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text(valid_pa(instance_id="f" * 32))
+check("per-dispatch approval bound to a different instance -> refused",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text(valid_pa(attempt=2))
+check("per-dispatch approval for a different attempt -> refused",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text(valid_pa(spec_id="SPEC-OTHER"))
+check("per-dispatch approval for a different spec_id -> refused",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text(valid_pa(timestamp=None))
+check("per-dispatch approval missing timestamp -> refused",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text(valid_pa(risk_class="low"))
+check("per-dispatch approval risk_class mismatched vs spec -> refused",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text(valid_pa(note="x", extra="smuggled"))
+check("per-dispatch approval with an unknown field -> refused",
+      preflight("SPEC-T08", "high", 1)[0] == "exit17")
+PA.write_text(valid_pa())
+check("high risk attempt 1 WITH a valid, bound per-dispatch approval -> allowed",
       preflight("SPEC-T08", "high", 1) == ("ok", None))
 
 # --- Scope-violation detection paths (Gate 4 pipeline test 3, both cases) --------------------
@@ -120,6 +158,7 @@ integ, ok = d.integrity(work, base, wc)
 check("dirty worktree -> integrity FAIL", ok is False and integ["worktree_clean"] is False)
 
 # --- instance-bound approvals (copied approvals must not authorize copied specs) -------------
+d.ensure_instance = _real_ensure_instance                # undo the deterministic stub above
 d.INSTANCE = tmp / "instance.json"
 inst = d.ensure_instance()
 check("ensure_instance creates an id + repo", bool(inst.get("instance_id")) and "repo" in inst)
