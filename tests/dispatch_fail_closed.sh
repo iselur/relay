@@ -158,21 +158,37 @@ del _os.environ["ORCH_TEST_PY"]
 # fallback through the identical hardened invocation, both envelopes + exit codes + an escalation
 # kept, and lc reviewer_model updated to the model that actually produced the verdict. Every other
 # failure stays fail-closed with a single invocation — no error may buy a second reviewer roll.
+# The real envelope the installed CLI emits for `--model <bogus>` (captured from CLI 2.1.210):
+# nonzero exit + this exact `result` text (the model name is interpolated, so the trigger anchors
+# on the model-name-independent phrasing, never the whole string).
 notfound = json.dumps({"type": "result", "is_error": True, "api_error_status": 404,
-                       "result": "There's an issue with the selected model"})
+                       "result": "There's an issue with the selected model "
+                       "(claude-fable-5). It may not exist or you may not have access to it. "
+                       "Run --model to pick a different model."})
 check("failover trigger accepts only the full model-not-found discriminator",
       d.reviewer_model_unavailable(notfound)
       and not d.reviewer_model_unavailable(json.dumps(
           {"is_error": True, "api_error_status": 404}))                      # missing type=result
       and not d.reviewer_model_unavailable(json.dumps(
           {"type": "result", "is_error": True, "api_error_status": 500,
-           "result": "x"}))                                                  # wrong status
+           "result": "There's an issue with the selected model"}))          # wrong status
       and not d.reviewer_model_unavailable(json.dumps(
           {"type": "result", "is_error": True, "api_error_status": 404,
            "result": json.dumps({"verdict": "PASS"})}))                      # verdict-bearing body
       and not d.reviewer_model_unavailable(json.dumps(
           {"type": "result", "is_error": True, "api_error_status": 404,
            "result": ["x"]}))                                                # non-string result
+      and not d.reviewer_model_unavailable(json.dumps(
+          {"type": "result", "is_error": True, "api_error_status": 404}))    # MISSING result
+      and not d.reviewer_model_unavailable(json.dumps(
+          {"type": "result", "is_error": True, "api_error_status": 404,
+           "result": None}))                                                 # null result
+      and not d.reviewer_model_unavailable(json.dumps(
+          {"type": "result", "is_error": True, "api_error_status": 404,
+           "result": ""}))                                                   # empty result
+      and not d.reviewer_model_unavailable(json.dumps(
+          {"type": "result", "is_error": True, "api_error_status": 404,
+           "result": "The requested resource was not found"}))              # unrelated 404 string
       and not d.reviewer_model_unavailable("not json")
       and not d.reviewer_model_unavailable(""))
 
@@ -210,13 +226,33 @@ check("failover: fallback invocation carries identical flags except the model",
 check("failover: both invocations ran from a neutral cwd outside the repo",
       all(c and not pathlib.Path(c).resolve().is_relative_to(d.ROOT.resolve()) for c in cwds))
 fo = json.loads((att69 / "raw" / "reviewer-failover.json").read_text())
-check("failover: audit record has both models, exit code, and stderr tail",
+check("failover: audit record has both models and BOTH invocations' exit codes + stderr",
       fo["from_model"] == "claude-fable-5" and fo["to_model"] == d.REVIEWER_FALLBACK_MODEL
-      and fo["primary_returncode"] == 1 and "model gone" in fo["primary_stderr_tail"])
+      and fo["primary_returncode"] == 1 and "model gone" in fo["primary_stderr_tail"]
+      and fo["fallback_returncode"] == 0 and fo["fallback_stderr_tail"] == "")
 check("failover: both envelopes and an escalation are durable",
       (att69 / "raw" / "review-envelope-primary.json").read_text() == notfound
       and (att69 / "raw" / "review-envelope.json").read_text() != notfound
       and any(d.ESCALATIONS.iterdir()))
+
+# A FAILING fallback (primary 404 → fallback itself exits nonzero) must still be fail-closed AND
+# leave both invocations' outcomes in the audit record — the earlier version recorded only the
+# primary, silently losing the fallback's return code and stderr.
+calls = []
+def failing_fallback_run(cmd, **kw):
+    calls.append(cmd)
+    if len(calls) == 1:
+        return subprocess.CompletedProcess(cmd, 1, stdout=notfound, stderr="model gone")
+    return subprocess.CompletedProcess(cmd, 7, stdout="", stderr="fallback exploded")
+d.run = failing_fallback_run
+lc73 = dict(lc69, reviewer_model="claude-fable-5")
+att73 = tmp / "attempts" / "SPEC-905" / "1"; (att73 / "raw").mkdir(parents=True)
+verdict, raw = d.review(att73, "SPEC-905", lc73, "c" * 40)
+fo73 = json.loads((att73 / "raw" / "reviewer-failover.json").read_text())
+check("failover: a failing fallback is fail-closed with both outcomes recorded",
+      verdict is None and len(calls) == 2 and lc73["reviewer_model"] == d.REVIEWER_FALLBACK_MODEL
+      and fo73["primary_returncode"] == 1 and "model gone" in fo73["primary_stderr_tail"]
+      and fo73["fallback_returncode"] == 7 and "fallback exploded" in fo73["fallback_stderr_tail"])
 
 calls = []
 def error_run(cmd, **kw):
@@ -254,9 +290,14 @@ lc72 = dict(lc69, reviewer_model="claude-fable-5", deadline_ts=4102444800.0)
 att72 = tmp / "attempts" / "SPEC-904" / "1"; (att72 / "raw").mkdir(parents=True)
 verdict, raw = d.review(att72, "SPEC-904", lc72, "c" * 40)
 d.remaining_ceiling_s = real_rcs
+fo72 = json.loads((att72 / "raw" / "reviewer-failover.json").read_text())
 check("failover: exhausted deadline refuses the fallback invocation (fail closed)",
       verdict is None and len(calls) == 1 and "deadline exhausted" in raw
-      and calls[0][:1] == ["timeout"])
+      and calls[0][:1] == ["timeout"]
+      # the refused fallback is still recorded — primary outcome kept, refusal captured, no bogus
+      # fallback_returncode implying an invocation that never ran.
+      and fo72["primary_returncode"] == 1 and "deadline exhausted" in fo72["fallback_refused"]
+      and "fallback_returncode" not in fo72)
 
 sys.exit(1 if fails else 0)
 PY

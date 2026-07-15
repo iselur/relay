@@ -2488,6 +2488,13 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
 
     # --- step 8: reviewer (bound, fail-closed) --------------------------------
     verdict, vraw = review(att, spec_id, lc, worker_commit, attestation)
+    # Round-2 review, finding 3: bind the EFFECTIVE reviewer model onto the canonical review record
+    # itself, not only result.json and the PR body. lc["reviewer_model"] was updated in place by
+    # review() on any failover, so this names the model that actually produced the verdict. The key
+    # is orchestrator-authored control-plane provenance (a namespaced addition alongside the
+    # reviewer's own fields); existing readers select specific keys and ignore it.
+    if verdict:
+        verdict["effective_reviewer_model"] = lc["reviewer_model"]
     atomic_write(att / "review.json", json.dumps(verdict, indent=2) if verdict else "{}")
     binary_result = (evaluate_binary_review(
         verdict.get("verdict"), verdict.get("criteria", []),
@@ -2760,13 +2767,31 @@ def evaluate_binary_review(verdict: str, criteria: list[dict], scope_finding: st
     return verdict
 
 
+# Round-2 review, finding 1: a bare `type=result + is_error + api_error_status 404` is NOT
+# specific enough — a missing/null/arbitrary-string `result` alongside those generic fields (any
+# unrelated 404 the CLI ever surfaces that way) would buy the diff a second reviewer roll. The
+# failover must fire ONLY on the model-not-found condition, so we also require the CLI's rendered
+# model-unavailable message. Verified against the installed CLI (2.1.210): `claude -p --json-schema
+# ... --model <bogus>` exits nonzero with exactly this envelope, `result` reading e.g. "There's an
+# issue with the selected model (<name>). It may not exist or you may not have access to it. Run
+# --model to pick a different model." We anchor on the model-name-INDEPENDENT phrasing; if the API
+# ever rewords it, the match fails CLOSED (no spurious failover — the reviewer simply fails and the
+# attempt escalates), which is the safe direction for a trust gate.
+_MODEL_UNAVAILABLE_PHRASES = (
+    "issue with the selected model",
+    "it may not exist or you may not have access",
+)
+
+
 def reviewer_model_unavailable(stdout: str) -> bool:
     """True ONLY for the CLI's structured model-not-found envelope — the one condition that may
-    trigger the reviewer-model failover. Anything else (auth, rate limit, timeout, garbage output)
-    returns False and stays fail-closed with no retry. Round-1 review: the full discriminator is
-    required (type=result + is_error + api_error_status 404), and a verdict-bearing envelope —
-    a `result` that parses as a JSON object — is never "model not found", whatever its status
-    fields claim: structured output proves a model ran."""
+    trigger the reviewer-model failover. Anything else (auth, rate limit, timeout, garbage output,
+    an unrelated 404) returns False and stays fail-closed with no retry. Round-1 review: the full
+    discriminator is required (type=result + is_error + api_error_status 404), and a verdict-bearing
+    envelope — a `result` that parses as a JSON object — is never "model not found", whatever its
+    status fields claim: structured output proves a model ran. Round-2 review: `result` must be a
+    PRESENT non-empty string carrying the CLI's rendered model-unavailable message (a missing/null
+    `result`, or any unrelated 404 string, is refused)."""
     try:
         env = json.loads(stdout or "")
     except Exception:
@@ -2775,15 +2800,15 @@ def reviewer_model_unavailable(stdout: str) -> bool:
             and env.get("is_error") is True and env.get("api_error_status") == 404):
         return False
     res = env.get("result")
-    if res is not None and not isinstance(res, str):
+    if not isinstance(res, str) or not res.strip():
         return False
-    if isinstance(res, str):
-        try:
-            if isinstance(json.loads(res), dict):
-                return False
-        except Exception:
-            pass
-    return True
+    try:
+        if isinstance(json.loads(res), dict):
+            return False
+    except Exception:
+        pass
+    low = res.lower()
+    return any(phrase in low for phrase in _MODEL_UNAVAILABLE_PHRASES)
 
 
 def validate_review_verdict(verdict: dict, schema_obj: dict, lc: dict, wc: str) -> bool:
@@ -2926,17 +2951,30 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     # verdict to the model that actually produced it (round-1 review: misattribution was blocking).
     if (cp.returncode != 0 and lc["reviewer_model"] == "claude-fable-5"
             and reviewer_model_unavailable(cp.stdout)):
-        (att / "raw" / "review-envelope-primary.json").write_text(cp.stdout or "")
-        (att / "raw" / "reviewer-failover.json").write_text(json.dumps(
-            {"from_model": lc["reviewer_model"], "to_model": REVIEWER_FALLBACK_MODEL,
-             "trigger": "type=result is_error api_error_status=404 model-not-found",
-             "primary_returncode": cp.returncode,
-             "primary_stderr_tail": (cp.stderr or "")[-2000:], "created": now()}, indent=2))
+        primary = cp
+        from_model = lc["reviewer_model"]
+        (att / "raw" / "review-envelope-primary.json").write_text(primary.stdout or "")
         escalate(spec_id, "reviewer model retired; failed over to fallback for this attempt",
-                 {"attempt": str(att), "from_model": lc["reviewer_model"],
+                 {"attempt": str(att), "from_model": from_model,
                   "to_model": REVIEWER_FALLBACK_MODEL})
         lc["reviewer_model"] = REVIEWER_FALLBACK_MODEL
         cp = invoke_reviewer(REVIEWER_FALLBACK_MODEL)
+        # Round-2 review, finding 2: the audit record is written AFTER the fallback runs so the
+        # fallback's own outcome is preserved too — not just the primary's. A fallback that refuses
+        # to start (deadline exhausted → a refusal string) or exits nonzero must leave a durable
+        # trace; the earlier version recorded only the primary and silently lost a failed fallback.
+        record = {
+            "from_model": from_model, "to_model": REVIEWER_FALLBACK_MODEL,
+            "trigger": "type=result is_error api_error_status=404 model-not-found",
+            "primary_returncode": primary.returncode,
+            "primary_stderr_tail": (primary.stderr or "")[-2000:], "created": now(),
+        }
+        if isinstance(cp, str):
+            record["fallback_refused"] = cp
+        else:
+            record["fallback_returncode"] = cp.returncode
+            record["fallback_stderr_tail"] = (cp.stderr or "")[-2000:]
+        (att / "raw" / "reviewer-failover.json").write_text(json.dumps(record, indent=2))
         if isinstance(cp, str):
             return None, cp
     (att / "raw" / "review-envelope.json").write_text(cp.stdout or "")
