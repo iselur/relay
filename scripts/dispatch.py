@@ -3737,6 +3737,28 @@ def _commit_provenance(spec_ids: list[str]) -> str | None:
         git("pull", "--quiet", "--ff-only", "origin", "ready-for-main")
 
 
+def integrate_suite_env() -> dict:
+    """Environment for the post-merge suite in the materialized grader tree (B9 rounds 1-2).
+
+    Strict mode is forced — without it a box test returning 77 (skip) in the grader worktree
+    counts as a pass, so the combined tree was never actually verified. But the grader tree has
+    no gitignored .venv, so the venv-dependent dispatcher self-tests would then skip-and-fail:
+    the suite must be handed a usable interpreter. Preference order: the root-owned trusted test
+    runtime (same source as the gate tests' ORCH_TEST_PY), else this repo's own .venv (the same
+    interpreter `./scripts/test` uses when run from ROOT — the operator's, not a worker's). If
+    neither exists, ORCH_TEST_PY stays unset and the strict suite fails LOUDLY: a box that
+    cannot run the dispatcher self-tests cannot certify the combined tree (fail closed).
+    """
+    env = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1", "ORCH_TEST_STRICT": "1"}
+    rt = trusted_test_runtime()
+    venv_py = ROOT / ".venv" / "bin" / "python"
+    if rt:
+        env["ORCH_TEST_PY"] = rt["python"]
+    elif venv_py.exists():
+        env["ORCH_TEST_PY"] = str(venv_py.resolve())
+    return env
+
+
 def cmd_integrate(attempt_ids: list[str]) -> None:
     """Gate 4 §3: deterministic integration. Merge passed attempts in depends_on order (each via
     the fail-closed `merge`, so the base-check applies per merge — the FIRST stale sibling stops
@@ -3788,10 +3810,8 @@ def cmd_integrate(attempt_ids: list[str]) -> None:
             # round-3: export GIT_NO_REPLACE_OBJECTS into the suite's environment — the grader
             # worktree shares the object store/refs-replace, so scripts/test and each tests/*.sh
             # it globs must read objects with replacement disabled too.
-            # B9: force strict mode — without it a box test returning 77 (skip) in the grader
-            # worktree counts as a pass, so the combined tree was never actually verified.
             ts = run([str(gtree / "scripts" / "test")], cwd=str(gtree),
-                     env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1", "ORCH_TEST_STRICT": "1"})
+                     env=integrate_suite_env())
         if ts.returncode != 0:
             path = escalate(sid, f"post-merge suite FAILED on ready-for-main after {aid} — "
                                  f"stop; human decision required",

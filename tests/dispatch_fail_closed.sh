@@ -104,10 +104,26 @@ check("B16 reviewer invocation empties the tool surface",
       "--tools" in captured["cmd"] and
       captured["cmd"][captured["cmd"].index("--tools") + 1] == "")
 
-# B9 tripwire (not a behavior proof — the integrate flow is not faked here): the post-merge
-# suite invocation must keep forcing strict mode.
-src = inspect.getsource(d.cmd_integrate)
-check("B9 integrate forces ORCH_TEST_STRICT=1", '"ORCH_TEST_STRICT": "1"' in src)
+# B9: the post-merge suite env forces strict mode AND hands the suite a usable interpreter —
+# without ORCH_TEST_PY the grader tree (no gitignored .venv) would skip the venv-dependent
+# dispatcher self-tests, and strict mode turns that skip into a guaranteed integrate failure.
+env = d.integrate_suite_env()
+check("B9 integrate env forces ORCH_TEST_STRICT=1", env.get("ORCH_TEST_STRICT") == "1")
+check("B9 integrate env disables replace objects", env.get("GIT_NO_REPLACE_OBJECTS") == "1")
+check("B9 integrate env hands the suite an interpreter",
+      "ORCH_TEST_PY" in env and pathlib.Path(env["ORCH_TEST_PY"]).is_absolute()
+      and pathlib.Path(env["ORCH_TEST_PY"]).exists())
+check("B9 integrate suite is invoked with integrate_suite_env",
+      "integrate_suite_env()" in inspect.getsource(d.cmd_integrate))
+# Fail-closed branch: no trusted runtime and no repo venv -> ORCH_TEST_PY stays unset, so the
+# strict suite fails loudly rather than certifying a tree it could not test.
+real_rt, real_root = d.trusted_test_runtime, d.ROOT
+d.trusted_test_runtime = lambda: None
+d.ROOT = tmp / "no-venv-root"
+env2 = d.integrate_suite_env()
+check("B9 no interpreter available leaves ORCH_TEST_PY unset (loud strict failure)",
+      "ORCH_TEST_PY" not in env2 and env2.get("ORCH_TEST_STRICT") == "1")
+d.trusted_test_runtime, d.ROOT = real_rt, real_root
 
 sys.exit(1 if fails else 0)
 PY
