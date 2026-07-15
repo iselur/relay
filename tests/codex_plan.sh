@@ -329,4 +329,50 @@ grep -q 'CONTEXT-HEAD' "$prompt_file" || fail "large prompt: the head of the con
 grep -q 'CONTEXT-TAIL' "$prompt_file" || fail "large prompt: the TAIL of the context was truncated"
 [ "$(wc -c <"$prompt_file")" -gt 130000 ] || fail "large prompt arrived truncated below the argv limit"
 
+# B17: allocation must honor the directory lock. Two checks; the FIRST is the deterministic
+# regression discriminator (round-2): while this test holds the lock, a run must be unable to
+# allocate ANYTHING — the unfixed script ignores the advisory lock and completes in milliseconds,
+# so "still blocked after 2s with zero artifacts" separates the implementations without racing
+# two scans against each other.
+conc_dir="$tmp/plans-conc"
+mkdir -p "$conc_dir"
+exec 7>>"$conc_dir/.plan-id.lock"
+flock 7
+PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$tmp/probe-args" CODEX_STUB_PROMPT="$tmp/probe-prompt" \
+  CODEX_STUB_STDOUT='lock probe plan' \
+  scripts/codex-plan --small --out "$conc_dir" 'lock honor probe' >"$tmp/probe.out" 2>&1 &
+probe_pid=$!
+sleep 2   # ~1000x the stubbed run's wall clock; the unfixed script has long finished by now
+kill -0 "$probe_pid" 2>/dev/null \
+  || fail "codex-plan completed while the allocation lock was held (lock not honored — B17 regressed): $(cat "$tmp/probe.out")"
+! compgen -G "$conc_dir/PLAN-*" >/dev/null \
+  || fail "artifacts allocated while the allocation lock was held: $(ls "$conc_dir")"
+flock -u 7
+wait "$probe_pid" || fail "probe run failed after lock release: $(cat "$tmp/probe.out")"
+assert_file "$conc_dir/PLAN-001.md"
+
+# Second check: two concurrent runs allocate DISTINCT ids with both bodies intact. The claim
+# (noclobber create of .stdout under the lock) serializes the scans.
+exec 7>>"$conc_dir/.plan-id.lock"
+flock 7
+PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$tmp/conc-args-1" CODEX_STUB_PROMPT="$tmp/conc-prompt-1" \
+  CODEX_STUB_STDOUT='concurrent plan ONE' \
+  scripts/codex-plan --small --out "$conc_dir" 'concurrent task one' >"$tmp/conc1.out" 2>&1 &
+conc_pid1=$!
+PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$tmp/conc-args-2" CODEX_STUB_PROMPT="$tmp/conc-prompt-2" \
+  CODEX_STUB_STDOUT='concurrent plan TWO' \
+  scripts/codex-plan --small --out "$conc_dir" 'concurrent task two' >"$tmp/conc2.out" 2>&1 &
+conc_pid2=$!
+sleep 1   # let both queue on the held lock before releasing it
+flock -u 7
+wait "$conc_pid1" || fail "concurrent run 1 failed: $(cat "$tmp/conc1.out")"
+wait "$conc_pid2" || fail "concurrent run 2 failed: $(cat "$tmp/conc2.out")"
+conc_plans=("$conc_dir"/PLAN-*.md)
+[ "${#conc_plans[@]}" -eq 3 ] \
+  || fail "expected 3 plans (probe + 2 distinct concurrent), got: ${conc_plans[*]-none}"
+grep -q 'concurrent plan ONE' "$conc_dir"/PLAN-002.md "$conc_dir"/PLAN-003.md 2>/dev/null \
+  || fail "concurrent plan ONE missing from the allocated ids"
+grep -q 'concurrent plan TWO' "$conc_dir"/PLAN-002.md "$conc_dir"/PLAN-003.md 2>/dev/null \
+  || fail "concurrent plan TWO missing from the allocated ids (an overwrite ate it)"
+
 echo "PASS codex_plan.sh"
