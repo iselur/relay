@@ -12,7 +12,7 @@ check() {
 PY="${ORCH_TEST_PY:-python3}"
 [ -n "${ORCH_TEST_PY:-}" ] || [ ! -x .venv/bin/python ] || PY=.venv/bin/python
 out=$($PY - <<'PY'
-import copy, importlib.util, pathlib, tempfile
+import copy, importlib.util, pathlib, subprocess, tempfile
 spec=importlib.util.spec_from_file_location("d", pathlib.Path("scripts/dispatch.py"))
 d=importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
 
@@ -51,9 +51,16 @@ for label, mutate in (
 print("empty_blocks", d.attest_tests({},[],{},policy)[0])
 
 def fixture(manifest, names=("a.sh","b.sh","c.sh","d.sh","e.sh")):
+    # B4 fix: execution_policy() now reads the required set/manifest/hashes from a git commit, not
+    # the filesystem — so the fixture must be a real (committed) git repo, not a bare temp dir.
     root=pathlib.Path(tempfile.mkdtemp()); (root/"tests").mkdir()
     for name in names: (root/"tests"/name).write_text("#!/bin/sh\n")
     if manifest is not None: (root/"tests/execution-policy.tsv").write_text(manifest)
+    subprocess.run(["git","init","-q","-b","main",str(root)], check=True)
+    subprocess.run(["git","config","user.email","t@t"], cwd=str(root), check=True)
+    subprocess.run(["git","config","user.name","t"], cwd=str(root), check=True)
+    subprocess.run(["git","add","-A"], cwd=str(root), check=True)
+    subprocess.run(["git","commit","-q","--allow-empty","-m","fixture"], cwd=str(root), check=True)
     try: p=d.execution_policy(root); return "ok",p
     except ValueError: return "rejected",None
 base=("tests/a.sh\tbox-precondition\ta\n"

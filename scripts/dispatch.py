@@ -192,32 +192,117 @@ def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def execution_policy(root: Path = ROOT) -> dict:
-    """Parse the sole execution-mode manifest and derive the all-installed-tests required set.
+# ------------------------------------------------------------- B4: pinned-git grading ----
+# H4/B4 (codex-audit-2026-07-15): the required test set, the manifest, and every test's bytes
+# used to be read from the FILESYSTEM working tree and merely LABELED with the HEAD commit — a
+# dirty, deleted, or untracked tests/*.sh file could silently shrink/grow/poison the "installed"
+# suite while the attestation still stamped it as commit HEAD. Fix: enumerate/hash/read from the
+# PINNED GIT TREE (git ls-tree/git show <commit>), never Path.glob/read_bytes on tests/, and
+# refuse to grade at all if the working tree has drifted from that commit (grader_drift below).
+def git_show_bytes(commit: str, rel: str, cwd: Path = ROOT) -> bytes:
+    """Exact bytes of the committed blob at `commit`:`rel` — never the working-tree file."""
+    cp = run(["git", "show", f"{commit}:{rel}"], cwd=str(cwd), capture_output=True, text=False)
+    if cp.returncode != 0:
+        stderr = (cp.stderr or b"").decode("utf-8", "replace")
+        raise ValueError(f"git show {commit}:{rel} failed: {stderr.strip()}")
+    return cp.stdout
+
+
+def git_ls_tree_sh(commit: str, subdir: str, cwd: Path = ROOT) -> list[tuple[str, str, str]]:
+    """(mode, type, path) for every *.sh entry directly inside subdir/ at commit — non-recursive,
+    matching the old tests_dir.glob('*.sh') semantics (direct children only, not descended
+    subdirectories). Includes symlinks/non-blobs so the caller can fail closed on them explicitly,
+    the same way the old code refused a symlinked test file."""
+    cp = run(["git", "ls-tree", "-z", commit, "--", f"{subdir}/"], cwd=str(cwd))
+    if cp.returncode != 0:
+        raise ValueError(f"git ls-tree {commit} -- {subdir}/ failed: {cp.stderr.strip()}")
+    out = []
+    for entry in cp.stdout.split("\x00"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        fields = meta.split()
+        if len(fields) != 3 or not path.endswith(".sh"):
+            continue
+        mode, otype, _blob = fields
+        out.append((mode, otype, path))
+    return sorted(out, key=lambda t: t[2])
+
+
+def grader_drift(commit: str, root: Path = ROOT) -> list[str]:
+    """One description per grader-relevant difference between the working tree and `commit` —
+    empty means the working tree is byte-identical to the pinned commit for every path the grader
+    reads: tests/ (including tests/execution-policy.tsv) and scripts/test. Staged, unstaged,
+    deleted, and untracked-shadowing files all count. Callers MUST refuse to grade (fail closed)
+    when this returns anything non-empty: a dirty or partially-deleted tests/ checkout must never
+    be allowed to define or execute the "installed" suite that the attestation then labels with
+    `commit` (B4)."""
+    paths = ["tests", "scripts/test"]
+    problems: list[str] = []
+    diff = run(["git", "diff", "--name-status", "-z", commit, "--", *paths], cwd=str(root))
+    if diff.returncode != 0:
+        problems.append(f"git diff against {commit} failed (exit {diff.returncode}): "
+                        f"{diff.stderr.strip()}")
+    else:
+        toks = diff.stdout.split("\x00")
+        i = 0
+        while i < len(toks):
+            status = toks[i]
+            if not status:
+                i += 1
+                continue
+            if status.startswith("R"):
+                src, dst = toks[i + 1], toks[i + 2]
+                problems.append(f"tracked drift ({status}): {src} -> {dst}")
+                i += 3
+            else:
+                problems.append(f"tracked drift ({status}): {toks[i + 1]}")
+                i += 2
+    status_cp = run(["git", "status", "--porcelain=v2", "-z", "--untracked-files=all",
+                     "--", *paths], cwd=str(root))
+    if status_cp.returncode != 0:
+        problems.append(f"git status failed (exit {status_cp.returncode}): "
+                        f"{status_cp.stderr.strip()}")
+    else:
+        for entry in status_cp.stdout.split("\x00"):
+            if entry.startswith("? "):
+                problems.append(f"untracked grader file: {entry[2:]}")
+    return problems
+
+
+def execution_policy(root: Path = ROOT, commit: str | None = None) -> dict:
+    """Parse the sole execution-mode manifest and derive the all-installed-tests required set —
+    from the PINNED GIT COMMIT tree, never the working directory (B4 fix). The required set, the
+    manifest text, and every required test's bytes are all read with `git ls-tree`/`git show
+    <commit>:<path>`; a working-tree file that is dirty, deleted, or untracked cannot shrink,
+    grow, or poison the suite that gets attested against `commit`. Callers MUST call
+    grader_drift(commit) first and refuse to grade on any drift — this function reads the pinned
+    tree only and does not itself compare against the working tree.
 
     Entries assign modes; they never select tests. Missing/malformed/duplicate/unsafe/nonexistent
     entries and an empty installed suite fail closed. Unlisted tests are candidate-isolated.
     """
-    import stat as stat_m
-    manifest = root / "tests" / "execution-policy.tsv"
+    if commit is None:
+        cp = run(["git", "rev-parse", "HEAD"], cwd=str(root))
+        if cp.returncode != 0:
+            raise ValueError(f"cannot resolve HEAD of {root}: {cp.stderr.strip()}")
+        commit = cp.stdout.strip()
+    manifest_rel = "tests/execution-policy.tsv"
     try:
-        mst = manifest.lstat()
-    except OSError as e:
-        raise ValueError(f"execution policy unreadable: {e}") from e
-    if not stat_m.S_ISREG(mst.st_mode):
-        raise ValueError("execution policy is not a regular file")
+        manifest_bytes = git_show_bytes(commit, manifest_rel, cwd=root)
+    except ValueError as e:
+        raise ValueError(f"execution policy unreadable at {commit}: {e}") from e
     try:
-        text = manifest.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as e:
-        raise ValueError(f"execution policy unreadable: {e}") from e
+        text = manifest_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"execution policy is not valid UTF-8 at {commit}: {e}") from e
     if "\r" in text:
         raise ValueError("execution policy contains non-normalized CR characters")
-    tests_dir = root / "tests"
-    test_paths = sorted(tests_dir.glob("*.sh"))
-    for p in test_paths:
-        if p.is_symlink() or not p.is_file():
-            raise ValueError(f"required test is not a regular non-symlink file: {p.relative_to(root)}")
-    required = [str(p.relative_to(root)) for p in test_paths]
+    entries = git_ls_tree_sh(commit, "tests", cwd=root)
+    for mode, otype, path in entries:
+        if otype != "blob" or mode not in ("100644", "100755"):
+            raise ValueError(f"required test is not a regular non-symlink file at {commit}: {path}")
+    required = [path for _, _, path in entries]
     if not required:
         raise ValueError("required test set is empty")
     installed = set(required)
@@ -247,17 +332,13 @@ def execution_policy(root: Path = ROOT) -> dict:
     # pinned. A hardcoded "exactly two box + two read" would fail-close a legitimate future manifest.
     test_hashes = {}
     for rel in required:
-        p = root / rel
         try:
-            st = p.lstat()
-        except OSError as e:
-            raise ValueError(f"required test vanished: {rel}: {e}") from e
-        if not stat_m.S_ISREG(st.st_mode):
-            raise ValueError(f"required test is not a regular file: {rel}")
-        test_hashes[rel] = sha256_file(p)
+            test_hashes[rel] = hashlib.sha256(git_show_bytes(commit, rel, cwd=root)).hexdigest()
+        except ValueError as e:
+            raise ValueError(f"required test unreadable at {commit}: {rel}: {e}") from e
     return {"authority": "installed" if root.resolve() == ROOT.resolve() else "candidate",
-            "manifest_path": "tests/execution-policy.tsv",
-            "manifest_sha256": sha256_file(manifest), "required": required,
+            "manifest_path": manifest_rel, "installed_commit": commit,
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(), "required": required,
             "modes": modes, "test_sha256": test_hashes}
 
 
@@ -1299,7 +1380,16 @@ def attestation_record(policy: dict, observations: dict[str, list[dict]]) -> dic
 
 
 def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
-    """Run installed box drills as the operator, serialized, before candidate worktree creation."""
+    """Run installed box drills as the operator, serialized, before candidate worktree creation.
+
+    Box-precondition tests inspect the REAL host (bwrap/AppArmor/ACL state) as the operator, so
+    they must execute at their real ROOT/tests path — not a materialized copy — for `cd
+    "$(dirname "$0")/.."` to resolve to the actual repo. That is safe here because cmd_launch calls
+    grader_drift() immediately before computing `policy`, and nothing runs between that check and
+    this function that could touch tests/: the filesystem is provably identical to
+    policy["installed_commit"]'s git tree at this point (B4). `before_test` is still hashed from
+    the live file and is checked against policy["test_sha256"][rel] downstream in attest_tests(),
+    so a hash mismatch here — however it happened — still fails closed."""
     observations: dict[str, list[dict]] = {rel: [] for rel in policy["required"]}
     box_tests = [rel for rel in policy["required"]
                  if policy["modes"][rel] == "box-precondition"]
@@ -1430,10 +1520,16 @@ def cmd_launch(spec_id: str) -> None:
                 f"(exit {probe.returncode}).", 15)
 
     try:
-        policy = execution_policy(ROOT)
+        installed_commit = git("rev-parse", "HEAD", cwd=ROOT)
+        drift = grader_drift(installed_commit, ROOT)
+        if drift:
+            raise ValueError(
+                "grader input (tests/, scripts/test) differs from the working tree at pinned "
+                f"commit {installed_commit[:9]} — refusing to derive the required suite from an "
+                "unpinned checkout: " + "; ".join(drift))
+        policy = execution_policy(ROOT, installed_commit)
     except ValueError as e:
         die(f"REFUSING to launch: {e}", 15)
-    policy["installed_commit"] = git("rev-parse", "HEAD", cwd=ROOT)
 
     ctx = preflight(spec_id)
     spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
@@ -1647,8 +1743,16 @@ def run_candidate_test_phases(lc: dict, wt: Path, worker_commit: str, att: Path,
     """Run installed test code in its assigned candidate context and return full attestation."""
     policy = lc["execution_policy"]
     try:
-        current = execution_policy(ROOT)
-        current["installed_commit"] = git("rev-parse", "HEAD", cwd=ROOT)
+        installed_commit = git("rev-parse", "HEAD", cwd=ROOT)
+        # execution_policy() alone would NOT catch a dirty-but-uncommitted tests/ file: it reads
+        # only the git tree, so a working-tree edit that never got committed leaves HEAD (and thus
+        # the git-tree content) unchanged while still poisoning what actually executes below.
+        # grader_drift() is the explicit, mandatory working-tree-vs-HEAD comparison (B4 fix).
+        drift = grader_drift(installed_commit, ROOT)
+        if drift:
+            raise ValueError("grader input drifted from the working tree at pinned commit "
+                             f"{installed_commit[:9]}: " + "; ".join(drift))
+        current = execution_policy(ROOT, installed_commit)
     except ValueError as e:
         current = None
         policy_error = str(e)
@@ -1681,15 +1785,30 @@ def run_candidate_test_phases(lc: dict, wt: Path, worker_commit: str, att: Path,
         phase = "candidate-read" if assigned == "candidate-read" else "candidate-isolated"
         log = att / "raw" / f"{phase}-{Path(rel).stem}.log"
         started = now()
-        test_before = sha256_file(ROOT / rel)
-        manifest_before = sha256_file(EXECUTION_POLICY)
+        # B4 fix: hash/execute the COMMITTED blob, not whatever is currently on disk. grader_drift
+        # above already proved the working tree matches installed_commit for tests/, so this is
+        # provably the same content ROOT/rel holds right now — computing it independently here
+        # (rather than trusting that invariant to still hold) closes the TOCTOU window between the
+        # drift check and this execution.
+        committed_bytes = git_show_bytes(policy["installed_commit"], rel, cwd=ROOT)
+        test_before = hashlib.sha256(committed_bytes).hexdigest()
+        manifest_before = policy["manifest_sha256"]
+        test_after_path = ROOT / rel  # overridden below when the run is a materialized blob
         if phase == "candidate-isolated":
             if not runtime_ok:
                 log.write_text("trusted test runtime changed, vanished, or lost root-only trust\n")
                 rc = 125
             else:
+                # Materialize the committed blob to a private path and bind THAT onto wt/rel — the
+                # sandboxed test never reads ROOT/rel off the (possibly racing) working tree.
+                materialized_dir = att / "materialized"
+                materialized_dir.mkdir(parents=True, exist_ok=True)
+                materialized = materialized_dir / f"{Path(rel).stem}-{test_before[:12]}.sh"
+                materialized.write_bytes(committed_bytes)
+                materialized.chmod(0o755)
+                test_after_path = materialized
                 binds = [(runtime["root"], runtime["root"]),
-                         (str(ROOT / rel), str(wt / rel))]
+                         (str(materialized), str(wt / rel))]
                 with open(log, "w") as out:
                     cp = isolated_run(
                         f"{lc['test_unit']}-{Path(rel).stem[:24]}",
@@ -1704,6 +1823,11 @@ def run_candidate_test_phases(lc: dict, wt: Path, worker_commit: str, att: Path,
                      if assigned == "candidate-isolated" else
                      "isolated observation retained; box-precondition PASS alone grades the host boundary")
         else:
+            # candidate-read tests locate the installed repo via dirname("$0")/.. (INSTALLED_ROOT in
+            # plain_language.sh/prose_cap.sh), so they must run at their real tests/ path rather than
+            # a materialized copy elsewhere — grader_drift() above already proved ROOT/rel is
+            # byte-identical to the committed blob, so executing it here is provably equivalent to
+            # executing the pinned commit's content.
             env = {"HOME": "/nonexistent", "USER": OPERATOR_USER, "LOGNAME": OPERATOR_USER,
                    "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
                    "GIT_NO_REPLACE_OBJECTS": "1", "ORCH_TEST_TARGET_ROOT": str(wt),
@@ -1715,7 +1839,7 @@ def run_candidate_test_phases(lc: dict, wt: Path, worker_commit: str, att: Path,
             rc = cp.returncode
             identity = execution_identity()
             claim = "installed policy read exact candidate Git blobs as data; no candidate bytes executed"
-        test_after = sha256_file(ROOT / rel)
+        test_after = sha256_file(test_after_path)
         manifest_after = sha256_file(EXECUTION_POLICY)
         status = _status_for_exit(rc)
         if test_after != test_before or manifest_after != manifest_before:
@@ -1974,17 +2098,25 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                integrity=post_test_integrity)
 
     substituted = []
-    for rel in required_tests():
-        parent_copy, worker_copy = ROOT / rel, wt / rel
-        if not parent_copy.exists():
+    try:
+        restore_ctx = required_tests()
+    except ValueError as e:
+        finish("failed_test", ERR_TEST_NOT_RUN, worker_commit=worker_commit,
+               detail=f"grader input drift blocked required-test restoration: {e}")
+    for rel in restore_ctx["required"]:
+        # B4 fix: the ORCHESTRATOR's copy restored into the candidate worktree is the COMMITTED
+        # blob at the pinned commit, never ROOT/rel off the working tree.
+        try:
+            committed_bytes = git_show_bytes(restore_ctx["installed_commit"], rel, cwd=ROOT)
+        except ValueError:
             continue
-        parent_bytes = parent_copy.read_bytes()
-        if not worker_copy.exists() or worker_copy.read_bytes() != parent_bytes:
+        worker_copy = wt / rel
+        if not worker_copy.exists() or worker_copy.read_bytes() != committed_bytes:
             if worker_copy.exists():
                 (att / "raw" / f"worker-{Path(rel).name}").write_bytes(worker_copy.read_bytes())
                 substituted.append(rel)
             worker_copy.parent.mkdir(parents=True, exist_ok=True)
-            worker_copy.write_bytes(parent_bytes)
+            worker_copy.write_bytes(committed_bytes)
             worker_copy.chmod(0o755)
 
     attestation = run_candidate_test_phases(lc, wt, worker_commit, att, ceiling_s, substituted)
@@ -2235,14 +2367,23 @@ def attest_tests(observations: dict[str, list[dict]], required: list[str],
     return True, f"all {len(required)} required tests passed with phase-aware provenance"
 
 
-def required_tests() -> list[str]:
-    """Which tests MUST have run, selected by the ORCHESTRATOR from ITS OWN checkout — never from
-    the worktree, so a candidate cannot shrink its own required set by deleting test files.
+def required_tests() -> dict:
+    """Which tests MUST have run, and the commit they are pinned to — selected by the ORCHESTRATOR
+    from ITS OWN checkout's git tree at HEAD, never from the working directory, so a candidate
+    cannot shrink its own required set by deleting test files, AND never from a dirty/untracked
+    working tree, so an uncommitted edit/deletion/addition under tests/ cannot silently redefine
+    the set either (B4 — the fix for H4). Fails closed (raises ValueError) if the working tree has
+    drifted from HEAD for any grader-relevant input; callers must not catch-and-ignore this.
 
     Deliberately blunt: every test in the installed repo is required. One suite, it is fast, and a
     cleverer selector is exactly the kind of mechanism we are no longer building speculatively
     (R26 — gates are earned by real failures, not imagined ones)."""
-    return execution_policy(ROOT)["required"]
+    commit = git("rev-parse", "HEAD", cwd=ROOT)
+    drift = grader_drift(commit, ROOT)
+    if drift:
+        raise ValueError(f"grader input drifted from HEAD {commit[:9]}: " + "; ".join(drift))
+    policy = execution_policy(ROOT, commit)
+    return {"installed_commit": commit, "required": policy["required"]}
 
 
 def evaluate_binary_review(verdict: str, criteria: list[dict], scope_finding: str,
