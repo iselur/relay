@@ -18,7 +18,7 @@ fails=0
 ok()   { echo "  ok: $1"; }
 bad()  { echo "  FAIL: $1"; fails=1; }
 
-PY=".venv/bin/python"
+PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
   echo "SKIP isolation_fail_closed.sh: .venv/pyyaml/jsonschema absent (box-only)"
   exit 77   # did NOT run — never a pass (T1)
@@ -55,6 +55,22 @@ for c in has_err_class refusal_before_preflight refusal_before_claim_slot refusa
          breakglass_is_explicit exposure_recorded worker_phase_refuses_untrusted_record; do
   if [ "${!c}" = "1" ]; then ok "$c"; else bad "$c"; fi
 done
+
+echo "== T2: candidate path-safety validation runs in the isolated test phase"
+if "$PY" - <<'PY'
+import importlib.util, os, pathlib, tempfile
+spec = importlib.util.spec_from_file_location("d", pathlib.Path("scripts/dispatch.py"))
+d = importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
+root = pathlib.Path(tempfile.mkdtemp())
+(root / "ok.txt").write_text("ok")
+os.symlink("ok.txt", root / "link")
+os.mkfifo(root / "pipe")
+bad = d.validate_worktree_safe(root)
+raise SystemExit(0 if set(bad) == {"link", "pipe"} else 1)
+PY
+then ok "validate_worktree_safe rejects candidate symlinks and FIFOs"
+else bad "validate_worktree_safe missed a candidate special file"
+fi
 
 echo "== T2: live refusal (only meaningful where D5 is genuinely absent)"
 if "$PY" -c 'import importlib.util,pathlib;s=importlib.util.spec_from_file_location("d",pathlib.Path("scripts/dispatch.py"));m=importlib.util.module_from_spec(s);s.loader.exec_module(m);import sys;sys.exit(0 if m.isolation_available() else 1)'; then

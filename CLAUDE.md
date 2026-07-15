@@ -17,8 +17,8 @@ holds the commands; SECURITY.md says what the protections do and do not prove.
 3. **Review cap:** draft, then up to three adversarial review rounds, each answered by one
    revision; ship when clean. Never a fourth round — `scripts/review` refuses it. Trust-critical
    work with an unresolved critical finding stays BLOCKED: escalate, never ship on a spent cap.
-4. **Communication:** at most five plain bullets — Outcome / Verified / Not done / Risk / Next. A
-   coined term is allowed only when it names code that exists in this repo.
+4. **Communication:** lead with the bottom line, then at most five plain bullets — Outcome /
+   Verified / Not done / Risk / Next; keep a visible to-do list for multi-step work. Coin a term only for code that exists in this repo.
 5. **Every program gets ONE brief.** Pick the tier; when it could be two, take the higher one.
    - *Small* — one change, in one place, easy to undo, nothing else depends on it: the intake gate
      is enough. Any plan stays under 40 lines.

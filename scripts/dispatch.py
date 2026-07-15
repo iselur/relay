@@ -51,6 +51,10 @@ HALT = ORCH / "HALT"
 SPEC_SCHEMA = SPECS / "spec.schema.json"
 VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
+EXECUTION_POLICY = ROOT / "tests" / "execution-policy.tsv"
+TEST_RUNTIME_ROOT = Path("/opt/orchestrator-test-runtime")
+TEST_RUNTIME_PY = TEST_RUNTIME_ROOT / "bin" / "python"
+EXECUTION_MODES = {"box-precondition", "candidate-isolated", "candidate-read"}
 QUALITY_DIMENSIONS = ("maintainability", "design_fit", "test_quality")
 
 # Concurrency bound (Gate 3 part 3 mechanism: atomic slot claim + stale-base guard, unchanged).
@@ -135,6 +139,79 @@ def git(*args, cwd=ROOT, check=True):
     if check and cp.returncode != 0:
         die(f"git {' '.join(args)} failed: {cp.stderr.strip()}")
     return cp.stdout.strip()
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def execution_policy(root: Path = ROOT) -> dict:
+    """Parse the sole execution-mode manifest and derive the all-installed-tests required set.
+
+    Entries assign modes; they never select tests. Missing/malformed/duplicate/unsafe/nonexistent
+    entries and an empty installed suite fail closed. Unlisted tests are candidate-isolated.
+    """
+    import stat as stat_m
+    manifest = root / "tests" / "execution-policy.tsv"
+    try:
+        mst = manifest.lstat()
+    except OSError as e:
+        raise ValueError(f"execution policy unreadable: {e}") from e
+    if not stat_m.S_ISREG(mst.st_mode):
+        raise ValueError("execution policy is not a regular file")
+    try:
+        text = manifest.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as e:
+        raise ValueError(f"execution policy unreadable: {e}") from e
+    if "\r" in text:
+        raise ValueError("execution policy contains non-normalized CR characters")
+    tests_dir = root / "tests"
+    test_paths = sorted(tests_dir.glob("*.sh"))
+    for p in test_paths:
+        if p.is_symlink() or not p.is_file():
+            raise ValueError(f"required test is not a regular non-symlink file: {p.relative_to(root)}")
+    required = [str(p.relative_to(root)) for p in test_paths]
+    if not required:
+        raise ValueError("required test set is empty")
+    installed = set(required)
+    modes = {rel: "candidate-isolated" for rel in required}
+    seen: set[str] = set()
+    for line_no, line in enumerate(text.splitlines(), 1):
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise ValueError(f"execution policy line {line_no} must have exactly three TSV fields")
+        rel, mode, rationale = fields
+        if not re.fullmatch(r"tests/[A-Za-z0-9_.-]+\.sh", rel):
+            raise ValueError(f"execution policy line {line_no} has unsafe path {rel!r}")
+        if rel not in installed:
+            raise ValueError(f"execution policy line {line_no} names nonexistent test {rel!r}")
+        if rel in seen:
+            raise ValueError(f"execution policy line {line_no} duplicates {rel!r}")
+        if mode not in EXECUTION_MODES:
+            raise ValueError(f"execution policy line {line_no} has unknown mode {mode!r}")
+        if not rationale.strip():
+            raise ValueError(f"execution policy line {line_no} has an empty rationale")
+        seen.add(rel)
+        modes[rel] = mode
+    # No fixed mode COUNTS (frozen design #2/#4): every installed test is required, the manifest
+    # ASSIGNS modes, and unlisted tests default to candidate-isolated — counts are re-measured, not
+    # pinned. A hardcoded "exactly two box + two read" would fail-close a legitimate future manifest.
+    test_hashes = {}
+    for rel in required:
+        p = root / rel
+        try:
+            st = p.lstat()
+        except OSError as e:
+            raise ValueError(f"required test vanished: {rel}: {e}") from e
+        if not stat_m.S_ISREG(st.st_mode):
+            raise ValueError(f"required test is not a regular file: {rel}")
+        test_hashes[rel] = sha256_file(p)
+    return {"authority": "installed" if root.resolve() == ROOT.resolve() else "candidate",
+            "manifest_path": "tests/execution-policy.tsv",
+            "manifest_sha256": sha256_file(manifest), "required": required,
+            "modes": modes, "test_sha256": test_hashes}
 
 
 # --------------------------------------------------------------- atomic io ----
@@ -519,6 +596,14 @@ def _resolve_operator() -> "tuple[str, Path]":
     return name, home
 
 
+def execution_identity() -> str:
+    import pwd
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        return str(os.geteuid())
+
+
 OPERATOR_USER, OPERATOR_HOME = _resolve_operator()
 
 WORKER_USER = "codex-worker"
@@ -750,6 +835,74 @@ def pin_runtime_sources(rt_argv: list, rt_binds: list) -> dict:
     return pins
 
 
+def trusted_test_runtime() -> dict | None:
+    """Return the root-owned Python dependency closure used by installed tests, or None.
+
+    Unlike the Codex runtime, operator ownership is not accepted: candidate-phase provenance says
+    this runtime is trusted specifically because setup installed it root-owned outside the
+    operator's home and the worker cannot modify any byte or path component.
+    """
+    import stat as stat_m
+    try:
+        real = TEST_RUNTIME_ROOT.resolve(strict=True)
+        interpreter = TEST_RUNTIME_PY.resolve(strict=True)
+    except OSError:
+        return None
+    if real != TEST_RUNTIME_ROOT:
+        return None
+    for ancestor in (Path("/"), Path("/opt"), TEST_RUNTIME_ROOT):
+        try:
+            st = ancestor.lstat()
+        except OSError:
+            return None
+        if st.st_uid != 0 or st.st_mode & 0o022 or _has_extended_acl(ancestor):
+            return None
+    for p in [real, *real.rglob("*")]:
+        try:
+            st = p.lstat()
+        except OSError:
+            return None
+        if st.st_uid != 0 or _has_extended_acl(p):
+            return None
+        if stat_m.S_ISLNK(st.st_mode):
+            try:
+                target = p.resolve(strict=True)
+            except OSError:
+                return None
+            try:
+                target.relative_to(real)
+            except ValueError:
+                if _trusted_runtime_file(target, want_exec=False) is None or target.stat().st_uid != 0:
+                    return None
+            continue
+        if st.st_mode & 0o022:
+            return None
+        if not (stat_m.S_ISREG(st.st_mode) or stat_m.S_ISDIR(st.st_mode)):
+            return None
+    if not TEST_RUNTIME_PY.exists() or not os.access(TEST_RUNTIME_PY, os.X_OK):
+        return None
+    trusted_interpreter = _trusted_runtime_file(interpreter)
+    if trusted_interpreter is None or trusted_interpreter.stat().st_uid != 0:
+        return None
+    requirements_sha = sha256_file(ROOT / "scripts" / "requirements.txt")
+    try:
+        installed_requirements_sha = (TEST_RUNTIME_ROOT / ".requirements-sha256").read_text().strip()
+    except OSError:
+        return None
+    if installed_requirements_sha != requirements_sha:
+        return None
+    return {"python": str(TEST_RUNTIME_PY), "root": str(TEST_RUNTIME_ROOT),
+            "tree_sha256": _tree_fingerprint(TEST_RUNTIME_ROOT),
+            "interpreter": str(trusted_interpreter),
+            "interpreter_sha256": runtime_fingerprint(trusted_interpreter),
+            "requirements_sha256": requirements_sha}
+
+
+def test_runtime_matches(record: dict | None) -> bool:
+    current = trusted_test_runtime()
+    return bool(record and current and current == record)
+
+
 def isolation_available() -> bool:
     """D5 is ON iff the dedicated user + shared worktree root exist and we can sudo non-interactively.
     OFF (fresh box / CI) falls back to same-user launch so the dispatcher still runs — but a launch
@@ -914,6 +1067,77 @@ def run_regression_gate(lc, wt, worker_commit, att, iso, ceiling_s) -> dict:
     return res
 
 
+def _status_for_exit(rc: int) -> str:
+    return "PASS" if rc == 0 else ("SKIP" if rc == 77 else "FAIL")
+
+
+def attestation_record(policy: dict, observations: dict[str, list[dict]]) -> dict:
+    ok, detail = attest_tests(observations, policy["required"], policy["modes"], policy)
+    tests = {}
+    for rel in policy["required"]:
+        tests[rel] = {"assigned_phase": policy["modes"][rel],
+                      "observations": observations.get(rel, [])}
+    return {"policy": policy, "required": policy["required"], "tests": tests,
+            "attested": ok, "detail": detail}
+
+
+def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
+    """Run installed box drills as the operator, serialized, before candidate worktree creation."""
+    observations: dict[str, list[dict]] = {rel: [] for rel in policy["required"]}
+    box_tests = [rel for rel in policy["required"]
+                 if policy["modes"][rel] == "box-precondition"]
+    lock = STATE / ".box-preconditions.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    installed_commit = policy["installed_commit"]
+    host_id = Path("/etc/machine-id").read_text().strip() if Path("/etc/machine-id").exists() else "unknown"
+    boot_id = (Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+               if Path("/proc/sys/kernel/random/boot_id").exists() else "unknown")
+    with open(lock, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        for rel in box_tests:
+            test_path = ROOT / rel
+            before_commit = git("rev-parse", "HEAD", cwd=ROOT)
+            before_test = sha256_file(test_path)
+            before_manifest = sha256_file(EXECUTION_POLICY)
+            started = now()
+            log = att / "raw" / f"box-precondition-{Path(rel).stem}.log"
+            env = {"HOME": str(OPERATOR_HOME), "USER": OPERATOR_USER,
+                   "LOGNAME": OPERATOR_USER, "PATH": "/usr/local/bin:/usr/bin:/bin",
+                   "LANG": "C.UTF-8", "ORCH_OPERATOR_USER": OPERATOR_USER}
+            with open(log, "w") as out:
+                cp = subprocess.run(["bash", str(test_path)], cwd=str(ROOT), env=env,
+                                    stdin=subprocess.DEVNULL, stdout=out,
+                                    stderr=subprocess.STDOUT)
+            after_test = sha256_file(test_path)
+            after_manifest = sha256_file(EXECUTION_POLICY)
+            after_commit = git("rev-parse", "HEAD", cwd=ROOT)
+            status = _status_for_exit(cp.returncode)
+            actual_identity = execution_identity()
+            if (before_test != after_test or before_manifest != after_manifest
+                    or before_commit != installed_commit or after_commit != installed_commit
+                    or actual_identity != OPERATOR_USER or host_id == "unknown" or boot_id == "unknown"):
+                status = "FAIL"
+            observations[rel].append({
+                "phase": "box-precondition", "status": status,
+                "subject": "active host and installed isolation boundary",
+                "identity": actual_identity, "installed_commit": installed_commit,
+                "installed_commit_after": after_commit,
+                "host_id": host_id, "boot_id": boot_id,
+                "serialization_lock": str(lock),
+                "manifest_sha256": before_manifest, "test_sha256": before_test,
+                "manifest_sha256_after": after_manifest, "test_sha256_after": after_test,
+                "started": started, "finished": now(), "exit_status": cp.returncode,
+                "log": str(log.relative_to(att)), "log_sha256": sha256_file(log),
+                "claim": ("active installed box boundary passed; candidate test version was not graded"
+                          if status == "PASS" else
+                          "active installed box boundary did not pass; candidate launch is blocked"),
+            })
+            atomic_write(att / "test-attestation.json",
+                         json.dumps(attestation_record(policy, observations), indent=2))
+        fcntl.flock(lf, fcntl.LOCK_UN)
+    return observations
+
+
 # =============================================================== launch =======
 def cmd_launch(spec_id: str) -> None:
     # T2 (decision R26) — ISOLATION FAILS CLOSED. Selected ONCE, FIRST — before preflight, the
@@ -948,6 +1172,7 @@ def cmd_launch(spec_id: str) -> None:
     # Resolution is vetted, then PROBED under the real service hardening (an ELF-magic check alone
     # accepts wrong-arch/broken binaries — round-1 review), then pinned by hash for _run.
     runtime_record = None
+    test_runtime_record = None
     if iso:
         rt = worker_codex_runtime()
         if rt is None:
@@ -971,6 +1196,27 @@ def cmd_launch(spec_id: str) -> None:
         runtime_record = {"argv": rt_argv, "binds": [list(b) for b in rt_binds],
                           "entry": str(rt_entry),
                           "pins": pin_runtime_sources(rt_argv, rt_binds)}
+        test_runtime_record = trusted_test_runtime()
+        if test_runtime_record is None:
+            die("REFUSING to launch: trusted test runtime is missing or writable.\n"
+                "  Run ./scripts/setup-worker-user.sh to provision the root-owned runtime at "
+                f"{TEST_RUNTIME_ROOT}.", 15)
+        probe = isolated_run(
+            f"orch-test-rtprobe-{spec_id}",
+            [test_runtime_record["python"], "-c", "import yaml, jsonschema"], cwd=None,
+            rw_paths=[], private_network=True, ceiling_s=120,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            binds=[(test_runtime_record["root"], test_runtime_record["root"])],
+            env_extra={"ORCH_TEST_PY": test_runtime_record["python"]})
+        if probe.returncode != 0:
+            die("REFUSING to launch: trusted test runtime failed under service hardening "
+                f"(exit {probe.returncode}).", 15)
+
+    try:
+        policy = execution_policy(ROOT)
+    except ValueError as e:
+        die(f"REFUSING to launch: {e}", 15)
+    policy["installed_commit"] = git("rev-parse", "HEAD", cwd=ROOT)
 
     ctx = preflight(spec_id)
     spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
@@ -996,6 +1242,42 @@ def cmd_launch(spec_id: str) -> None:
         "unit": unit_name(spec_id, n), "created": now(),
     })
 
+    # Box proofs are installed operator code and run under one global lock before the candidate
+    # worktree exists. A FAIL, SKIP, missing result, or hash change is terminal and starts no worker.
+    try:
+        box_observations = run_box_preconditions(att_dir, policy)
+    except Exception as e:
+        box_observations = {rel: [] for rel in policy["required"]}
+        phase_attestation = attestation_record(policy, box_observations)
+        result = {"attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
+                  "spec_digest": digest, "status": "error_launch",
+                  "error_class": ERR_TEST_NOT_RUN,
+                  "detail": f"box-precondition harness failed before candidate launch: {e}",
+                  "attestation": phase_attestation, "finished": now()}
+        atomic_write(att_dir / "test-attestation.json", json.dumps(phase_attestation, indent=2))
+        atomic_write(att_dir / "result.json", json.dumps(result, indent=2))
+        atomic_write(att_dir / "raw-sha256.txt", raw_hashes(att_dir / "raw"))
+        write_state(spec_id, {"attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
+                              "spec_digest": digest, "status": "error_launch",
+                              "error_class": ERR_TEST_NOT_RUN, "detail": result["detail"]})
+        die(result["detail"], 16)
+    phase_attestation = attestation_record(policy, box_observations)
+    box_ok = all(any(o.get("phase") == "box-precondition" and o.get("status") == "PASS"
+                     for o in box_observations.get(rel, []))
+                 for rel in policy["required"] if policy["modes"][rel] == "box-precondition")
+    if not box_ok:
+        result = {"attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
+                  "spec_digest": digest, "status": "error_launch",
+                  "error_class": ERR_TEST_NOT_RUN,
+                  "detail": "box-precondition phase did not pass; no candidate worktree or worker started",
+                  "attestation": phase_attestation, "finished": now()}
+        atomic_write(att_dir / "result.json", json.dumps(result, indent=2))
+        atomic_write(att_dir / "raw-sha256.txt", raw_hashes(att_dir / "raw"))
+        write_state(spec_id, {"attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
+                              "spec_digest": digest, "status": "error_launch",
+                              "error_class": ERR_TEST_NOT_RUN, "detail": result["detail"]})
+        die(result["detail"], 16)
+
     try:
         git("fetch", "--quiet", "origin", approval.get("base_branch", "ready-for-main"))
         base_sha = git("rev-parse", f"origin/{approval.get('base_branch', 'ready-for-main')}")
@@ -1009,6 +1291,12 @@ def cmd_launch(spec_id: str) -> None:
         if iso:
             grant_worker_acl(wt)   # D5: worker (codex-worker) rwx; the operator reads output; .git denied
     except SystemExit:
+        result = {"attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
+                  "spec_digest": digest, "base_sha": base_sha, "status": "error_launch",
+                  "error_class": ERR_LAUNCH, "detail": "base/worktree setup failed",
+                  "attestation": phase_attestation, "finished": now()}
+        atomic_write(att_dir / "result.json", json.dumps(result, indent=2))
+        atomic_write(att_dir / "raw-sha256.txt", raw_hashes(att_dir / "raw"))
         write_state(spec_id, {**read_state(spec_id), "status": "error_launch",
                               "error_class": ERR_LAUNCH,
                               "detail": "base/worktree setup failed"})
@@ -1032,6 +1320,8 @@ def cmd_launch(spec_id: str) -> None:
         "hard_ceiling_hours": ceiling_h, "remediation": remediation,
         # The probed-and-pinned runtime; _run refuses to execute anything else (round-1 review).
         "worker_runtime": runtime_record,
+        "test_runtime": test_runtime_record,
+        "execution_policy": policy,
         # T2: the frozen decision + why it was allowed. `exposure_accepted` is the operator's
         # knowing "yes, run this as me" — provenance never overstates the boundary.
         "isolation": iso, "exposure_accepted": (not iso and exposed),
@@ -1051,9 +1341,16 @@ def cmd_launch(spec_id: str) -> None:
     ]
     cp = run(cmd)
     if cp.returncode != 0:
+        detail = f"systemd-run failed: {cp.stderr.strip()}"
+        result = {"attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
+                  "spec_digest": digest, "base_sha": base_sha, "status": "error_launch",
+                  "error_class": ERR_LAUNCH, "detail": detail,
+                  "attestation": phase_attestation, "finished": now()}
+        atomic_write(att_dir / "result.json", json.dumps(result, indent=2))
+        atomic_write(att_dir / "raw-sha256.txt", raw_hashes(att_dir / "raw"))
         write_state(spec_id, {**read_state(spec_id), "status": "error_launch",
                               "error_class": ERR_LAUNCH,
-                              "detail": f"systemd-run failed: {cp.stderr.strip()}"})
+                              "detail": detail})
         die(f"failed to start unit: {cp.stderr.strip()}", 10)
 
     write_state(spec_id, {**read_state(spec_id), "status": "running", "base_sha": base_sha})
@@ -1070,6 +1367,12 @@ def _run(attempt_id: str) -> None:
     raw = att / "raw"
 
     def finish(status: str, err_class, **extra) -> None:
+        try:
+            phase_attestation = json.loads((att / "test-attestation.json").read_text())
+        except Exception:
+            phase_attestation = {"policy": lc.get("execution_policy"), "required": [],
+                                 "tests": {}, "attested": False,
+                                 "detail": "phase-aware attestation missing or unreadable"}
         result = {
             "attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
             "spec_digest": lc["spec_digest"], "base_sha": lc["base_sha"],
@@ -1079,8 +1382,9 @@ def _run(attempt_id: str) -> None:
                           "codex bwrap sandbox"),
             "test_command": lc["test_command"], "status": status,
             "error_class": err_class, "commit_policy": "orchestrator-commits (G1-A/C)",
-            "finished": now(), **extra,
+            "attestation": phase_attestation, "finished": now(), **extra,
         }
+        atomic_write(att / "raw-sha256.txt", raw_hashes(raw))
         atomic_write(att / "result.json", json.dumps(result, indent=2))
         write_state(spec_id, {"attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
                               "spec_digest": lc["spec_digest"], "status": status,
@@ -1097,6 +1401,121 @@ def _run(attempt_id: str) -> None:
         import traceback
         (raw / "run-traceback.txt").write_text(traceback.format_exc())
         finish("failed_worker_error", ERR_WORKER, detail=f"dispatch _run crashed: {e}")
+
+
+def run_candidate_test_phases(lc: dict, wt: Path, worker_commit: str, att: Path,
+                              ceiling_s: int, substituted: list[str]) -> dict:
+    """Run installed test code in its assigned candidate context and return full attestation."""
+    policy = lc["execution_policy"]
+    try:
+        current = execution_policy(ROOT)
+        current["installed_commit"] = git("rev-parse", "HEAD", cwd=ROOT)
+    except ValueError as e:
+        current = None
+        policy_error = str(e)
+    else:
+        policy_error = ""
+    try:
+        existing = json.loads((att / "test-attestation.json").read_text())
+        observations = {rel: list(existing.get("tests", {}).get(rel, {}).get("observations", []))
+                        for rel in policy["required"]}
+    except Exception:
+        observations = {rel: [] for rel in policy["required"]}
+
+    if current != policy:
+        for rel in policy["required"]:
+            observations[rel].append({"phase": policy["modes"][rel], "status": "FAIL",
+                "subject": f"candidate commit {worker_commit}", "identity": OPERATOR_USER,
+                "candidate_commit": worker_commit,
+                "manifest_sha256": policy["manifest_sha256"],
+                "test_sha256": policy["test_sha256"][rel], "started": now(), "finished": now(),
+                "exit_status": None, "log": None, "log_sha256": None,
+                "claim": f"installed execution policy/test set changed before candidate phases: {policy_error}"})
+        return attestation_record(policy, observations)
+
+    runtime = lc.get("test_runtime")
+    runtime_ok = test_runtime_matches(runtime)
+    for rel in policy["required"]:
+        assigned = policy["modes"][rel]
+        # Box tests retain an isolated observation, but only their pre-launch box PASS can satisfy
+        # attestation. All other non-read tests are graded in candidate isolation.
+        phase = "candidate-read" if assigned == "candidate-read" else "candidate-isolated"
+        log = att / "raw" / f"{phase}-{Path(rel).stem}.log"
+        started = now()
+        test_before = sha256_file(ROOT / rel)
+        manifest_before = sha256_file(EXECUTION_POLICY)
+        if phase == "candidate-isolated":
+            if not runtime_ok:
+                log.write_text("trusted test runtime changed, vanished, or lost root-only trust\n")
+                rc = 125
+            else:
+                binds = [(runtime["root"], runtime["root"]),
+                         (str(ROOT / rel), str(wt / rel))]
+                with open(log, "w") as out:
+                    cp = isolated_run(
+                        f"{lc['test_unit']}-{Path(rel).stem[:24]}",
+                        ["bash", "-c", '[ "$(id -un)" = codex-worker ] || exit 126; exec bash "$1"',
+                         "installed-phase-runner", str(wt / rel)],
+                        cwd=str(wt), rw_paths=[], private_network=True,
+                        ceiling_s=ceiling_s, stdout=out, stderr=subprocess.STDOUT,
+                        binds=binds, env_extra={"ORCH_TEST_PY": runtime["python"]})
+                rc = cp.returncode
+            identity = WORKER_USER
+            claim = ("installed test code exercised the exact candidate commit as codex-worker"
+                     if assigned == "candidate-isolated" else
+                     "isolated observation retained; box-precondition PASS alone grades the host boundary")
+        else:
+            env = {"HOME": "/nonexistent", "USER": OPERATOR_USER, "LOGNAME": OPERATOR_USER,
+                   "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_NO_REPLACE_OBJECTS": "1", "ORCH_TEST_TARGET_ROOT": str(wt),
+                   "ORCH_TEST_TARGET_COMMIT": worker_commit}
+            with open(log, "w") as out:
+                cp = subprocess.run(["bash", str(ROOT / rel)], cwd=str(ROOT), env=env,
+                                    stdin=subprocess.DEVNULL, stdout=out,
+                                    stderr=subprocess.STDOUT)
+            rc = cp.returncode
+            identity = execution_identity()
+            claim = "installed policy read exact candidate Git blobs as data; no candidate bytes executed"
+        test_after = sha256_file(ROOT / rel)
+        manifest_after = sha256_file(EXECUTION_POLICY)
+        status = _status_for_exit(rc)
+        if test_after != test_before or manifest_after != manifest_before:
+            status = "FAIL"
+        observations.setdefault(rel, []).append({
+            "phase": phase, "status": status, "subject": f"candidate commit {worker_commit}",
+            "identity": identity, "candidate_commit": worker_commit,
+            "installed_commit": policy["installed_commit"],
+            "installed_commit_after": None,
+            "manifest_sha256": manifest_before, "test_sha256": test_before,
+            "manifest_sha256_after": manifest_after, "test_sha256_after": test_after,
+            "runtime_sha256": runtime.get("tree_sha256") if phase == "candidate-isolated" and runtime else None,
+            "runtime_sha256_after": None,
+            "runtime_interpreter_sha256": (runtime.get("interpreter_sha256")
+                                           if phase == "candidate-isolated" and runtime else None),
+            "runtime_requirements_sha256": (runtime.get("requirements_sha256")
+                                            if phase == "candidate-isolated" and runtime else None),
+            "started": started, "finished": now(), "exit_status": rc,
+            "log": str(log.relative_to(att)), "log_sha256": sha256_file(log), "claim": claim})
+        atomic_write(att / "test-attestation.json",
+                     json.dumps(attestation_record(policy, observations), indent=2))
+    runtime_after = trusted_test_runtime()
+    installed_commit_after = git("rev-parse", "HEAD", cwd=ROOT)
+    for rel_observations in observations.values():
+        for obs in rel_observations:
+            if obs.get("phase") not in ("candidate-isolated", "candidate-read"):
+                continue
+            obs["installed_commit_after"] = installed_commit_after
+            if installed_commit_after != policy["installed_commit"]:
+                obs["status"] = "FAIL"
+            if obs.get("phase") == "candidate-isolated":
+                obs["runtime_sha256_after"] = (runtime_after.get("tree_sha256")
+                                               if runtime_after else None)
+                if runtime_after != runtime:
+                    obs["status"] = "FAIL"
+    result = attestation_record(policy, observations)
+    result["required_tests_restored_from_parent"] = substituted
+    atomic_write(att / "test-attestation.json", json.dumps(result, indent=2))
+    return result
 
 
 def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
@@ -1269,17 +1688,13 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
         finish("failed_scope", ERR_SCOPE, worker_commit=worker_commit, scope=scope)
 
     # --- step 7: test ----------------------------------------------------------
-    # The test_command runs WORKER-PRODUCED code — the real exfiltration path (SOL, D5). Under D5 it
-    # runs as codex-worker with PrivateNetwork=yes (no API needed) and the operator's home inaccessible, so a
-    # malicious test can neither read the operator's creds nor phone home. Otherwise it runs as the operator (fallback).
-    # T1 (R26): the runner writes a machine-readable PASS/SKIP/FAIL line per test to this path. The
-    # summary is written INSIDE the worktree (the worker's own writable area) but we only ever trust
-    # it to tell us what DIDN'T run — a worker that forges "PASS" for a test it deleted still fails,
-    # because the required set comes from the ORCHESTRATOR's checkout (required_tests()) and every
-    # required test must appear. The worker cannot add tests to our required list, only fail to
-    # satisfy it.
-    summary_path = wt / ".orch-test-summary"
-    test_env = {"ORCH_TEST_SUMMARY": str(summary_path)}
+    # The spec test_command runs candidate code as codex-worker with private networking. It is
+    # supplemental: the installed dispatcher separately runs and records every required test.
+    test_runtime = lc.get("test_runtime")
+    if iso and not test_runtime_matches(test_runtime):
+        finish("failed_test", ERR_TEST_NOT_RUN, worker_commit=worker_commit,
+               detail="trusted test runtime changed or lost root-only trust before test phase")
+    test_env = ({"ORCH_TEST_PY": test_runtime["python"]} if iso else {})
 
     # T1b (R26) — HOLD THE GRADER OUT OF THE AGENT'S REACH.
     # T1 made the orchestrator choose WHICH tests are required. That is not enough: the tests still
@@ -1290,9 +1705,30 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
     # answer on 100% of trajectories for one task.
     #
     # So: the REQUIRED tests are restored from the ORCHESTRATOR's installed copy before the gate runs.
-    # A worker's edits to a required test are recorded and run only as SUPPLEMENTAL evidence — they
-    # can never satisfy the required set. A legitimately changed test becomes authoritative only once
-    # it is merged and installed (i.e. after a human has looked at it).
+    # A worker's edits to a required test are retained but never satisfy the required set. A changed
+    # test becomes authoritative only after it is reviewed, merged, and installed.
+    # The spec's own command remains supplemental acceptance evidence and always runs isolated.
+    # It never supplies per-test attestation; the installed dispatcher collects that itself below.
+    if iso:
+        with open(att / "test.log", "w") as tl:
+            tcp = isolated_run(
+                lc["test_unit"], ["bash", "-c", lc["test_command"]], cwd=str(wt),
+                rw_paths=[str(wt)], private_network=True, ceiling_s=ceiling_s,
+                env_extra=test_env, stdout=tl, stderr=subprocess.STDOUT,
+                binds=[(test_runtime["root"], test_runtime["root"])])
+        test_rc = tcp.returncode
+    else:
+        tc = run(["bash", "-c", lc["test_command"]], cwd=str(wt), env={**os.environ, **test_env})
+        (att / "test.log").write_text((tc.stdout or "") + (tc.stderr or ""))
+        test_rc = tc.returncode
+    if test_rc != 0:
+        finish("failed_test", ERR_TEST, worker_commit=worker_commit, test_exit=test_rc)
+    post_test_integrity, post_test_ok = integrity(wt, lc["base_sha"], worker_commit)
+    if not post_test_ok:
+        finish("failed_integrity", ERR_INTEGRITY, worker_commit=worker_commit,
+               detail="spec test_command changed the committed candidate worktree",
+               integrity=post_test_integrity)
+
     substituted = []
     for rel in required_tests():
         parent_copy, worker_copy = ROOT / rel, wt / rel
@@ -1306,36 +1742,11 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             worker_copy.parent.mkdir(parents=True, exist_ok=True)
             worker_copy.write_bytes(parent_bytes)
             worker_copy.chmod(0o755)
-    if iso:
-        with open(att / "test.log", "w") as tl:
-            tcp = isolated_run(
-                lc["test_unit"], ["bash", "-c", lc["test_command"]], cwd=str(wt),
-                rw_paths=[str(wt)], private_network=True, ceiling_s=ceiling_s,
-                env_extra=test_env, stdout=tl, stderr=subprocess.STDOUT)
-        test_rc = tcp.returncode
-    else:
-        tc = run(["bash", "-c", lc["test_command"]], cwd=str(wt), env={**os.environ, **test_env})
-        (att / "test.log").write_text((tc.stdout or "") + (tc.stderr or ""))
-        test_rc = tc.returncode
-    if test_rc != 0:
-        finish("failed_test", ERR_TEST, worker_commit=worker_commit, test_exit=test_rc)
 
-    # T1 (R26) — THE FIX for SPEC-015/1's false PASS. Exit code 0 is NOT evidence that the required
-    # tests ran: three trust-class tests SKIPped, `./scripts/test` still exited 0, and the reviewer
-    # certified them as proof. A test that did not RUN has not PASSED.
-    summary_txt = summary_path.read_text() if summary_path.exists() else ""
-    ran = parse_test_summary(summary_txt)
-    req = required_tests()
-    attested, detail = attest_tests(ran, req)
-    attestation = {"required": req, "observed": ran, "attested": attested, "detail": detail,
-                   # T1b: required tests the worker had modified. Their content was REPLACED with the
-                   # orchestrator's copy before the gate ran; the worker's versions are retained in
-                   # raw/ as evidence and are visible to the reviewer, but they graded nothing.
-                   "required_tests_restored_from_parent": substituted}
-    atomic_write(att / "test-attestation.json", json.dumps(attestation, indent=2))
-    if not attested:
+    attestation = run_candidate_test_phases(lc, wt, worker_commit, att, ceiling_s, substituted)
+    if not attestation["attested"]:
         finish("failed_test", ERR_TEST_NOT_RUN, worker_commit=worker_commit,
-               test_exit=test_rc, attestation=attestation)
+               test_exit=test_rc, detail=attestation["detail"])
 
     # --- step 7.5: OPTIONAL regression-proof gate (holistic-review #1) ----------
     # Prove the change's new test actually CATCHES the intended defect: the human-authored
@@ -1349,7 +1760,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             finish("failed_regression", ERR_REGRESSION, worker_commit=worker_commit, regression=reg)
 
     # --- step 8: reviewer (bound, fail-closed) --------------------------------
-    verdict, vraw = review(att, spec_id, lc, worker_commit, detail)
+    verdict, vraw = review(att, spec_id, lc, worker_commit, attestation)
     atomic_write(att / "review.json", json.dumps(verdict, indent=2) if verdict else "{}")
     binary_result = (evaluate_binary_review(
         verdict.get("verdict"), verdict.get("criteria", []),
@@ -1519,46 +1930,60 @@ def _verdict_schema_for_attempt(att: Path) -> dict:
     return json.loads((pinned if pinned.exists() else VERDICT_SCHEMA).read_text())
 
 
-def parse_test_summary(text: str) -> dict[str, str]:
-    """Parse `scripts/test`'s machine-readable summary: one `PASS|SKIP|FAIL <path>` per line.
-
-    Only the summary lines are authoritative. Worker prose in test.log is NOT parsed — a worker
-    can print anything it likes, so the ONLY thing we trust is the runner's own per-test exit code,
-    which is what produced these lines (see scripts/test)."""
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) == 2 and parts[0] in ("PASS", "SKIP", "FAIL"):
-            out[parts[1].strip()] = parts[0]
-    return out
-
-
-def attest_tests(summary: dict[str, str], required: list[str]) -> tuple[bool, str]:
-    """T1 (decision R26). A test that did not RUN has not PASSED.
-
-    This is the fix for the SPEC-015/1 false PASS: three trust-class tests SKIPped, the aggregate
-    command still exited 0, and the reviewer certified them as proof. Exit code 0 is NOT evidence
-    that the required tests ran.
-
-    Fail closed on:
-      - an EMPTY required set (round-10 finding: zero tests + zero assertions is a vacuous,
-        internally consistent "pass" — it must never authorize a review);
-      - any required test missing from the runner's summary (it never reported);
-      - any required test that SKIPped or FAILed.
-    """
+def attest_tests(observations: dict[str, list[dict]], required: list[str],
+                 modes: dict[str, str], policy: dict) -> tuple[bool, str]:
+    """Require literal PASS with complete provenance in each test's assigned phase."""
     if not required:
         return False, ("no required tests selected — an empty required-test set cannot certify "
                        "anything (fail closed)")
     problems = []
     for t in required:
-        status = summary.get(t)
-        if status is None:
-            problems.append(f"{t}: NO RESULT (test never reported)")
-        elif status != "PASS":
-            problems.append(f"{t}: {status}")
+        phase = modes.get(t)
+        if phase not in EXECUTION_MODES:
+            problems.append(f"{t}: invalid assigned phase {phase!r}")
+            continue
+        assigned = [o for o in observations.get(t, []) if o.get("phase") == phase]
+        if not assigned:
+            problems.append(f"{t}: NO RESULT in assigned phase {phase}")
+            continue
+        if len(assigned) != 1:
+            problems.append(f"{t}: expected one assigned-phase observation, got {len(assigned)}")
+            continue
+        passing = []
+        for obs in assigned:
+            common = (obs.get("status") == "PASS" and obs.get("exit_status") == 0
+                      and obs.get("installed_commit") == policy.get("installed_commit")
+                      and obs.get("installed_commit_after") == policy.get("installed_commit")
+                      and obs.get("manifest_sha256") == policy.get("manifest_sha256")
+                      and obs.get("manifest_sha256_after") == policy.get("manifest_sha256")
+                      and obs.get("test_sha256") == policy.get("test_sha256", {}).get(t)
+                      and obs.get("test_sha256_after") == policy.get("test_sha256", {}).get(t)
+                      and all(obs.get(k) for k in ("subject", "identity", "started", "finished",
+                                                   "log_sha256", "claim")))
+            if phase == "box-precondition":
+                specific = (obs.get("identity") == OPERATOR_USER and obs.get("installed_commit")
+                            and obs.get("host_id") and obs.get("boot_id")
+                            and obs.get("host_id") != "unknown" and obs.get("boot_id") != "unknown"
+                            and obs.get("subject") == "active host and installed isolation boundary")
+            elif phase == "candidate-isolated":
+                specific = (obs.get("identity") == WORKER_USER and obs.get("candidate_commit")
+                            and obs.get("runtime_sha256")
+                            and obs.get("runtime_sha256_after") == obs.get("runtime_sha256")
+                            and obs.get("runtime_interpreter_sha256")
+                            and obs.get("runtime_requirements_sha256")
+                            and obs.get("subject") == f"candidate commit {obs.get('candidate_commit')}")
+            else:
+                specific = (obs.get("identity") == OPERATOR_USER and obs.get("candidate_commit")
+                            and "data" in obs.get("claim", "")
+                            and obs.get("subject") == f"candidate commit {obs.get('candidate_commit')}")
+            if common and specific:
+                passing.append(obs)
+        if not passing:
+            statuses = ",".join(str(o.get("status", "NO RESULT")) for o in assigned)
+            problems.append(f"{t}: {statuses} in assigned phase {phase} or incomplete provenance")
     if problems:
-        return False, "required tests did not run and pass: " + "; ".join(problems)
-    return True, f"all {len(required)} required tests executed and passed"
+        return False, "required tests did not pass in their assigned phases: " + "; ".join(problems)
+    return True, f"all {len(required)} required tests passed with phase-aware provenance"
 
 
 def required_tests() -> list[str]:
@@ -1568,7 +1993,7 @@ def required_tests() -> list[str]:
     Deliberately blunt: every test in the installed repo is required. One suite, it is fast, and a
     cleverer selector is exactly the kind of mechanism we are no longer building speculatively
     (R26 — gates are earned by real failures, not imagined ones)."""
-    return sorted(str(p.relative_to(ROOT)) for p in (ROOT / "tests").glob("*.sh"))
+    return execution_policy(ROOT)["required"]
 
 
 def evaluate_binary_review(verdict: str, criteria: list[dict], scope_finding: str,
@@ -1602,7 +2027,7 @@ def validate_review_verdict(verdict: dict, schema_obj: dict, lc: dict, wc: str) 
         verdict.get("security_findings")) is not None
 
 
-def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation: str = "unknown"):
+def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     # policy-note item 2: mandatory structured rubric. The worker's plan/checklist is NEVER
     # included here (confirmation-bias contamination) — only spec, diff, and orchestrator evidence.
     wt = Path(lc["worktree"])
@@ -1656,7 +2081,9 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation: str = "
         # T1 (R26): the reviewer used to be told only "test_command exited 0" — which is how it
         # certified SPEC-015's three SKIPPED tests as proof. It now gets the orchestrator's own
         # per-test attestation. This is control-plane evidence, not worker-authored text.
-        f"tests: {test_attestation}\n\n"
+        "tests (phase-aware; claims are limited to their recorded subject/identity):\n" +
+        json.dumps(test_attestation if test_attestation is not None else {"attested": False},
+                   indent=2, sort_keys=True) + "\n\n"
         "=== DIFF ===\n" + diff
     )
     (att / "raw" / "review-request.txt").write_text(req)

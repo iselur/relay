@@ -1,75 +1,78 @@
 #!/usr/bin/env bash
-# Repo-level test entry point. This is what CI runs, and it is the hard merge
-# gate for `main` and `ready-for-main`.
-#
-# Individual specs declare their own `test_command`; that is what a worker must
-# drive to exit 0 inside its worktree. This script is the repo's own suite and
-# must stay green independently of any in-flight spec.
-#
-# TRUTH RULE (T1, decision R26): a test that does not RUN has not PASSED.
-#   exit 0  = assertions ran and passed
-#   exit 77 = prerequisites absent, the test did NOT run   (POSIX convention)
-#   other   = failure
-# A skip is reported as SKIP, never PASS, and is surfaced in the machine-readable
-# summary the dispatcher gates on. `./scripts/test` still exits 0 when everything
-# either passed or legitimately skipped — CI portability — but the DISPATCHER
-# refuses a skip of any test it required (see require_tests_ran in dispatch.py).
-# That is the fix for SPEC-015/1, where three skipped tests were certified as passes.
+# Repo-level suite. tests/execution-policy.tsv is the sole execution-mode authority.
+# Every installed tests/*.sh remains required; an unlisted test defaults to candidate-isolated.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+manifest=tests/execution-policy.tsv
+fail_policy() { echo "execution policy invalid: $*" >&2; exit 2; }
+[ -f "$manifest" ] && [ ! -L "$manifest" ] || fail_policy "$manifest is missing or not a regular non-symlink file"
+command -v iconv >/dev/null 2>&1 || fail_policy "iconv is required to validate UTF-8"
+iconv -f UTF-8 -t UTF-8 "$manifest" >/dev/null 2>&1 || fail_policy "$manifest is not valid UTF-8"
+
 shopt -s nullglob
 tests=(tests/*.sh)
+[ ${#tests[@]} -gt 0 ] || fail_policy "required test set is empty"
 
-if [ ${#tests[@]} -eq 0 ]; then
-  echo "no tests defined yet"
-  exit 0
-fi
+declare -A exists=() mode=() seen=()
+for t in "${tests[@]}"; do
+  [ -f "$t" ] && [ ! -L "$t" ] || fail_policy "required test is not a regular non-symlink file: $t"
+  exists["$t"]=1; mode["$t"]=candidate-isolated
+done
 
-summary="${ORCH_TEST_SUMMARY:-}"   # optional path: machine-readable results for the gate
-# STRICT (CI): a skip is a FAILURE. Without this, a runner that cannot execute the trust tests
-# reports a green suite while asserting nothing — which is exactly how CI hid the SPEC-015 false
-# PASS for a week. In CI there is no excuse for a skip: the deps are installed, so anything that
-# skips is a broken environment, and a broken environment must not certify the code.
-#
-# ORCH_TEST_STRICT_ALLOW_SKIP: space-separated test paths that MAY skip even under strict — for
-# tests that genuinely cannot run off the box (e.g. worker_isolation.sh needs the codex-worker
-# user + systemd). The list lives in ci.yml where a reviewer sees it: a DECLARED exception, never
-# a silent one. They are still reported SKIP, never PASS.
+line_no=0
+while IFS= read -r line || [ -n "$line" ]; do
+  line_no=$((line_no + 1))
+  [ -z "$line" ] && continue
+  case "$line" in \#*) continue ;; esac
+  case "$line" in *$'\r'*) fail_policy "line $line_no contains CR/non-normalized text" ;; esac
+  tabs="${line//[^$'\t']/}"
+  [ "${#tabs}" -eq 2 ] || fail_policy "line $line_no must contain exactly three TSV fields"
+  IFS=$'\t' read -r path assigned rationale <<<"$line"
+  [[ "$path" =~ ^tests/[A-Za-z0-9_.-]+\.sh$ ]] || fail_policy "line $line_no has unsafe path '$path'"
+  [ -n "${exists[$path]:-}" ] || fail_policy "line $line_no names nonexistent test '$path'"
+  [ -z "${seen[$path]:-}" ] || fail_policy "line $line_no duplicates '$path'"
+  case "$assigned" in
+    box-precondition|candidate-isolated|candidate-read) ;;
+    *) fail_policy "line $line_no has unknown mode '$assigned'" ;;
+  esac
+  [ -n "${rationale//[[:space:]]/}" ] || fail_policy "line $line_no has an empty rationale"
+  seen["$path"]=1
+  mode["$path"]="$assigned"
+done < "$manifest"
+# No fixed mode counts: the manifest assigns modes; counts are re-measured, not pinned
+# (matches dispatch.py execution_policy and the frozen design).
+
+summary="${ORCH_TEST_SUMMARY:-}"
 strict="${ORCH_TEST_STRICT:-0}"
-allow_skip=" ${ORCH_TEST_STRICT_ALLOW_SKIP:-} "
 failed=0
 skipped=0
 declare -a results=()
 
 for t in "${tests[@]}"; do
-  echo "=== $t"
+  echo "=== $t (${mode[$t]})"
   bash "$t"
   rc=$?
   case "$rc" in
-    0)  echo "PASS $t";              results+=("PASS $t") ;;
+    0)  echo "PASS $t"; results+=("PASS $t") ;;
     77) echo "SKIP $t (did not run)"; results+=("SKIP $t")
-        case "$allow_skip" in
-          *" $t "*) echo "     (declared box-only: tolerated under strict)" ;;
-          *)        skipped=$((skipped + 1)) ;;
-        esac ;;
-    *)  echo "FAIL $t (exit $rc)";   results+=("FAIL $t"); failed=1 ;;
+        if [ "${mode[$t]}" = box-precondition ]; then
+          echo "     (box-precondition: visible but tolerated by strict CI)"
+        else
+          skipped=$((skipped + 1))
+        fi ;;
+    *)  echo "FAIL $t (exit $rc)"; results+=("FAIL $t"); failed=1 ;;
   esac
 done
 
 echo
 echo "--- summary"
 printf '%s\n' "${results[@]}"
+[ -z "$summary" ] || printf '%s\n' "${results[@]}" > "$summary"
 
-if [ -n "$summary" ]; then
-  printf '%s\n' "${results[@]}" > "$summary"
-fi
-
-if [ "$strict" = "1" ] && [ "$skipped" -gt 0 ]; then
+if [ "$strict" = 1 ] && [ "$skipped" -gt 0 ]; then
   echo
-  echo "STRICT: $skipped test(s) did not run. A suite that asserts nothing is not a green suite."
-  echo "        (This is what let a false PASS through once. Install the deps or fix the env.)"
+  echo "STRICT: $skipped candidate test(s) did not run; only box-precondition SKIPs are portable."
   failed=1
 fi
-
 exit "$failed"

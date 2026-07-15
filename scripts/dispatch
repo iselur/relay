@@ -11,4 +11,5 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
 # Orchestrator PATH: codex/claude live in ~/.local/bin; git/gh in /usr/bin.
 export PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
-exec "${ROOT}/.venv/bin/python" "${ROOT}/scripts/dispatch.py" "$@"
+PY="${ORCH_TEST_PY:-${ROOT}/.venv/bin/python}"
+exec "$PY" "${ROOT}/scripts/dispatch.py" "$@"

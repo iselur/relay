@@ -35,12 +35,9 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --disable-pip-version-check -r scripts/requirements.txt
 
-      # ...and run STRICT: if any test still skips, CI goes RED instead of quietly green. The ONLY
-      # tolerated skips are the explicitly declared box-only tests below (they need the codex-worker
-      # user + systemd, which do not exist on a hosted runner). Declared and visible beats silently
-      # green: adding a test to this list is a reviewed decision, not a runner accident.
-      - name: Run tests (strict — a skip is a failure unless declared box-only)
+      # ...and run STRICT. The candidate's execution-policy manifest is the only mode authority:
+      # box-precondition SKIPs are visible but tolerated on hosted CI, while every other SKIP fails.
+      - name: Run tests (strict — manifest-driven skip policy)
         env:
           ORCH_TEST_STRICT: '1'
-          ORCH_TEST_STRICT_ALLOW_SKIP: 'tests/worker_isolation.sh tests/worker_userns.sh'
         run: ./scripts/test

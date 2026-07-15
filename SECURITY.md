@@ -11,9 +11,10 @@ proves them), **configured assumptions** (set up outside this repo, verified man
 |---|---|
 | Worker commands cannot traverse the owner's home directory, and the credential files the drill checks there (GitHub token, Claude and Codex logins, SSH key) are unreadable — an enforced home boundary, not an enumeration of every possible secret | `tests/worker_isolation.sh` (box-only) |
 | No isolation → no launch; launching unisolated requires an explicit override variable, and its use is recorded in the evidence | `tests/isolation_fail_closed.sh` |
-| A missing, skipped, or empty test result fails the gate before review; worker-edited required tests are restored from the orchestrator's checkout before grading (detection against accidental skips — see gap 3 for the malicious case) | `tests/test_attestation.sh` |
+| Execution modes come from one fail-closed manifest; each required test must literally PASS in its assigned phase with subject, identity, hashes, timestamps, and logs, and a box PASS is never upgraded into candidate evidence | `tests/test_attestation.sh`, `tests/execution-policy.tsv` |
 | A worker holding fake root inside its own user namespace still cannot read or write the owner's home; the userns exception is the packaged capability-stripping AppArmor profile, not the global sysctl | `tests/worker_userns.sh` (box-only) |
 | The Codex runtime bind-mounted into the worker service (npm package tree or native binary) is vetted before launch and re-vetted in `_run`: root/operator-owned, not world-writable, group-writable only when the group is operator-private, no named POSIX ACL, no symlink escaping the tree; resolved real paths are bound and every mounted byte plus the host interpreter is fingerprinted so a change between check and run is refused | `tests/codex_runtime.sh` |
+| Dispatcher Python tests use a separately provisioned root-owned runtime under `/opt`, bound read-only into the hardened candidate service; the box drill proves it is root-owned and refuses worker writes (the run-time fingerprint re-check lives in `trusted_test_runtime`, not this drill) | `scripts/setup-worker-user.sh`, `tests/worker_isolation.sh` (box-only) |
 | Worker changes outside the spec's declared scope are rejected | `tests/dispatch_gate4.sh`, `tests/scope_glob.sh` |
 | A verdict is bound to the exact diff and base; a stale base is refused | `tests/dispatch_gate4.sh` |
 | The rulebook and repo prose cannot silently grow back | `tests/rulebook_cap.sh`, `tests/prose_cap.sh`, `tests/plain_language.sh` |
@@ -47,11 +48,12 @@ proves them), **configured assumptions** (set up outside this repo, verified man
    either — a test can prove the file or variable must be present, never who set it. They are an
    audit trail, not an authorization boundary. A mechanism software on this box cannot fabricate
    (e.g. GitHub environment approval or a separate human-held account) is the planned replacement.
-3. **The test grade is produced inside worker-writable territory.** The per-test result file lives
-   in the worktree, and `scripts/test` itself is not part of the restored required set — a worker
-   that edits the runner could in principle forge its own grade. Until the grader moves fully
-   outside the worker's reach, the tests-must-run gate is protection against accidental skips and
-   honest failures, not against a deliberately malicious worker.
+3. **Installed tests do not make malicious candidate code a trustworthy witness.** The dispatcher
+   collects phase exits and logs outside the worktree and prevents candidate edits to the installed
+   test script, but an isolated test intentionally imports or executes candidate code. Malicious
+   candidate code can terminate, hang, or manipulate that test process and may still forge a
+   semantically misleading success. The gate prevents runner/test replacement and phase flattening;
+   it does not claim a human-unforgeable grade.
 4. **Evidence is an audit record, not immutable.** Attempt files and their hashes are ordinary
    files owned by the account that writes them. Treat them as good-faith provenance.
 5. **The dispatcher currently targets this repository.** Pointing workers at an arbitrary product

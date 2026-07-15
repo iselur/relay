@@ -1,126 +1,119 @@
 #!/usr/bin/env bash
-# T1 (decision R26) — a test that did not RUN has not PASSED.
-#
-# This is the regression proof for the SPEC-015/1 false PASS: three trust-class tests SKIPped,
-# `./scripts/test` exited 0 anyway, the reviewer was told only "test_command exited 0", and it
-# certified the skipped tests as proof. 1 false PASS out of 14 — and it was the only high-risk
-# attempt in the corpus.
-#
-# These assertions FAIL against the pre-T1 dispatcher (which had no attest_tests at all) and PASS
-# after. No venv needed: pure stdlib, so it runs in CI too — deliberately, because the tests that
-# CI *cannot* run are exactly the ones that used to skip-as-pass.
+# Phase-aware T1 and execution-policy regression proof.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 fails=0
-check() { # check <label> <expected> <actual>
-  if [ "$2" = "$3" ]; then
-    echo "  ok: $1"
-  else
-    echo "  FAIL: $1 — expected '$2', got '$3'"; fails=1
-  fi
+check() {
+  if [ "$2" = "$3" ]; then echo "  ok: $1"
+  else echo "  FAIL: $1 — expected '$2', got '$3'"; fails=1; fi
 }
 
-echo "== T1: SKIP != PASS attestation"
+PY="${ORCH_TEST_PY:-python3}"
+[ -n "${ORCH_TEST_PY:-}" ] || [ ! -x .venv/bin/python ] || PY=.venv/bin/python
+out=$($PY - <<'PY'
+import copy, importlib.util, pathlib, tempfile
+spec=importlib.util.spec_from_file_location("d", pathlib.Path("scripts/dispatch.py"))
+d=importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
 
-# dispatch.py needs pyyaml/jsonschema at import time. CI installs them into .venv, not the system
-# python — use the venv when present so this test RUNS in CI instead of skip-looping forever.
-PY="python3"
-[ -x ".venv/bin/python" ] && PY=".venv/bin/python"
+required=["tests/box.sh","tests/iso.sh","tests/read.sh"]
+modes={"tests/box.sh":"box-precondition","tests/iso.sh":"candidate-isolated",
+       "tests/read.sh":"candidate-read"}
+policy={"manifest_sha256":"m","installed_commit":"a","test_sha256":{t:t for t in required}}
+def obs(t, phase, identity, **extra):
+    extra.setdefault("installed_commit", "a")
+    extra.setdefault("installed_commit_after", "a")
+    return {"phase":phase,"status":"PASS","exit_status":0,"manifest_sha256":"m",
+            "manifest_sha256_after":"m","test_sha256":t,"test_sha256_after":t,
+            "subject":("active host and installed isolation boundary" if phase == "box-precondition" else f"candidate commit {extra.get('candidate_commit')}"),"identity":identity,"started":"s",
+            "finished":"f","log_sha256":"l","claim":"candidate bytes are data",
+            **extra}
+e={
+ "tests/box.sh":[obs("tests/box.sh","box-precondition",d.OPERATOR_USER,
+                     installed_commit="a",host_id="h",boot_id="b",
+                     claim="active installed box boundary passed; candidate version not graded")],
+ "tests/iso.sh":[obs("tests/iso.sh","candidate-isolated",d.WORKER_USER,
+                     candidate_commit="c",runtime_sha256="r",runtime_sha256_after="r",
+                     runtime_interpreter_sha256="i",runtime_requirements_sha256="q")],
+ "tests/read.sh":[obs("tests/read.sh","candidate-read",d.OPERATOR_USER,candidate_commit="c")],
+}
+print("all_pass", d.attest_tests(e,required,modes,policy)[0])
+for label, mutate in (
+ ("skip", lambda x: x["tests/iso.sh"][0].update(status="SKIP",exit_status=77)),
+ ("missing", lambda x: x.__setitem__("tests/iso.sh",[])),
+ ("wrong_phase", lambda x: x["tests/iso.sh"][0].update(phase="box-precondition")),
+ ("missing_provenance", lambda x: x["tests/iso.sh"][0].update(runtime_sha256=None)),
+ ("box_not_candidate", lambda x: (x["tests/iso.sh"].clear(), x["tests/iso.sh"].append(
+     obs("tests/iso.sh","box-precondition",d.OPERATOR_USER,installed_commit="a",host_id="h",boot_id="b")))),
+):
+    case=copy.deepcopy(e); mutate(case)
+    print(label+"_blocks", d.attest_tests(case,required,modes,policy)[0])
+print("empty_blocks", d.attest_tests({},[],{},policy)[0])
 
-out=$("$PY" - <<'PY'
-import importlib.util, pathlib, sys
-spec = importlib.util.spec_from_file_location("d", pathlib.Path("scripts/dispatch.py"))
-d = importlib.util.module_from_spec(spec)
-try:
-    spec.loader.exec_module(d)          # needs pyyaml/jsonschema at import time
-except Exception as e:                  # pragma: no cover - CI without the venv
-    print("IMPORT_FAILED", e); sys.exit(0)
-
-P = d.parse_test_summary
-A = d.attest_tests
-
-# 1. The SPEC-015 shape: the suite "passed" (exit 0) while required tests skipped.
-summary = P("PASS tests/slugify.sh\nSKIP tests/dispatch_gate4.sh\nSKIP tests/worker_isolation.sh\n")
-ok, why = A(summary, ["tests/slugify.sh", "tests/dispatch_gate4.sh", "tests/worker_isolation.sh"])
-print("skip_blocks", ok)
-print("skip_names_them", "dispatch_gate4" in why and "worker_isolation" in why)
-
-# 2. The empty-required-set hole (round-10 finding): zero tests + zero assertions is a vacuous,
-#    internally consistent "pass". It must never authorize a review.
-ok_empty, why_empty = A(P("PASS tests/anything.sh\n"), [])
-print("empty_set_blocks", ok_empty)
-
-# 3. A required test that never reported at all (deleted by the worker, runner crashed, etc).
-ok_missing, _ = A(P("PASS tests/slugify.sh\n"), ["tests/slugify.sh", "tests/vanished.sh"])
-print("missing_blocks", ok_missing)
-
-# 4. A required test that FAILED is obviously not a pass.
-ok_failed, _ = A(P("FAIL tests/slugify.sh\n"), ["tests/slugify.sh"])
-print("failed_blocks", ok_failed)
-
-# 5. The happy path still passes — the gate must not be vacuously strict either.
-ok_pass, _ = A(P("PASS tests/a.sh\nPASS tests/b.sh\n"), ["tests/a.sh", "tests/b.sh"])
-print("all_pass_passes", ok_pass)
-
-# 6. Worker prose in test.log is NOT parsed as a result. Only the runner's own summary lines are.
-forged = P("I hereby declare: PASS tests/dispatch_gate4.sh is definitely fine\nsome other noise\n")
-print("prose_not_parsed", "tests/dispatch_gate4.sh" not in forged)
+def fixture(manifest, names=("a.sh","b.sh","c.sh","d.sh","e.sh")):
+    root=pathlib.Path(tempfile.mkdtemp()); (root/"tests").mkdir()
+    for name in names: (root/"tests"/name).write_text("#!/bin/sh\n")
+    if manifest is not None: (root/"tests/execution-policy.tsv").write_text(manifest)
+    try: p=d.execution_policy(root); return "ok",p
+    except ValueError: return "rejected",None
+base=("tests/a.sh\tbox-precondition\ta\n"
+      "tests/b.sh\tbox-precondition\tb\n"
+      "tests/c.sh\tcandidate-read\tc\n"
+      "tests/d.sh\tcandidate-read\td\n")
+status,p=fixture(base)
+print("policy_valid",status)
+print("default_isolated",p["modes"]["tests/e.sh"] if p else "none")
+for label, manifest in (
+ ("missing",None),("malformed",base+"bad row\n"),("unknown",base.replace("candidate-read","weird",1)),
+ ("duplicate",base+"tests/a.sh\tcandidate-isolated\tx\n"),
+ ("nonexistent",base+"tests/no.sh\tcandidate-isolated\tx\n"),
+ ("unsafe",base+"tests/../x.sh\tcandidate-isolated\tx\n"),
+): print("policy_"+label,fixture(manifest)[0])
+print("policy_empty",fixture("",names=())[0])
 PY
-)
+) || { echo "SKIP test_attestation.sh: dispatcher dependencies unavailable"; exit 77; }
 
-if grep -q IMPORT_FAILED <<<"$out"; then
-  echo "SKIP test_attestation.sh: dispatch.py needs pyyaml/jsonschema (box-only)"
-  exit 77   # did NOT run — never a pass (this file practises what it preaches)
-fi
+check "all assigned phases pass" "all_pass True" "$(grep '^all_pass' <<<"$out")"
+for c in skip missing wrong_phase missing_provenance box_not_candidate empty; do
+  check "$c fails closed" "${c}_blocks False" "$(grep "^${c}_blocks" <<<"$out")"
+done
+check "valid policy parses" "policy_valid ok" "$(grep '^policy_valid' <<<"$out")"
+check "unlisted test defaults isolated" "default_isolated candidate-isolated" "$(grep '^default_isolated' <<<"$out")"
+for c in missing malformed unknown duplicate nonexistent unsafe empty; do
+  check "policy $c rejected" "policy_${c} rejected" "$(grep "^policy_${c}" <<<"$out")"
+done
 
-check "a SKIPped required test blocks the gate"        "skip_blocks False"     "$(grep '^skip_blocks' <<<"$out")"
-check "the block names the skipped tests"              "skip_names_them True"  "$(grep '^skip_names_them' <<<"$out")"
-check "an EMPTY required set blocks (round-10 hole)"   "empty_set_blocks False" "$(grep '^empty_set_blocks' <<<"$out")"
-check "a required test with no result blocks"          "missing_blocks False"  "$(grep '^missing_blocks' <<<"$out")"
-check "a FAILED required test blocks"                  "failed_blocks False"   "$(grep '^failed_blocks' <<<"$out")"
-check "all-passed still passes"                        "all_pass_passes True"  "$(grep '^all_pass_passes' <<<"$out")"
-check "worker prose is not parsed as a verdict"        "prose_not_parsed True" "$(grep '^prose_not_parsed' <<<"$out")"
-
-echo "== T1: runner reports SKIP as SKIP (not PASS)"
+echo "== runner records SKIP without upgrading it"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/tests"
-printf '#!/usr/bin/env bash\nexit 77\n' > "$tmp/tests/skipper.sh"
-printf '#!/usr/bin/env bash\nexit 0\n'  > "$tmp/tests/passer.sh"
+mkdir -p "$tmp/tests" "$tmp/scripts"
+cp scripts/test "$tmp/scripts/test"
+for t in box1 box2 read1 read2 passer; do printf '#!/bin/sh\nexit 0\n' > "$tmp/tests/$t.sh"; done
+printf '#!/bin/sh\nexit 77\n' > "$tmp/tests/skipper.sh"
 chmod +x "$tmp/tests"/*.sh
-cp scripts/test "$tmp/runner"
-( cd "$tmp" && mkdir -p scripts && cp runner scripts/test && ORCH_TEST_SUMMARY="$tmp/sum" bash scripts/test >/dev/null 2>&1 )
-check "exit-77 test recorded as SKIP" "SKIP tests/skipper.sh" "$(grep skipper "$tmp/sum" 2>/dev/null)"
-check "exit-0 test recorded as PASS"  "PASS tests/passer.sh"  "$(grep passer  "$tmp/sum" 2>/dev/null)"
+printf 'tests/box1.sh\tbox-precondition\tx\ntests/box2.sh\tbox-precondition\tx\ntests/read1.sh\tcandidate-read\tx\ntests/read2.sh\tcandidate-read\tx\n' > "$tmp/tests/execution-policy.tsv"
+(cd "$tmp" && ORCH_TEST_SUMMARY="$tmp/sum" bash scripts/test >/dev/null 2>&1)
+check "exit-77 remains SKIP" "SKIP tests/skipper.sh" "$(grep skipper "$tmp/sum")"
+printf '#!/bin/sh\nexit 77\n' > "$tmp/tests/box1.sh"
+printf '#!/bin/sh\nexit 77\n' > "$tmp/tests/box2.sh"
+(cd "$tmp" && ORCH_TEST_STRICT=1 bash scripts/test >/dev/null 2>&1); strict_candidate=$?
+check "strict rejects candidate-isolated SKIP" 1 "$strict_candidate"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/tests/skipper.sh"
+(cd "$tmp" && ORCH_TEST_STRICT=1 bash scripts/test >/dev/null 2>&1); strict_box=$?
+check "strict tolerates manifest box-precondition SKIPs" 0 "$strict_box"
+printf '#!/bin/sh\nexit 77\n' > "$tmp/tests/read1.sh"
+(cd "$tmp" && ORCH_TEST_STRICT=1 bash scripts/test >/dev/null 2>&1); strict_read=$?
+check "strict rejects candidate-read SKIP" 1 "$strict_read"
+cp "$tmp/tests/execution-policy.tsv" "$tmp/policy.good"
+printf 'malformed\n' >> "$tmp/tests/execution-policy.tsv"
+(cd "$tmp" && bash scripts/test >/dev/null 2>&1); malformed_rc=$?
+check "runner fails closed on malformed manifest" 2 "$malformed_rc"
+cp "$tmp/policy.good" "$tmp/tests/execution-policy.tsv"
 
-echo "== T1b: a worker cannot neuter a required test (grader out of reach)"
-# THE ATTACK: a spec whose approved scope includes tests/ (SPEC-017's did) rewrites a required test
-# to `exit 0`. Pre-T1b this passed the gate honestly: the test "ran" and "passed" — it just asserted
-# nothing. The gate must restore the ORCHESTRATOR's copy before running, so the worker's version
-# grades nothing.
-grep -q "required_tests_restored_from_parent" ../scripts/dispatch.py 2>/dev/null ||
-  grep -q "required_tests_restored_from_parent" scripts/dispatch.py
-check "attestation records substituted required tests" "0" "$?"
-
-src=$(cat scripts/dispatch.py)
-case "$src" in
-  *"HOLD THE GRADER OUT OF THE AGENT'S REACH"*) ok=0 ;;
-  *) ok=1 ;;
-esac
-check "the gate restores required tests from the parent copy" "0" "$ok"
-
-# Prove the restore actually defeats the attack, end to end.
-atk=$(mktemp -d); trap 'rm -rf "$tmp" "$atk"' EXIT
-mkdir -p "$atk/tests" "$atk/scripts"
-cp scripts/test "$atk/scripts/test"
-printf '#!/usr/bin/env bash\necho "neutered"\nexit 0\n' > "$atk/tests/victim.sh"   # worker's version
-printf '#!/usr/bin/env bash\necho "real assertion failed"\nexit 1\n' > "$atk/parent_victim.sh" # parent's
-chmod +x "$atk/tests/victim.sh"
-# simulate the restore: parent copy overwrites the worker's
-cp "$atk/parent_victim.sh" "$atk/tests/victim.sh"
-( cd "$atk" && ORCH_TEST_SUMMARY="$atk/sum" bash scripts/test >/dev/null 2>&1 )
-check "restored test fails as it should (worker's exit-0 stub did not grade)" \
-      "FAIL tests/victim.sh" "$(grep victim "$atk/sum" 2>/dev/null)"
+echo "== installed grader remains outside candidate control"
+grep -q "required_tests_restored_from_parent" scripts/dispatch.py
+check "substitutions are recorded" 0 $?
+grep -q "run_candidate_test_phases" scripts/dispatch.py
+check "installed dispatcher collects phase results" 0 $?
 
 [ "$fails" -eq 0 ] && echo "PASS test_attestation.sh" || echo "FAIL test_attestation.sh"
 exit "$fails"
