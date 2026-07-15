@@ -99,6 +99,10 @@ ERR_SCOPE = "scope"
 ERR_REVIEW = "review"
 ERR_WORKER = "worker_nonzero"
 ERR_LAUNCH = "launch"
+# The sole owner-selected automation target. Workers build/test/review against it and PRs target it;
+# only the owner promotes it to main (CLAUDE.md). An approval naming any other base is refused at
+# preflight (B3) — never silently retargeted — so the reviewed base always equals the landed base.
+AUTOMATION_BASE = "ready-for-main"
 # Holistic-review takeaway #1 (SOL, 2026-07-13): an OPTIONAL regression-proof gate. A spec may declare
 # a `regression_command` (+ `regression_test_paths`); the gate proves the change's new test actually
 # CATCHES the intended defect — it must FAIL on the base (with the candidate's tests overlaid, so it
@@ -367,6 +371,16 @@ def preflight(spec_id: str) -> dict:
         die(f"approval is not bound to this instance ({inst['instance_id'][:12]}…): approval "
             f"instance_id={str(approval.get('instance_id'))[:12]}…. A copied approval cannot "
             f"authorize a spec here — re-approve on this instance.", 6)
+
+    # Base pin (B3): the whole pipeline — fetch, worktree, scope, regression, review binding,
+    # stale-base guard, auto-merge — reads approval.base_branch, but PR creation hardcoded
+    # 'ready-for-main'. An approval naming any other base would be built/tested/reviewed against that
+    # base yet land a PR on ready-for-main. Refuse a non-target base here, before any fetch/worktree/
+    # PR, so the reviewed base always equals the landed base.
+    appr_base = approval.get("base_branch", AUTOMATION_BASE)
+    if appr_base != AUTOMATION_BASE:
+        die(f"approval base_branch={appr_base!r} is not the automation target {AUTOMATION_BASE!r}; "
+            f"refuse (re-approve against {AUTOMATION_BASE}).", 6)
 
     # depends_on all done.
     for dep in spec.get("depends_on", []):
@@ -1279,7 +1293,7 @@ def cmd_launch(spec_id: str) -> None:
         die(result["detail"], 16)
 
     try:
-        git("fetch", "--quiet", "origin", approval.get("base_branch", "ready-for-main"))
+        git("fetch", "--quiet", "origin", approval.get("base_branch", AUTOMATION_BASE))
         base_sha = git("rev-parse", f"origin/{approval.get('base_branch', 'ready-for-main')}")
         branch = f"codex/{attempt_id}"
         # T2: use the FROZEN decision from preflight. Never recompute — a second call to
@@ -1309,7 +1323,7 @@ def cmd_launch(spec_id: str) -> None:
     atomic_write(att_dir / "launch.json", json.dumps({
         "attempt_id": attempt_id, "spec_id": spec_id, "attempt": n,
         "spec_digest": digest, "base_sha": base_sha, "branch": branch,
-        "base_branch": approval.get("base_branch", "ready-for-main"),
+        "base_branch": approval.get("base_branch", AUTOMATION_BASE),
         "worktree": str(wt), "worker_model": approval.get("worker_model", "gpt-5.6-sol"),
         "worker_effort": approval.get("worker_reasoning_effort", "high"),
         "reviewer_model": approval.get("reviewer_model", "claude-fable-5"),
@@ -1365,6 +1379,14 @@ def _run(attempt_id: str) -> None:
     lc = json.loads((att / "launch.json").read_text())
     wt = Path(lc["worktree"])
     raw = att / "raw"
+
+    # Base pin, defense in depth (B3): this async path trusts persisted launch.json and never calls
+    # preflight(), so a launch.json carrying a non-target base_branch (older attempts recorded
+    # 'integration') would fetch/PR against it. Refuse before any work; preflight already blocks new
+    # launches, this closes the persisted-state bypass.
+    if lc.get("base_branch", AUTOMATION_BASE) != AUTOMATION_BASE:
+        die(f"launch.json base_branch={lc.get('base_branch')!r} is not the automation target "
+            f"{AUTOMATION_BASE!r}; refuse (stale/foreign attempt state).", 6)
 
     def finish(status: str, err_class, **extra) -> None:
         try:
@@ -1777,7 +1799,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
     # a FRESH attempt off the new base (all gates re-run) — never a hand-rebase of a reviewed
     # worktree (that would carry a stale review verdict). This is the last check before the attempt
     # becomes visible, so the base cannot move between the check and the push in a way that matters.
-    base_branch = lc.get("base_branch", "ready-for-main")
+    base_branch = lc.get("base_branch", AUTOMATION_BASE)
     current_base, moved = base_moved(wt, base_branch, lc["base_sha"])
     if moved:
         finish("stale_base", ERR_STALE_BASE, worker_commit=worker_commit,
@@ -1792,8 +1814,10 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
         finish("failed_integrity", ERR_INTEGRITY, worker_commit=worker_commit,
                detail="head moved after review")
     git("push", "-u", "origin", lc["branch"], cwd=wt)
+    # Target the SAME pinned base the attempt was built/tested/reviewed against (B3) — not a separate
+    # literal that could drift from base_branch.
     pr = run(["gh", "pr", "create", "--draft", "--base",
-              "ready-for-main", "--head", lc["branch"],
+              base_branch, "--head", lc["branch"],
               "--title", f"{spec_id}: {load_spec(spec_id).get('title', '')}",
               "--body", pr_body(spec_id, lc, worker_commit)], cwd=str(ROOT))
     pr_url = (pr.stdout or "").strip().splitlines()[-1] if pr.returncode == 0 else None
@@ -2577,7 +2601,12 @@ def cmd_merge(attempt_id: str) -> None:
         die(f"{attempt_id} status is {result.get('status')}, not passed_pr_opened; refuse.", 13)
 
     lc = json.loads((att / "launch.json").read_text())
-    base_branch = lc.get("base_branch", "ready-for-main")
+    base_branch = lc.get("base_branch", AUTOMATION_BASE)
+    # Base pin, defense in depth (B3): never merge a persisted attempt whose base is not the
+    # automation target, even if it somehow reached passed_pr_opened.
+    if base_branch != AUTOMATION_BASE:
+        die(f"attempt base_branch={base_branch!r} is not the automation target {AUTOMATION_BASE!r}; "
+            f"refuse to merge (stale/foreign attempt state).", 14)
     base_sha = result.get("base_sha") or lc.get("base_sha")
     worker_commit = result.get("worker_commit")
     pr_url = result.get("pr_url")
