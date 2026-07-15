@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PY=".venv/bin/python"
+PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
   echo "SKIP dispatch_gate4.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
   exit 77   # did NOT run — never a pass (T1/R26)

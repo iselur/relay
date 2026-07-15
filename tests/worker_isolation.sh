@@ -120,20 +120,19 @@ case "$ifaces" in
   "")    bad "network probe never reported (vacuous)";;
   *)     bad "test-phase sees interfaces: $ifaces(network NOT private)";;
 esac
-sudo rm -rf "$WT"
 
-echo "== D5: worktree path-safety gate rejects planted symlinks/special files"
-if OPERATOR_HOME="$OPERATOR_HOME" .venv/bin/python - <<'PY'
-import importlib.util, tempfile, os, pathlib, sys
-s=importlib.util.spec_from_file_location("d","scripts/dispatch.py");d=importlib.util.module_from_spec(s);s.loader.exec_module(d)
-wt=pathlib.Path(tempfile.mkdtemp())
-(wt/"ok.txt").write_text("fine")
-os.symlink(os.path.join(os.environ["OPERATOR_HOME"], ".config/gh/hosts.yml"), wt/"evil")   # planted symlink to an operator secret
-os.mkfifo(wt/"pipe")
-bad=d.validate_worktree_safe(wt)
-sys.exit(0 if ("evil" in bad and "pipe" in bad and "ok.txt" not in bad) else 1)
-PY
-then ok "validate_worktree_safe flags symlink+fifo, passes normal file"; else bad "path-safety gate missed a planted entry"; fi
+echo "== D5: trusted Python runtime is root-owned, usable, and read-only in the service"
+TRUNTIME=/opt/orchestrator-test-runtime
+if [ "$(sudo stat -c '%U:%G' "$TRUNTIME" 2>/dev/null)" != root:root ]; then
+  bad "$TRUNTIME is absent or not root-owned"
+else
+  svc rt --property=PrivateNetwork=yes --property=ReadWritePaths="$WT" \
+    --property=BindReadOnlyPaths="$TRUNTIME:$TRUNTIME" bash -c \
+    "if '$TRUNTIME/bin/python' -c 'import yaml, jsonschema' >/dev/null 2>&1 && ! touch '$TRUNTIME/worker-write' 2>/dev/null; then echo READY; else echo BROKEN; fi > '$WT/m-runtime'" \
+    >/dev/null 2>&1
+  verdict "$WT/m-runtime" "trusted test runtime imports dependencies and rejects worker writes" READY
+fi
+sudo rm -rf "$WT"
 
 echo
 if [ "$fails" = 0 ]; then echo "PASS: worker isolation drills (0 failed)"; exit 0

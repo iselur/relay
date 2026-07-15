@@ -6,9 +6,10 @@
 # still resolve — that is correct behaviour, not a test failure).
 set -uo pipefail
 cd "$(dirname "$0")/.."
-[ -x .venv/bin/python ] || { echo "SKIP codex_runtime.sh: .venv absent"; exit 77; }
+PY="${ORCH_TEST_PY:-.venv/bin/python}"
+[ -x "$PY" ] || { echo "SKIP codex_runtime.sh: trusted Python runtime absent"; exit 77; }
 
-if .venv/bin/python - <<'PY'
+if "$PY" - <<'PY'
 import importlib.util, os, pathlib, shutil, sys, tempfile
 s = importlib.util.spec_from_file_location("d", "scripts/dispatch.py")
 d = importlib.util.module_from_spec(s); s.loader.exec_module(d)

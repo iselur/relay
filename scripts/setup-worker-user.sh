@@ -32,6 +32,7 @@ GROUP=codexwork
 WORKROOT=/srv/codexwork
 WORKTREES=$WORKROOT/worktrees
 WORKER_HOME=/home/$WORKER
+TEST_RUNTIME=/opt/orchestrator-test-runtime
 
 # The human operator whose credentials we isolate the worker FROM. Resolved explicitly (SOL: do NOT
 # trust $(id -un) under sudo or $HOME under a sanitized env). Override with --operator-user/
@@ -79,7 +80,26 @@ sudo chmod 700 "$WCODEX"; sudo find "$WCODEX" -type f -exec chmod 600 {} +
 sudo chmod 750 "$WORKER_HOME"
 echo "worker CODEX_HOME set (700 codex-worker; the operator cannot read it, nor can the worker read the operator)"
 
-say "5. sanity: worker is denied every operator credential (the whole point of D5)"
+say "5. root-owned read-only Python runtime for isolated installed tests"
+req_hash=$(sha256sum scripts/requirements.txt | awk '{print $1}')
+installed_hash=$(sudo sh -c "cat '$TEST_RUNTIME/.requirements-sha256' 2>/dev/null || true")
+if [ "$installed_hash" != "$req_hash" ]; then
+  tmp_runtime="${TEST_RUNTIME}.new.$$"
+  sudo rm -rf "$tmp_runtime"
+  sudo python3 -m venv "$tmp_runtime"
+  sudo "$tmp_runtime/bin/pip" install --disable-pip-version-check -r scripts/requirements.txt
+  printf '%s\n' "$req_hash" | sudo tee "$tmp_runtime/.requirements-sha256" >/dev/null
+  sudo chown -R root:root "$tmp_runtime"
+  sudo chmod -R go-w "$tmp_runtime"
+  sudo chmod 0755 "$tmp_runtime"
+  sudo rm -rf "$TEST_RUNTIME"
+  sudo mv "$tmp_runtime" "$TEST_RUNTIME"
+fi
+sudo test "$(sudo stat -c '%U:%G:%a' "$TEST_RUNTIME")" = "root:root:755"
+sudo "$TEST_RUNTIME/bin/python" -c 'import yaml, jsonschema'
+echo "test runtime: $(sudo stat -c '%a %U:%G' "$TEST_RUNTIME") $TEST_RUNTIME ($req_hash)"
+
+say "6. sanity: worker is denied every operator credential (the whole point of D5)"
 ok=1
 for f in "$OPERATOR_HOME/.config/gh/hosts.yml" "$OPERATOR_HOME/.codex/auth.json" "$OPERATOR_HOME/.claude.json" "$OPERATOR_HOME/.ssh/id_ed25519"; do
   if sudo -u "$WORKER" cat "$f" >/dev/null 2>&1; then echo "  !!! $WORKER CAN READ $f"; ok=0; else echo "  denied: $f"; fi

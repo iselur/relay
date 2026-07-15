@@ -1,0 +1,5 @@
+# path	mode	rationale
+tests/worker_isolation.sh	box-precondition	requires operator sudo and codex-worker
+tests/worker_userns.sh	box-precondition	requires operator sudo and host AppArmor state
+tests/plain_language.sh	candidate-read	reads candidate prose; executes no candidate code
+tests/prose_cap.sh	candidate-read	reads candidate prose; executes no candidate code

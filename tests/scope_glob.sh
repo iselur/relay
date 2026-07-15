@@ -6,7 +6,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-PY=".venv/bin/python"
+PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
   echo "SKIP scope_glob.sh: .venv/pyyaml/jsonschema absent (box-only)"
   exit 77   # did NOT run — never a pass (T1)

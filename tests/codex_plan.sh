@@ -6,8 +6,8 @@ ROOT="$PWD"
 
 # Two assertions below need pyyaml. CI installs it into .venv, not the system python — use the
 # venv when present (absolute path: this test cd's around) so the assertions actually run there.
-PY="python3"
-[ -x "$ROOT/.venv/bin/python" ] && PY="$ROOT/.venv/bin/python"
+PY="${ORCH_TEST_PY:-python3}"
+[ -n "${ORCH_TEST_PY:-}" ] || [ ! -x "$ROOT/.venv/bin/python" ] || PY="$ROOT/.venv/bin/python"
 "$PY" -c 'import yaml' 2>/dev/null || {
   echo "SKIP codex_plan.sh: pyyaml absent (install scripts/requirements.txt)"
   exit 77   # did NOT run — never a pass (T1)

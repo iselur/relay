@@ -4,7 +4,10 @@
 # and capped; git history keeps everything deleted. Growing past a cap must be a deliberate,
 # reviewed edit to this test — never drift.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+INSTALLED_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TARGET_ROOT="${ORCH_TEST_TARGET_ROOT:-$INSTALLED_ROOT}"
+TARGET_COMMIT="${ORCH_TEST_TARGET_COMMIT:-}"
+cd "$TARGET_ROOT"
 
 command -v git >/dev/null 2>&1 || { echo "SKIP prose_cap.sh: git absent"; exit 77; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "SKIP prose_cap.sh: not a git checkout"; exit 77; }
@@ -13,9 +16,43 @@ fails=0
 ok()  { echo "  ok: $1"; }
 bad() { echo "  FAIL: $1"; fails=1; }
 
-# Collect the file list up front: an empty list is itself a failure, never a vacuous pass, and
-# any Markdown extension (any case) counts — .md-only matching was an evasion route.
-mapfile -t md_files < <(git ls-files | grep -iE '\.(md|markdown|mdown|mkd)$')
+# Collect the file list up front. In candidate-read mode, materialize exact Git blobs into a
+# private temporary directory; the installed policy then treats those bytes only as data.
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+SNAP=""
+declare -a md_files=()
+declare -a all_paths=()   # every tracked path (for the graveyard check — not markdown-only)
+if [ -n "$TARGET_COMMIT" ]; then
+  [[ "$TARGET_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "FAIL prose_cap.sh: target commit is not a full SHA"; exit 1; }
+  resolved=$(GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 git -C "$TARGET_ROOT" \
+    -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null rev-parse --verify "$TARGET_COMMIT^{commit}" 2>/dev/null)
+  [ "$resolved" = "$TARGET_COMMIT" ] || { echo "FAIL prose_cap.sh: target commit cannot be resolved exactly"; exit 1; }
+  SNAP="$tmp/snapshot"; mkdir -p "$SNAP"
+  records="$tmp/tree"
+  GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 git -C "$TARGET_ROOT" \
+    -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null \
+    ls-tree -r -z --full-tree "$TARGET_COMMIT" > "$records" || exit 1
+  while IFS= read -r -d '' rec; do
+    meta=${rec%%$'\t'*}; path=${rec#*$'\t'}
+    read -r mode type oid <<<"$meta"
+    if [ "$path" = "$rec" ] || [ "$type" != blob ] || [[ "$path" = /* ]] \
+       || [[ "$path" =~ [[:cntrl:]] ]] || [[ "/$path/" == *"/../"* ]] \
+       || [[ "/$path/" == *"/./"* ]] || [[ "$path" == *"//"* ]] \
+       || { [ "$mode" != 100644 ] && [ "$mode" != 100755 ]; }; then
+      echo "FAIL prose_cap.sh: unsafe or malformed candidate tree entry"; exit 1
+    fi
+    all_paths+=("$path")   # graveyard check needs ALL paths, not just markdown
+    if [[ "$path" =~ \.[mM][dD]$|\.[mM][aA][rR][kK][dD][oO][wW][nN]$|\.[mM][dD][oO][wW][nN]$|\.[mM][kK][dD]$ ]]; then
+      md_files+=("$path")
+      mkdir -p "$SNAP/$(dirname -- "$path")"
+      GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 git -C "$TARGET_ROOT" \
+        -c core.hooksPath=/dev/null cat-file blob "$oid" > "$SNAP/$path" || exit 1
+    fi
+  done < "$records"
+else
+  mapfile -t md_files < <(git ls-files | grep -iE '\.(md|markdown|mdown|mkd)$')
+  mapfile -t all_paths < <(git ls-files)
+fi
 if [ "${#md_files[@]}" -eq 0 ]; then
   echo "  FAIL: found no tracked markdown at all — the file scan is broken, not the repo clean"
   echo "FAIL prose_cap.sh"
@@ -37,8 +74,9 @@ declare -A cap=(
 total_lines=0
 total_bytes=0
 for f in "${md_files[@]}"; do
-  lines=$(awk 'END { print NR }' < "$f")   # NR counts a final unterminated line; wc -l does not
-  bytes=$(wc -c < "$f")
+  source_file="$f"; [ -z "$SNAP" ] || source_file="$SNAP/$f"
+  lines=$(awk 'END { print NR }' < "$source_file")   # NR counts a final unterminated line
+  bytes=$(wc -c < "$source_file")
   case "$lines" in
     ''|*[!0-9]*) bad "could not count lines in $f — a cap that cannot count must not pass"; continue ;;
   esac
@@ -64,7 +102,11 @@ done
 
 # 3. The prose graveyards stay empty: plans and review rounds are untracked working files. A
 #    decision that still binds is a RULE (CLAUDE.md); one that no longer binds is history (git).
-if git ls-files -- .orchestrator/decisions .orchestrator/plans .orchestrator/reviews | grep -q .; then
+graveyard=0
+for f in "${all_paths[@]}"; do
+  case "$f" in .orchestrator/decisions/*|.orchestrator/plans/*|.orchestrator/reviews/*) graveyard=1 ;; esac
+done
+if [ "$graveyard" -eq 1 ]; then
   bad "tracked files under .orchestrator/{decisions,plans,reviews} — these are transient; a binding decision becomes a rule in CLAUDE.md, the argument stays in the PR"
 else
   ok "no tracked files under .orchestrator/{decisions,plans,reviews}"
@@ -90,7 +132,8 @@ backlog_product() { # $1 = backlog file; echoes the product name, or nothing if 
     }
   ' "$1"
 }
-product=$(backlog_product .orchestrator/BACKLOG.md 2>/dev/null)
+backlog=.orchestrator/BACKLOG.md; [ -z "$SNAP" ] || backlog="$SNAP/.orchestrator/BACKLOG.md"
+product=$(backlog_product "$backlog" 2>/dev/null)
 if [ -z "$product" ]; then
   bad "no numbered backlog item carries a 'product:' line naming a real product outside this repo — the backlog may never be without one (CLAUDE.md rule 2)"
 else
@@ -99,7 +142,7 @@ fi
 
 # 4b. The guard above must actually discriminate — this repo once shipped a cap test that passed
 #     vacuously. Each fixture is a way the check was evaded before it was tightened.
-fixture=$(mktemp); trap 'rm -f "$fixture"' EXIT
+fixture="$tmp/fixture"
 for bad_case in "product: TBD" "product: this repository" "product: orchestrator" "product: -"; do
   printf '1. **Item**\n   %s\n' "$bad_case" > "$fixture"
   [ -z "$(backlog_product "$fixture")" ] \
