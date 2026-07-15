@@ -2501,6 +2501,62 @@ def _pr_number(pr_url: str) -> str:
     return (pr_url or "").rstrip("/").split("/")[-1]
 
 
+def _ci_conclusion(pr: str) -> str:
+    """Definitive result of the required `ci` check on PR, matched by EXACT check name via
+    structured JSON — never a substring scan of `gh pr checks` human output (that once merged on an
+    'expected'/empty rollup, and would merge on a stray 'pass' anywhere in the text; B7). Returns:
+      'SUCCESS'  ci concluded success
+      'FAILURE'  ci reached a terminal non-success (failure/error/cancelled/timed_out/...)
+      'PENDING'  ci exists but has not concluded, OR the query itself failed — NEVER merge on this
+      'MISSING'  no check named ci is present yet
+    Fail-closed: anything other than an explicit ci=SUCCESS is non-mergeable."""
+    pv = run(["gh", "pr", "view", str(pr), "--json", "statusCheckRollup"])
+    if pv.returncode != 0:
+        return "PENDING"                       # transient gh/API error: not-yet-definitive, not fail
+    try:
+        rollup = (json.loads(pv.stdout or "{}") or {}).get("statusCheckRollup") or []
+    except Exception:
+        return "PENDING"
+    ci = [c for c in rollup if c.get("name") == "ci" or c.get("context") == "ci"]
+    if not ci:
+        return "MISSING"
+    result = "SUCCESS"
+    for c in ci:
+        concl = (c.get("conclusion") or "").upper()        # CheckRun terminal outcome
+        state = (c.get("state") or "").upper()             # StatusContext outcome
+        if concl == "SUCCESS" or state == "SUCCESS":
+            continue
+        if state in ("FAILURE", "ERROR") or concl in (
+                "FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"):
+            return "FAILURE"                   # any terminal non-success stops the merge outright
+        result = "PENDING"                     # QUEUED/IN_PROGRESS/PENDING/EXPECTED/empty: keep waiting
+    return result
+
+
+def _await_ci_success(prn: str, tries: int = 30, sleep_s: int = 10) -> str:
+    """Poll until the required `ci` check is definitively SUCCESS or FAILURE (or tries run out).
+    Returns the final conclusion; the caller merges only on 'SUCCESS'."""
+    concl = "PENDING"
+    for _ in range(tries):
+        concl = _ci_conclusion(prn)
+        if concl in ("SUCCESS", "FAILURE"):
+            return concl
+        time.sleep(sleep_s)
+    return concl                               # PENDING/MISSING after timeout — caller refuses
+
+
+def _provenance_merge(prn: str) -> None:
+    """Gate the provenance-PR merge on an exact-name ci=SUCCESS. Fail-closed: any non-success state
+    leaves the PR open and unmerged rather than leaning on branch protection to reject it (B7)."""
+    concl = _await_ci_success(prn)
+    if concl != "SUCCESS":
+        die(f"provenance PR #{prn}: required 'ci' not green (state={concl}); left OPEN for review, "
+            f"not merged.", 20)
+    mg = run(["gh", "pr", "merge", str(prn), "--merge", "--delete-branch"])
+    if mg.returncode != 0:
+        die(f"provenance PR #{prn} merge failed (left open for review): {mg.stderr.strip()}", 20)
+
+
 def cmd_merge(attempt_id: str) -> None:
     """Auto-merge a PASSED attempt's PR to ready-for-main under the AUTONOMY grant. Fail-closed:
     every check must pass or it refuses without merging. Structured exit codes for the caller."""
@@ -2667,19 +2723,11 @@ def _commit_provenance(spec_ids: list[str]) -> str | None:
             die(f"provenance PR create failed: {pr.stderr.strip()}", 20)
         pr_url = (pr.stdout or "").strip().splitlines()[-1]
         prn = _pr_number(pr_url)
-        # Wait for a DEFINITIVE ci result. Before Actions picks the job up, `gh pr checks` can
-        # print an "expected"/empty rollup that contains no "pending" — breaking on that merges
-        # too early and the ruleset rejects it (observed live, provenance PR #19).
-        for _ in range(30):
-            ck = run(["gh", "pr", "checks", prn])
-            outp = ((ck.stdout or "") + (ck.stderr or "")).lower()
-            if re.search(r"\b(pass|fail)\b", outp):
-                break
-            time.sleep(10)
-        mg = run(["gh", "pr", "merge", prn, "--merge", "--delete-branch"])
-        if mg.returncode != 0:
-            die(f"provenance PR #{prn} merge failed (left open for review): "
-                f"{mg.stderr.strip()}", 20)
+        # Merge only on an exact-name ci=SUCCESS (B7). The old code broke its wait loop on the bare
+        # word "pass" OR "fail" in `gh pr checks` text and then merged UNCONDITIONALLY — so a failed
+        # ci still triggered the merge, backstopped only by branch protection, and a stray substring
+        # could release the wait early (observed live, provenance PR #19).
+        _provenance_merge(prn)
         return pr_url
     finally:
         git("checkout", "--quiet", "ready-for-main")

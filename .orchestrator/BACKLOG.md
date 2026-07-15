@@ -34,6 +34,9 @@ against this description: what matches, what doesn't, what is missing.
    worktree; protect `scripts/test` like the tests it runs.
 7. **Measure whether review catches bugs**: plant three known defects, run the normal pipeline,
    count catches; set review scope based on the result, not on faith.
+8. **Work the 2026-07-15 Codex audit findings** — 18 defects, 8 high, in the dispatcher's
+   approval, grading, cancel, and merge gates. Report (on this box, untracked):
+   `.orchestrator/reviews/codex-audit-2026-07-15/report.md`. Trust-critical; overlaps items 5–6.
 
 ## Parked
 

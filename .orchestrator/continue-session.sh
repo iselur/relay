@@ -5,10 +5,10 @@
 # Guardrails: single-flight (flock); HALT killswitch honored; every run fully logged; the prompt scopes
 # the session to the post-audit action list under planning-first + dual-validation, forbids touching
 # `main`, and leaves high-risk changes as draft PRs for human authorization. Stop it any time with:
-#   touch /home/val/orchestrator/.orchestrator/HALT        # pauses (dispatcher + this runner)
+#   touch /home/val/relay/.orchestrator/HALT        # pauses (dispatcher + this runner)
 #   systemctl --user disable --now orchestrator-continue.timer
 set -uo pipefail
-ROOT=/home/val/orchestrator
+ROOT=/home/val/relay
 LOG_DIR="$ROOT/.orchestrator/continue-logs"
 mkdir -p "$LOG_DIR"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
