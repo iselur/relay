@@ -25,6 +25,9 @@ cp -p scripts/review "$tmp/repo/scripts/review"
 # $ROOT/scripts/models_check.py; the copied script's ROOT is the temp repo, so both sit beside it.
 cp -p scripts/models.json "$tmp/repo/scripts/models.json"
 cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
+# dispatch integrate grades from a write-stripped tree; cp -p carries that read-only mode into
+# this test's own scratch copy, which case 5 must rewrite — make the copy writable regardless.
+chmod u+w "$tmp/repo/scripts/models.json"
 
 cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -172,7 +175,9 @@ rc=$?
   || bad "a config missing vendor_map still ran a review"
 [ -e .orchestrator/reviews/gutted-config ] && bad "gutted-config refusal still created review state" \
   || ok "gutted-config refusal writes nothing"
-cp -p "$ROOT/scripts/models.json" scripts/models.json   # restore for any later cases
+# restore for any later cases, still writable ($ROOT may be a write-stripped grader tree)
+cp "$ROOT/scripts/models.json" scripts/models.json
+chmod u+w scripts/models.json
 
 [ "$fails" -eq 0 ] && echo "PASS review_authorship.sh" || echo "FAIL review_authorship.sh"
 exit "$fails"
