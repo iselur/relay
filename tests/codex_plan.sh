@@ -276,7 +276,7 @@ done
 
 # Structure, not substrings: each of these contains all eleven heading strings and must still fail.
 all_on_one_line=""; for s in "${sections[@]}"; do all_on_one_line+="## $s "; done
-[ "$(try_brief "$all_on_one_line")" = refused ] || fail "ten headings crammed on ONE line were accepted as a brief"
+[ "$(try_brief "$all_on_one_line")" = refused ] || fail "eleven headings crammed on ONE line were accepted as a brief"
 
 fenced=$'```\n'"$(valid_brief 30)"$'\n```\nprose'
 [ "$(try_brief "$fenced")" = refused ] || fail "headings inside a code fence were accepted as real sections"
