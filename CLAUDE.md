@@ -54,8 +54,9 @@ Prefer a fresh session per workstream.
   approval and installation.
 - The reviewer gets only spec, diff, and evidence — no tools; the verdict binds. A verdict covers
   only the exact code it was shown; moved code means a fresh review.
-- Only the orchestrator holds owner credentials; workers cannot reach the owner's home. Known gaps
-  are in SECURITY.md. Never claim more protection than the tests prove.
+- Only the orchestrator holds owner credentials; external-CLI workers cannot reach the owner's
+  home, and subagent workers stay inside the orchestrator trust domain that already holds them.
+  Known gaps are in SECURITY.md. Never claim more protection than the tests prove.
 - Stop a job with `dispatch cancel`, never by killing a process number — that once killed the
   wrong thing. Interrupted work restarts as a fresh attempt; never finish it by hand.
 - Autonomy is off by default and needs an explicit grant file — untracked `AUTONOMY.local.json`,
