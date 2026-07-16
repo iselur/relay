@@ -48,10 +48,11 @@ done
 # real tmux — ids are never reused, so a stale id resolves to nothing and the command fails. This
 # is what lets the drill prove actions bound to a verified id cannot reach a replacement.
 case "$name" in
-  '$'*) resolved=""
+  '$'*|'%'*) f=1; [ "${name#'%'}" = "$name" ] || f=4   # '$N' matches field 1 (session id), '%N' field 4 (pane id)
+        resolved=""
         for p in "$S/sessions/"*.pane; do
           [ -e "$p" ] || continue
-          if [ "$(head -1 "$p" | cut -d: -f1)" = "$name" ]; then resolved="${p%.pane}"; resolved="${resolved##*/}"; break; fi
+          if [ "$(head -1 "$p" | cut -d: -f$f)" = "$name" ]; then resolved="${p%.pane}"; resolved="${resolved##*/}"; break; fi
         done
         [ -n "$resolved" ] || exit 1
         name=$resolved ;;
@@ -59,18 +60,20 @@ esac
 case "$cmd" in
   has-session)    [ -e "$S/sessions/$name" ] ;;
   new-session)    touch "$S/sessions/$name"; echo bash > "$S/sessions/$name.cmd"
-                  printf '$0:100:500\n' > "$S/sessions/$name.pane"
-                  printf '$0:100:500\n'                      # -P: the created session's own triple
+                  printf '$0:100:500:%%5\n' > "$S/sessions/$name.pane"
+                  printf '$0:100:500:%%5\n'                  # -P: the created session's own identity
                   # replacement hook: the session is swapped for a foreign one the instant it exists
-                  if [ -n "${FAKE_TMUX_SWAP_AFTER_NEW:-}" ]; then printf '$7:900:800\n' > "$S/sessions/$name.pane"; fi ;;
+                  if [ -n "${FAKE_TMUX_SWAP_AFTER_NEW:-}" ]; then printf '$7:900:800:%%9\n' > "$S/sessions/$name.pane"; fi ;;
   send-keys)      printf '%s\n' "${args[*]}" >> "$S/sessions/$name.keys"
                   echo claude > "$S/sessions/$name.cmd" ;;
   display-message) cat "$S/sessions/$name.cmd" 2>/dev/null || echo bash ;;
   list-panes)     m=$(cat "$S/lp-count" 2>/dev/null || echo 0); m=$((m+1)); echo "$m" > "$S/lp-count"
                   cat "$S/sessions/$name.pane" 2>/dev/null || exit 1
-                  # replacement hook: the session is swapped immediately AFTER this read — the
-                  # window between verification and the action
-                  if [ -n "${FAKE_TMUX_SWAP_LP_ON:-}" ] && [ "$FAKE_TMUX_SWAP_LP_ON" -le "$m" ]; then printf '$7:900:800\n' > "$S/sessions/$name.pane"; fi ;;
+                  # replacement hooks, firing immediately AFTER this read — the window between
+                  # verification and the action: SWAP_LP replaces the whole session; SWAP_PANE_LP
+                  # keeps the session id but replaces the pane inside it
+                  if [ -n "${FAKE_TMUX_SWAP_LP_ON:-}" ] && [ "$FAKE_TMUX_SWAP_LP_ON" -le "$m" ]; then printf '$7:900:800:%%9\n' > "$S/sessions/$name.pane"; fi
+                  if [ -n "${FAKE_TMUX_SWAP_PANE_LP_ON:-}" ] && [ "$FAKE_TMUX_SWAP_PANE_LP_ON" -le "$m" ]; then printf '$0:100:501:%%9\n' > "$S/sessions/$name.pane"; fi ;;
   pipe-pane)      : ;;
   kill-session)   rm -f "$S/sessions/$name" "$S/sessions/$name."* ;;
   *) exit 0 ;;
@@ -127,7 +130,7 @@ echo "ps $*" >> "$FAKE_TMUX_STATE/invocations.log"   # shared log: adjacency ass
 [ -n "${FAKE_PS_MAKE_HALT:-}" ] && [ "${FAKE_PS_MAKE_HALT_ON:-1}" -le "$n" ] && touch "$FAKE_PS_MAKE_HALT"
 # identity-swap hook: the supervised session is replaced DURING this presence read — proves the
 # action authorization is re-read after the scan, not before it
-[ -n "${FAKE_PS_SWAP_PANE:-}" ] && [ "${FAKE_PS_SWAP_ON:-1}" -le "$n" ] && printf '$7:900:800\n' > "$FAKE_TMUX_STATE/sessions/orch-auto.pane"
+[ -n "${FAKE_PS_SWAP_PANE:-}" ] && [ "${FAKE_PS_SWAP_ON:-1}" -le "$n" ] && printf '$7:900:800:%%9\n' > "$FAKE_TMUX_STATE/sessions/orch-auto.pane"
 [ -n "${FAKE_PS_FAIL:-}" ] && exit 3
 [ "$*" = "-eo pid=,ppid=,comm=" ] || exit 1
 [ -n "${FAKE_PS_TABLE:-}" ] && cat "$FAKE_PS_TABLE" 2>/dev/null
@@ -150,7 +153,7 @@ reset() { # fresh state between scenarios
   printf '%s\n' "$HEADER" > "$LEDGER"
   unset FAKE_CURL_EXIT FAKE_TMUX_FAIL FAKE_CLAUDE_VERSION FAKE_PS_TABLE FAKE_PS_FAIL \
         FAKE_PS_MAKE_HALT FAKE_PS_MAKE_HALT_ON FAKE_PS_ADD_ROW FAKE_PS_ADD_AFTER \
-        FAKE_PS_SWAP_PANE FAKE_PS_SWAP_ON FAKE_TMUX_SWAP_AFTER_NEW FAKE_TMUX_SWAP_LP_ON 2>/dev/null || true
+        FAKE_PS_SWAP_PANE FAKE_PS_SWAP_ON FAKE_TMUX_SWAP_AFTER_NEW FAKE_TMUX_SWAP_LP_ON FAKE_TMUX_SWAP_PANE_LP_ON 2>/dev/null || true
 }
 open_row() { (cd "$R" && scripts/intake -g "${1:-drill goal}" -d "done when the drill criterion holds" >/dev/null); }
 keys() { cat "$TS/sessions/orch-auto.keys" 2>/dev/null || true; }
@@ -159,11 +162,11 @@ invoked() { # count of a given tmux subcommand; a missing log means zero calls, 
   grep -c "^tmux $1" "$TS/invocations.log" || true
 }
 dead_pane() { echo bash > "$TS/sessions/orch-auto.cmd"; }
-bind_session() { # record the ownership binding a real launch would have written ($0:100:500 is the
-  # fake tmux's constant pane triple) — hand-built sessions need it now that every action verifies it
+bind_session() { # record the ownership binding a real launch would have written ($0:100:500:%5 is
+  # the fake tmux's constant identity) — hand-built sessions need it now that every action verifies it
   mkdir -p "$WDIR"
-  printf '$0:100:500\n' > "$TS/sessions/orch-auto.pane"
-  printf '$0:100:500\n' > "$WDIR/pane"
+  printf '$0:100:500:%%5\n' > "$TS/sessions/orch-auto.pane"
+  printf '$0:100:500:%%5\n' > "$WDIR/pane"
 }
 adjacent() { # $1 action regex: the LAST such action must be immediately preceded by the identity
   # verification (list-panes) with the presence read (ps) right before that — proof that the
@@ -626,15 +629,15 @@ run_wd
 rm -f "$TS/sessions/orch-auto.pane"
 run_wd
 [ -e "$WDIR/standby" ] && ok "unreadable pane identity: stood down" || bad "unreadable pane identity trusted"
-printf '$0:100:500\n' > "$TS/sessions/orch-auto.pane"; run_wd   # restore, clears
-printf '$5:200:500\n' > "$TS/sessions/orch-auto.pane"           # same name, same pane pid, DIFFERENT session
+printf '$0:100:500:%%5\n' > "$TS/sessions/orch-auto.pane"; run_wd   # restore, clears
+printf '$5:200:500:%%5\n' > "$TS/sessions/orch-auto.pane"           # same name, same pane pid, DIFFERENT session
 run_wd
 [ -e "$WDIR/standby" ] && ok "recreated same-name session: stale-but-valid records never trusted" || bad "stale records laundered a foreign session"
-printf '$0:100:500\n' > "$TS/sessions/orch-auto.pane"; run_wd   # restore, clears
-printf '$0:100:500\n$0:100:501\n' > "$TS/sessions/orch-auto.pane"
+printf '$0:100:500:%%5\n' > "$TS/sessions/orch-auto.pane"; run_wd   # restore, clears
+printf '$0:100:500:%%5\n$0:100:501:%%6\n' > "$TS/sessions/orch-auto.pane"
 run_wd
 [ -e "$WDIR/standby" ] && ok "multi-pane session: untrusted, stood down" || bad "multi-pane session trusted"
-printf '$0:100:500\n' > "$TS/sessions/orch-auto.pane"; run_wd   # restore, clears
+printf '$0:100:500:%%5\n' > "$TS/sessions/orch-auto.pane"; run_wd   # restore, clears
 ps_table "500 1 claude" "510 500 claude"                        # pane pid alive but NOT a shell
 run_wd
 [ -e "$WDIR/standby" ] && ok "pane pid not a shell in the snapshot: untrusted" || bad "non-shell pane pid vouched for a claude"
@@ -799,7 +802,7 @@ echo "== W19: a foreign same-name session is never typed into — respawn refuse
 reset; open_row
 run_wd                                              # launch; binding '$0:100:500' recorded
 dead_pane
-printf '$7:900:800\n' > "$TS/sessions/orch-auto.pane"   # owner recreated the session: new identity
+printf '$7:900:800:%%9\n' > "$TS/sessions/orch-auto.pane"   # owner recreated the session: new identity
 n_before=$(keys | wc -l)
 run_wd                                              # PENDING + dead pane -> respawn path
 [ "$(keys | wc -l)" = "$n_before" ] && ok "respawn refused: nothing typed into the foreign session" || bad "respawn typed into a foreign session"
@@ -811,7 +814,7 @@ reset; open_row
 export FAKE_TMUX_FAIL=send-keys
 run_wd                                              # incomplete launch: binding recorded, no launched marker
 unset FAKE_TMUX_FAIL
-printf '$7:900:800\n' > "$TS/sessions/orch-auto.pane"
+printf '$7:900:800:%%9\n' > "$TS/sessions/orch-auto.pane"
 run_wd                                              # teardown path
 [ -e "$TS/sessions/orch-auto" ] && ok "teardown refused: foreign session survives" || bad "teardown killed a foreign session"
 [ -e "$WDIR/session-id" ] && ok "our state kept (nothing laundered)" || bad "state erased on a refusal"
@@ -822,7 +825,7 @@ reset                                               # no open row: IDLE
 mkdir -p "$TS/sessions"; touch "$TS/sessions/orch-auto"; dead_pane; bind_session
 printf '00000000-0000-4000-8000-000000000099\n' > "$WDIR/session-id"
 printf '00000000-0000-4000-8000-000000000099\n' > "$WDIR/launched"
-printf '$7:900:800\n' > "$TS/sessions/orch-auto.pane"
+printf '$7:900:800:%%9\n' > "$TS/sessions/orch-auto.pane"
 run_wd
 [ -e "$TS/sessions/orch-auto" ] && [ -e "$WDIR/session-id" ] && ok "rotation refused: session and state kept" || bad "rotation acted on a foreign session"
 [ -e "$WDIR/ALERT-foreign-session" ] && ok "rotation refusal visible" || bad "rotation refusal silent"
@@ -833,7 +836,7 @@ run_wd
 printf 'USAGE_RETRY_MODE=active\n' > "$WDIR/env"; chmod 600 "$WDIR/env"
 gen=$(cat "$WDIR/generation")
 echo "$(( $(date +%s) - 60 )) $gen drill.sed" > "$WDIR/usage-wait"
-printf '$7:900:800\n' > "$TS/sessions/orch-auto.pane"
+printf '$7:900:800:%%9\n' > "$TS/sessions/orch-auto.pane"
 n_before=$(keys | wc -l)
 run_wd
 [ "$(keys | wc -l)" = "$n_before" ] && ok "retry refused: nothing typed" || bad "retry typed into a foreign session"
@@ -903,7 +906,7 @@ unset FAKE_TMUX_SWAP_AFTER_NEW
 [ -z "$(keys)" ] && ok "initial prompt withheld from the replacement" || bad "typed into the replacement session"
 [ ! -e "$WDIR/launched" ] && ok "replacement never marked launched" || bad "launched marker written for a replacement"
 [ -e "$WDIR/ALERT-foreign-session" ] && ok "replacement refusal visible" || bad "replacement refusal silent"
-[ "$(cat "$WDIR/pane")" = '$0:100:500' ] && ok "binding records what creation printed, never a name lookup" || bad "binding captured the replacement's identity"
+[ "$(cat "$WDIR/pane")" = '$0:100:500:%5' ] && ok "binding records what creation printed, never a name lookup" || bad "binding captured the replacement's identity"
 [ "$(invoked pipe-pane)" = "0" ] && ok "no transcript pipe ever attached to the replacement" || bad "pipe-pane ran against the replacement session"
 
 echo "== W22c: a refused respawn advances neither the storm counter nor the generation"
@@ -911,11 +914,11 @@ reset; open_row
 run_wd                                              # launch
 gen_before=$(cat "$WDIR/generation")
 dead_pane
-printf '$7:900:800\n' > "$TS/sessions/orch-auto.pane"
+printf '$7:900:800:%%9\n' > "$TS/sessions/orch-auto.pane"
 run_wd                                              # foreign identity: respawn refused
 [ "$(cat "$WDIR/generation")" = "$gen_before" ] && ok "generation unchanged on refusal" || bad "refusal bumped the generation"
 [ "$(cat "$WDIR/respawns" 2>/dev/null || echo 0)" = "0" ] && ok "storm counter unchanged on refusal" || bad "refusal counted as a respawn"
-printf '$0:100:500\n' > "$TS/sessions/orch-auto.pane"
+printf '$0:100:500:%%5\n' > "$TS/sessions/orch-auto.pane"
 run_wd                                              # genuine respawn
 [ "$(cat "$WDIR/respawns")" = "1" ] && ok "a real respawn counts toward the storm alert" || bad "real respawn not counted"
 [ "$(cat "$WDIR/generation")" != "$gen_before" ] && ok "a real respawn bumps the generation" || bad "generation not bumped by a real respawn"
@@ -932,6 +935,18 @@ unset FAKE_TMUX_SWAP_LP_ON
 [ "$(keys | wc -l)" = "$n_before" ] && ok "respawn: the send could not reach the replacement (stale id)" || bad "send landed on a session replaced after verification"
 [ -e "$TS/sessions/orch-auto" ] && ok "replacement session untouched" || bad "replacement session killed or modified"
 [ -e "$WDIR/session-id" ] && ok "state kept: the failed send retries next tick" || bad "state erased on a failed id-bound send"
+
+echo "== W23c: a NEW PANE replacing ours inside the same session cannot receive input"
+reset; open_row
+run_wd                                              # launch
+dead_pane
+rm -f "$TS/lp-count"
+export FAKE_TMUX_SWAP_PANE_LP_ON=3                  # verify read passes, then the pane is replaced within the session
+n_before=$(keys | wc -l)
+run_wd                                              # respawn: send targets the verified PANE id, now gone
+unset FAKE_TMUX_SWAP_PANE_LP_ON
+[ "$(keys | wc -l)" = "$n_before" ] && ok "respawn: send bound to the pane id could not reach the new pane" || bad "input landed in a replacement pane of the same session"
+[ -e "$WDIR/session-id" ] && ok "state kept: the failed send retries next tick" || bad "state erased on the failed pane-bound send"
 
 echo "== W23b: rotation kill after a post-verification replacement fails and keeps state"
 reset                                               # no open row: IDLE

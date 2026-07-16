@@ -127,11 +127,11 @@ own_pane_binding() {
   valid_uuid "${sid:-}" || return 0
   [ "$(get "$WD/launched")" = "$sid" ] || return 0
   recorded=$(get "$WD/pane")
-  [[ "$recorded" =~ ^\$[0-9]+:[0-9]+:[0-9]+$ ]] || return 0
+  [[ "$recorded" =~ ^\$[0-9]+:[0-9]+:[0-9]+:%[0-9]+$ ]] || return 0
   session_exists || return 0
-  current=$(tmux list-panes -t "$SESSION" -F '#{session_id}:#{session_created}:#{pane_pid}' 2>/dev/null) || return 0
+  current=$(tmux list-panes -t "$SESSION" -F '#{session_id}:#{session_created}:#{pane_pid}:#{pane_id}' 2>/dev/null) || return 0
   [ "$current" = "$recorded" ] || return 0
-  printf '%s\n' "${current##*:}"
+  printf '%s\n' "$current" | cut -d: -f3
 }
 user_claude_present() {
   local pane_pid snapshot pid ppid comm p depth
@@ -187,10 +187,10 @@ verify_target_session() {
   # replacement through the name. Verifying and then acting by name would leave the window open.
   local recorded current
   recorded=$(get "$WD/pane")
-  [[ "$recorded" =~ ^\$[0-9]+:[0-9]+:[0-9]+$ ]] || return 1
-  current=$(tmux list-panes -t "$SESSION" -F '#{session_id}:#{session_created}:#{pane_pid}' 2>/dev/null) || return 1
+  [[ "$recorded" =~ ^\$[0-9]+:[0-9]+:[0-9]+:%[0-9]+$ ]] || return 1
+  current=$(tmux list-panes -t "$SESSION" -F '#{session_id}:#{session_created}:#{pane_pid}:#{pane_id}' 2>/dev/null) || return 1
   [ "$current" = "$recorded" ] || return 1
-  printf '%s\n' "${recorded%%:*}"
+  printf '%s %s\n' "${recorded%%:*}" "${recorded##*:}"
 }
 refuse_foreign() { # $1 the refused action — a visible refusal, deduped by alert_raise
   alert_raise foreign-session "session is not verifiably the supervised one (identity mismatch or unreadable record); $1 refused"
@@ -216,10 +216,10 @@ launch_new() {
   # and refuses visibly — nothing is ever attributed by name. Even a launch a HALT interrupts
   # leaves this record on disk, so the later teardown has something to verify.
   local pane
-  pane=$(tmux new-session -d -P -F '#{session_id}:#{session_created}:#{pane_pid}' \
+  pane=$(tmux new-session -d -P -F '#{session_id}:#{session_created}:#{pane_pid}:#{pane_id}' \
            -s "$SESSION" -c "$ROOT" -x 220 -y 50) \
     || { note "new-session failed; will retry next tick"; return 1; }
-  if [[ "$pane" =~ ^\$[0-9]+:[0-9]+:[0-9]+$ ]]; then
+  if [[ "$pane" =~ ^\$[0-9]+:[0-9]+:[0-9]+:%[0-9]+$ ]]; then
     put "$WD/pane" "$pane"
   else
     rm -f "$WD/pane"
@@ -235,12 +235,16 @@ launch_new() {
   # transcript, and it must never run under a HALT that landed during creation.
   if user_claude_present; then note "a user claude appeared mid-tick; prompt withheld — standby owns the next tick"; return 0; fi
   halted && return 0
-  local target
+  # Pane mutations target the verified PANE id (%N, never reused): a session-scoped target would
+  # resolve to whatever pane is active at send time (extra-round review 3). kill-session alone
+  # keeps the verified session id.
+  local target tpane
   if ! target=$(verify_target_session); then refuse_foreign "initial prompt"; return 0; fi
+  tpane=${target##* }
   halted && return 0
-  tmux pipe-pane -o -t "$target" "cat >> '$WD/transcript.log'" \
+  tmux pipe-pane -o -t "$tpane" "cat >> '$WD/transcript.log'" \
     || note "pipe-pane failed; usage classifier is blind this generation"
-  if tmux send-keys -t "$target" \
+  if tmux send-keys -t "$tpane" \
        "claude --session-id $sid --dangerously-skip-permissions \"\$(cat $PROMPT_REL)\"" Enter; then
     # The launched marker is written ONLY after the prompt was delivered: a session whose
     # conversation never started must never be --resume'd (the id names nothing).
@@ -276,6 +280,7 @@ respawn() {
     halted && return 0
     local target
     if ! target=$(verify_target_session); then refuse_foreign "incomplete-launch teardown"; return 0; fi
+    target=${target%% *}
     halted && return 0
     # The kill targets the verified session id, so a replacement after the verification makes it
     # fail instead of killing the replacement. The id is dropped only once the empty session is
@@ -297,6 +302,7 @@ respawn() {
   halted && return 0
   local target
   if ! target=$(verify_target_session); then refuse_foreign "respawn"; return 0; fi
+  target=${target##* }
   halted && return 0
   if tmux send-keys -t "$target" \
        "claude --resume $sid --dangerously-skip-permissions \"\$(cat $PROMPT_REL)\"" Enter; then
@@ -433,6 +439,7 @@ handle_usage_wait() {
     halted && return 0
     local target
     if ! target=$(verify_target_session); then refuse_foreign "post-reset retry"; return 0; fi
+    target=${target##* }
     halted && return 0
     if tmux send-keys -t "$target" \
          "The usage window has reset. Continue the pending orchestrator work; run scripts/watchdog heartbeat when you begin." Enter; then
@@ -575,7 +582,7 @@ check() {
             refuse_foreign "idle rotation"
           elif halted; then
             exit 0
-          elif tmux kill-session -t "$target" 2>/dev/null || ! session_exists; then
+          elif tmux kill-session -t "${target%% *}" 2>/dev/null || ! session_exists; then
             rm -f "$WD/session-id" "$WD/launched" "$WD/pane"
             note "idle rotation: conversation $retired retired; next pending wake starts fresh"
           else
