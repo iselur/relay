@@ -46,6 +46,7 @@ from jsonschema import Draft202012Validator
 ROOT = Path(__file__).resolve().parent.parent
 SPECS = ROOT / "specs"
 ORCH = ROOT / ".orchestrator"
+LEASES = ORCH / "leases"          # R77 gate 4: per-intake-row task leases (scripts/lease)
 APPROVALS = ORCH / "approvals"
 ATTEMPTS = ORCH / "attempts"
 STATE = ORCH / "state"
@@ -147,6 +148,9 @@ APPROVAL_SCHEMA = {
         "base_branch": {"type": "string"},
         "worker_model": {"type": "string"}, "worker_reasoning_effort": {"type": "string"},
         "reviewer_model": {"type": "string"}, "reviewer_effort": {"type": "string"},
+        # R77 gate 4: an approval may bind its dispatches to an intake row — the launching
+        # session must then hold that row's live lease, and the tuple freezes into launch.json.
+        "intake_row": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
         "note": {"type": "string"},
     },
 }
@@ -262,6 +266,68 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
     # later registry or config change cannot re-mode an in-flight attempt.
     resolved["worker_mode"] = VENDOR_ADAPTERS.worker_mode(resolved["worker_vendor"])
     return resolved
+
+
+def read_lease(row: str) -> "dict | None":
+    """The row's lease as a dict, or None when the row is unleased (scripts/lease file shape)."""
+    p = LEASES / f"{row}.lease"
+    if not p.exists():
+        return None
+    out = {}
+    for line in p.read_text().splitlines():
+        k, _, v = line.partition("=")
+        out[k] = v
+    return out
+
+
+def resolve_lease_binding(approval: dict) -> dict:
+    """R77 gate 4 (entry-point inventory item 4): an approval naming intake_row binds every
+    dispatch under it to that row's lease. The LAUNCHING session must hold the LIVE lease —
+    proven by ORCH_SESSION_ID/ORCH_LEASE_GENERATION matching the lease's compare-and-set pair —
+    and the tuple freezes into launch.json so continue/merge re-verify the same authority
+    later. No intake_row => no fencing (legacy/manual attempt, a documented residual)."""
+    row = approval.get("intake_row")
+    if not row:
+        return {}
+    lease = read_lease(row)
+    if lease is None:
+        die(f"launch refused: approval binds intake_row {row!r} but no lease exists — the "
+            f"launching session must `scripts/lease acquire` the row first.", 6)
+    sess = os.environ.get("ORCH_SESSION_ID")
+    gen = os.environ.get("ORCH_LEASE_GENERATION")
+    exp = lease.get("expiry", "")
+    if (not sess or not gen or lease.get("session") != sess
+            or lease.get("generation") != gen
+            or not exp.isdigit() or int(exp) <= time.time()):
+        die(f"launch refused: intake_row {row!r} lease CAS mismatch or expired (lease holds "
+            f"session={lease.get('session')!r} gen={lease.get('generation')!r}); the launching "
+            f"session must hold the LIVE lease and prove it via ORCH_SESSION_ID/"
+            f"ORCH_LEASE_GENERATION.", 6)
+    return {"intake_row": row, "lease_generation": gen, "lease_session": sess}
+
+
+def lease_tuple_stale(lc: dict) -> "str | None":
+    """None when the frozen lease tuple still matches the row's lease (or no tuple was frozen);
+    otherwise why this attempt's authority is stale. Fenced actions refuse on any answer."""
+    row = lc.get("intake_row")
+    if not row:
+        return None
+    lease = read_lease(row)
+    if lease is None:
+        return f"lease for row {row!r} vanished after launch (fail closed)"
+    if (lease.get("session") != lc.get("lease_session")
+            or lease.get("generation") != lc.get("lease_generation")):
+        return (f"row {row!r} is owned by session={lease.get('session')!r} "
+                f"gen={lease.get('generation')!r}, not this attempt's frozen "
+                f"{lc.get('lease_session')!r}/{lc.get('lease_generation')!r} — stale authority")
+    exp = lease.get("expiry", "")
+    if not exp.isdigit() or int(exp) <= time.time():
+        # authority = CAS + strictly live (falsifier round-3 blocking 1): an expired or
+        # malformed lease grants nothing, even to the session that froze the tuple — renew
+        # (or re-acquire and relaunch) before acting.
+        return (f"row {row!r} lease is expired or malformed (expiry={exp!r}) — authority ended; "
+                f"renew or re-acquire before this attempt's fenced actions can proceed")
+    return None
 
 
 VENV_PY = ROOT / ".venv" / "bin" / "python"
@@ -1930,6 +1996,10 @@ def cmd_launch(spec_id: str) -> None:
     cfg = load_model_config()
     launch_models = resolve_launch_models(approval, cfg)
     subagent_mode = launch_models["worker_mode"] == "subagent"
+    # R77 gate 4: approvals naming intake_row bind this attempt to the row's LIVE lease; the
+    # tuple freezes below and every fenced lifecycle action re-verifies it. Refuses cleanly
+    # here, before any side effects.
+    lease_fields = resolve_lease_binding(approval)
     spec_bytes = ctx["spec_bytes"]   # the single buffer preflight read/hashed/parsed (B2 round-2)
 
     # Same fail-fast doctrine for the worker's Codex runtime: an isolated launch without one dies
@@ -2133,6 +2203,8 @@ def cmd_launch(spec_id: str) -> None:
         # R73 Job 3: subagent BUILDs run inside the orchestrator session — provenance names the
         # trust domain plainly (SECURITY.md) instead of claiming a worker envelope that never ran.
         **({"trust_domain": "orchestrator"} if subagent_mode else {}),
+        # R77 gate 4: the lease tuple (present iff the approval named intake_row).
+        **lease_fields,
         "worker_unit": f"codex-worker-{attempt_id}",
         "test_unit": f"codex-test-{attempt_id}", "created": now(),
     }, indent=2))
@@ -2398,6 +2470,10 @@ def cmd_continue(attempt_id: str) -> None:
     deadline_ts = lc.get("deadline_ts")
     if deadline_ts is None:
         die(f"{attempt_id} launch record lacks deadline_ts (corrupt); refuse.", 6)
+    # R77 gate 4: a lease-bound attempt may be graded only while its frozen authority stands.
+    stale_why = lease_tuple_stale(lc)
+    if stale_why:
+        die(f"refusing to grade: {stale_why}.", 6)
     unit = unit_name(spec_id, n)
     dispatch_bin = str(ROOT / "scripts" / "dispatch")
     # ONE state-lock hold spans verify → flip → unit start (round-1 blocking 1): cancel and
@@ -4310,6 +4386,15 @@ def cmd_merge(attempt_id: str) -> None:
     rp = att / "result.json"
     if not rp.exists():
         die(f"no result.json for {attempt_id}; nothing to merge.", 13)
+    # R77 gate 4: a lease-bound attempt merges only while its frozen authority stands — a stale
+    # session must not land work for a row a fresh session now owns.
+    try:
+        _lc_lease = json.loads((att / "launch.json").read_text())
+    except Exception:
+        _lc_lease = {}
+    _stale_why = lease_tuple_stale(_lc_lease)
+    if _stale_why:
+        die(f"refusing to merge: {_stale_why}.", 13)
     result = json.loads(rp.read_text())
     if result.get("status") != "passed_pr_opened":
         die(f"{attempt_id} status is {result.get('status')}, not passed_pr_opened; refuse.", 13)

@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Per-intake-row task lease (R77 / PLAN-007 gate 4). One lease per row so a stale session cannot
+# act on a row a fresh session owns: row id, monotonic generation, owning session, expiry, all
+# mutations compare-and-set under ONE flock and written tmp+mv atomic. The semantics are exactly
+# the falsifier-proven prototype's (tests/lifecycle/proto.sh); this file is the production
+# surface, enforced by scripts/intake (close/observe) and scripts/dispatch (launch tuple
+# freezing) per the reviewed entry-point inventory. HALT outranks every mutation. A row with no
+# lease is un-fenced (manual single-operator mode); the autonomous machinery always acquires
+# before acting, so every autonomous action is fenced.
+#
+# Usage:
+#   scripts/lease acquire <row> --session <id> [--ttl <seconds>]   # prints the new generation
+#   scripts/lease renew   <row> --session <id> --generation <n> [--ttl <seconds>]
+#   scripts/lease release <row> --session <id> --generation <n>
+#   scripts/lease check   <row> --session <id> --generation <n>    # rc 0 iff CAS matches
+#   scripts/lease status  <row>                                    # prints the lease, rc 0/1
+# Return codes: 0 ok; 1 refused (CAS/authority/fail-closed); 3 dead-lettered row; 9 HALT.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+LEASES=".orchestrator/leases"
+HALT=".orchestrator/HALT"
+DEADLETTERS=".orchestrator/deadletters"
+DEFAULT_TTL=7200
+
+die() { printf 'lease: %s\n' "$*" >&2; exit "${2:-1}"; }
+
+cmd="${1:-}"; row="${2:-}"
+[ -n "$cmd" ] && [ -n "$row" ] || die "usage: lease acquire|renew|release|check|status <row> [flags]"
+case "$row" in *[!A-Za-z0-9._-]*) die "row id must be [A-Za-z0-9._-]" ;; esac
+shift 2
+
+session="" generation="" ttl="$DEFAULT_TTL"
+while (($#)); do
+    case "$1" in
+        --session)    session="${2-}"; shift 2 ;;
+        --generation) generation="${2-}"; shift 2 ;;
+        --ttl)        ttl="${2-}"; shift 2 ;;
+        *) die "unknown flag $1" ;;
+    esac
+done
+[[ "$ttl" =~ ^[0-9]+$ ]] || die "--ttl must be seconds"
+
+mkdir -p "$LEASES"
+lease="$LEASES/$row.lease"
+
+field() { [ -f "$lease" ] && sed -n "s/^$1=//p" "$lease" || true; }
+
+write_lease() {  # $1 gen, $2 session, $3 expiry — stage, re-check HALT at the commit instant
+    local tmp   # (falsifier-proven rule: HALT arriving during staging still stops the publish),
+    tmp="$(mktemp "$LEASES/.tmp.XXXXXX")"   # then publish atomically inside the held lock.
+    printf 'row=%s\ngeneration=%s\nsession=%s\nexpiry=%s\n' "$row" "$1" "$2" "$3" > "$tmp"
+    if [ -e "$HALT" ]; then rm -f "$tmp"; exit 9; fi
+    mv "$tmp" "$lease"
+}
+
+cas_match() {  # inside-lock: current lease must be exactly (session, generation)
+    [ -n "$session" ] && [ -n "$generation" ] || return 1
+    [ "$(field session)" = "$session" ] && [ "$(field generation)" = "$generation" ]
+}
+
+auth_match() {  # AUTHORITY = CAS + STRICTLY LIVE + WHOLE-SCHEMA-VALID (falsifier rounds 3-4):
+    local exp now  # an expired, malformed, or clock-broken lease grants nothing to anyone.
+    [[ "$generation" =~ ^[0-9]+$ ]] || return 1
+    [ "$(field row)" = "$row" ] || return 1
+    [[ "$(field generation)" =~ ^[0-9]+$ ]] || return 1
+    case "$(field session)" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+    cas_match || return 1
+    exp=$(field expiry)
+    [[ "$exp" =~ ^[0-9]+$ ]] || return 1
+    now=$(date +%s 2>/dev/null) || return 1
+    [[ "$now" =~ ^[0-9]+$ ]] || return 1
+    [ "$exp" -gt "$now" ]
+}
+
+check_halt() { [ -e "$HALT" ] && exit 9; return 0; }
+
+checked_now() {  # monotonic fail-closed clock (falsifier-proven): refuse on unreadable or
+    local now last  # BACKWARD time; the floor lives beside the leases it orders.
+    now=$(date +%s 2>/dev/null) || return 1
+    [[ "$now" =~ ^[0-9]+$ ]] || return 1
+    last=$(cat "$LEASES/.last_now" 2>/dev/null || echo 0)
+    [[ "$last" =~ ^[0-9]+$ ]] || return 1
+    [ "$now" -lt "$last" ] && return 1
+    printf '%s' "$now" > "$LEASES/.last_now.tmp" && mv "$LEASES/.last_now.tmp" "$LEASES/.last_now"
+    echo "$now"
+}
+
+case "$cmd" in
+    status)
+        [ -f "$lease" ] || exit 1
+        cat "$lease"
+        exit 0
+        ;;
+    check)
+        # read-only AUTHORITY probe (CAS + live); HALT does not block reads
+        ( flock -s 9; auth_match ) 9>>"$LEASES/.lock"
+        exit $?
+        ;;
+    acquire)
+        [ -n "$session" ] || die "acquire needs --session"
+        check_halt
+        (
+            flock -x 9
+            check_halt
+            [ -e "$DEADLETTERS/$row" ] && exit 3
+            now=$(checked_now) || exit 1              # unreadable/backward clock fails closed
+            cur_sess=$(field session); cur_exp=$(field expiry)
+            gen=$(field generation); gen=${gen:-0}
+            [[ "$gen" =~ ^[0-9]+$ ]] || exit 1        # corrupt lease fails closed
+            if [ -n "$cur_sess" ]; then
+                # a LIVE lease refuses EVERY acquire — the owner renews, never re-acquires (no
+                # silent generation bump); malformed expiry counts as live (fences takeover)
+                [[ "$cur_exp" =~ ^[0-9]+$ ]] || exit 1
+                [ "$cur_exp" -gt "$now" ] && exit 1
+            fi
+            check_halt
+            write_lease $((gen + 1)) "$session" $((now + ttl))
+            echo $((gen + 1))
+        ) 9>>"$LEASES/.lock"
+        exit $?
+        ;;
+    renew)
+        check_halt
+        (
+            flock -x 9
+            check_halt
+            auth_match || exit 1     # an expired owner re-acquires; it never renews itself back
+            now=$(checked_now) || exit 1
+            check_halt
+            write_lease "$generation" "$session" $((now + ttl))
+        ) 9>>"$LEASES/.lock"
+        exit $?
+        ;;
+    release)
+        check_halt
+        (
+            flock -x 9
+            check_halt
+            auth_match || exit 1
+            write_lease "$generation" "" 0
+        ) 9>>"$LEASES/.lock"
+        exit $?
+        ;;
+    *)
+        die "unknown command $cmd"
+        ;;
+esac

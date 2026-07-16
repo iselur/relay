@@ -36,6 +36,22 @@ check_field() { # $1 field name, $2 value
 mkdir -p "$(dirname "$LEDGER")"
 [ -f "$LEDGER" ] || printf '%s\n' "$HEADER" > "$LEDGER"
 
+# R77 per-row lease fence (PLAN-007 gate 4, entry-point inventory items 2-3): a row with a LIVE
+# lease (owned and unexpired) may be closed/observed only by the session+generation that owns
+# it — the caller proves ownership via ORCH_SESSION_ID/ORCH_LEASE_GENERATION and scripts/lease's
+# compare-and-set. A row with no lease, a released lease, or an expired lease behaves exactly as
+# before (manual single-operator mode); the autonomous machinery always acquires first.
+lease_fence() { # $1 row id, $2 verb (for the message)
+  local lf=".orchestrator/leases/$1.lease" sess exp
+  [ -f "$lf" ] || return 0
+  sess=$(sed -n 's/^session=//p' "$lf"); exp=$(sed -n 's/^expiry=//p' "$lf")
+  [ -n "$sess" ] || return 0
+  case "$exp" in ''|*[!0-9]*) fail "$1 has a malformed lease ($lf) — fix it before $2 (fail closed)" ;; esac
+  [ "$exp" -gt "$(date +%s)" ] || return 0
+  scripts/lease check "$1" --session "${ORCH_SESSION_ID:-}" --generation "${ORCH_LEASE_GENERATION:-}" \
+    || fail "$1 is leased by session '$sess' (live); only the owning session+generation may $2 it (set ORCH_SESSION_ID/ORCH_LEASE_GENERATION, or wait for expiry)"
+}
+
 # Serialize writers on a sidecar lock (locking the ledger fd itself would break across close's
 # rewrite+mv): concurrent intakes must not mint the same id or interleave a rewrite.
 exec 9>>"$LEDGER.lock"
@@ -48,6 +64,7 @@ case "${1:-}" in
     check_field "completion evidence" "$evidence"
     grep -q "^| $id " "$LEDGER" || fail "no ledger row for $id"
     grep -q "^| $id .*| open |" "$LEDGER" || fail "$id is not open (already closed?)"
+    lease_fence "$id" "close"
     tmp=$(mktemp)
     while IFS= read -r line; do
       if [[ $line == "| $id "* && $line == *"| open |"* ]]; then
@@ -140,6 +157,7 @@ case "${1:-}" in
     [ "${#evidence}" -ge 10 ] || fail "observation evidence too thin — name the external event and the owner approval"
     grep -q "^| $id " "$LEDGER" || fail "no ledger row for $id"
     grep -q "^| $id .*| open |" "$LEDGER" || fail "$id is not open (only open rows can become observation rows)"
+    lease_fence "$id" "observe"
     tmp=$(mktemp)
     # Values reach awk via ENVIRON, never -v: gawk expands escape sequences in -v assignments, so
     # a validated field containing literal backslash-n or backslash-174 could still become a
