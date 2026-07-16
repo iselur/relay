@@ -503,7 +503,10 @@ check("cmd_launch ties the outer unit RuntimeMaxSec to remaining-to-deadline (ro
 review_src = inspect.getsource(d.review)
 check("review() caps the reviewer LLM call with a deadline `timeout` wrapper (round-2 finding 3)",
       "deadline_timeout_prefix" in review_src)
-pipeline_src = inspect.getsource(d._run_pipeline)
+# R73 Job 3 split the pipeline: the worker phase lives in _run_pipeline, the spec-test phase in
+# the shared _grade_phase — the asserted property (each unisolated phase wrapped, not pre-checked)
+# is unchanged and now counted across both halves.
+pipeline_src = inspect.getsource(d._run_pipeline) + inspect.getsource(d._grade_phase)
 check("unisolated worker + spec-test phases use a deadline `timeout` wrapper, not just a pre-start check",
       pipeline_src.count("deadline_timeout_prefix") >= 2)
 reg_src = inspect.getsource(d.run_regression_gate)
