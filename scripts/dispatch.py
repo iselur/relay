@@ -1781,6 +1781,10 @@ def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
     host_id = Path("/etc/machine-id").read_text().strip() if Path("/etc/machine-id").exists() else "unknown"
     boot_id = (Path("/proc/sys/kernel/random/boot_id").read_text().strip()
                if Path("/proc/sys/kernel/random/boot_id").exists() else "unknown")
+    # The grader tree never contains the untracked .venv, so interpreter-needing drills
+    # (codex_runtime.sh) must get the root-owned runtime explicitly; absent runtime -> unset,
+    # and the drill's own SKIP fails the gate closed exactly as before.
+    test_rt = trusted_test_runtime()
     with open(lock, "w") as lf, materialized_grader_tree(installed_commit, ROOT) as gtree:
         fcntl.flock(lf, fcntl.LOCK_EX)
         for rel in box_tests:
@@ -1794,7 +1798,8 @@ def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
                    "LANG": "C.UTF-8", "ORCH_OPERATOR_USER": OPERATOR_USER,
                    # round-3: the grader worktree shares refs/replace; disable it for the box
                    # drill's own git object reads too (it reads scripts/dispatch.py etc.).
-                   "GIT_NO_REPLACE_OBJECTS": "1"}
+                   "GIT_NO_REPLACE_OBJECTS": "1",
+                   **({"ORCH_TEST_PY": test_rt["python"]} if test_rt else {})}
             run_path = _grader_run_path(gtree, rel)
             before_test = sha256_file(run_path)
             with open(log, "w") as out:
