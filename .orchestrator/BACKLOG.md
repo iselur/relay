@@ -14,17 +14,17 @@ against this description: what matches, what doesn't, what is missing.
 
 ## Next up (operator-ordered 2026-07-16)
 
-1. **Auto-resume after a usage window** — long-lived session plus a watchdog that restarts it and
-   alerts when work is pending but nothing has run (operator-approved 2026-07-14). Needs a plan,
-   then finish: fold in the user-presence standby rework now under owner-granted extra review rounds.
-2. **Program B (rev 4)** — rotation, task leases, watchdog, compaction lifecycle; falsifier first.
-3. **Program C (rev 4, after B)** — thin orchestrator, specialists, authoring flip, unpin `CLAUDE_CODE_SUBAGENT_MODEL`.
-4. **Ship a real product, end to end** — top idea from `~/orchestrator-private/IDEAS-shortlist/`,
-   its own repo, one small feature through idea → brief → tickets → build → test → review → merge → running.
-   product: new repo from the private shortlist (name it at intake)
-5. **Raise the review-round cap from 3 to 5** (owner 2026-07-16, spent-cap escalation during the
+1. **Raise the review-round cap from 3 to 5** (owner 2026-07-16, spent-cap escalation during the
    worker-adapter review): CLAUDE.md rule 3, `scripts/review`'s round counter/refusal,
    tests/review_cap.sh — review-machinery change, its own gated row, judged by installed gates.
+2. **Auto-resume after a usage window** — long-lived session plus a watchdog that restarts it and
+   alerts when work is pending but nothing has run (operator-approved 2026-07-14). Needs a plan,
+   then finish: fold in the user-presence standby rework now under owner-granted extra review rounds.
+3. **Program B (rev 4)** — rotation, task leases, watchdog, compaction lifecycle; falsifier first.
+4. **Program C (rev 4, after B)** — thin orchestrator, specialists, authoring flip, unpin `CLAUDE_CODE_SUBAGENT_MODEL`.
+5. **Ship a real product, end to end** — top idea from `~/orchestrator-private/IDEAS-shortlist/`,
+   its own repo, one small feature through idea → brief → tickets → build → test → review → merge → running.
+   product: new repo from the private shortlist (name it at intake)
 6. **Fix failed_launch terminal statuses** — three shipped `_run_pipeline` refusal paths
    (ERR_NO_ISOLATION, two deadline refusals) record failed_launch, in neither TERMINAL nor LIVE, so
    `dispatch await` polls 8h (worker-adapter round-3 finding). Small spec: error_launch or TERMINAL, plus await test.
