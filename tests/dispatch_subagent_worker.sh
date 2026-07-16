@@ -498,6 +498,46 @@ try:
     check("reconcile still relabels+tears down a confirmed-dead unit (interrupted, verified)",
           row.get("to") == "interrupted" and row.get("teardown_verified") is True
           and json.loads((d.STATE / f"{LSID}.json").read_text())["status"] == "interrupted")
+    # round-3 blocking 1: a fresh attempt that claims the spec DURING teardown must not have its
+    # claim overwritten by the post-teardown detail append — the append is a locked CAS on our
+    # own interrupted relabel of the SAME attempt id.
+    d.write_state(LSID, {"attempt_id": f"{LSID}-1", "spec_id": LSID, "attempt": 1,
+                         "spec_digest": ldigest, "status": "running",
+                         "unit": d.unit_name(LSID, 1)})
+    def _teardown_and_new_claim(aid, outer, **k):
+        # unverified teardown => non-empty detail note; meanwhile attempt 2 claims the spec
+        d.write_state(LSID, {"attempt_id": f"{LSID}-2", "spec_id": LSID, "attempt": 2,
+                             "spec_digest": ldigest, "status": "launching",
+                             "unit": d.unit_name(LSID, 2)})
+        return {"slice": "s", "outer_stop_rc": 0, "slice_stop_rc": 0,
+                "remaining_units": ["ghost.service"], "query_ok": True, "verified": False}
+    d.unit_active = lambda unit: False
+    d.teardown_attempt = _teardown_and_new_claim
+    try:
+        rc, out = run_die(d.cmd_reconcile)
+    finally:
+        d.unit_active = _orig_active; d.teardown_attempt = _orig_teardown
+    fresh = json.loads((d.STATE / f"{LSID}.json").read_text())
+    check("a fresh claim during teardown survives — the detail append skips foreign state",
+          fresh["attempt_id"] == f"{LSID}-2" and fresh["status"] == "launching"
+          and "ESCALATED" not in fresh.get("detail", ""))
+    # and when the state IS still ours, the unverified-teardown note lands via the same CAS
+    d.write_state(LSID, {"attempt_id": f"{LSID}-1", "spec_id": LSID, "attempt": 1,
+                         "spec_digest": ldigest, "status": "running",
+                         "unit": d.unit_name(LSID, 1)})
+    d.unit_active = lambda unit: False
+    d.teardown_attempt = lambda aid, outer, **k: {"slice": "s", "outer_stop_rc": 0,
+                                                  "slice_stop_rc": 0,
+                                                  "remaining_units": ["ghost.service"],
+                                                  "query_ok": True, "verified": False}
+    try:
+        rc, out = run_die(d.cmd_reconcile)
+    finally:
+        d.unit_active = _orig_active; d.teardown_attempt = _orig_teardown
+    mine = json.loads((d.STATE / f"{LSID}.json").read_text())
+    check("an unverified teardown's note appends onto our own interrupted relabel",
+          mine["attempt_id"] == f"{LSID}-1" and mine["status"] == "interrupted"
+          and "ESCALATED" in mine.get("detail", ""))
 finally:
     d._list_codex_units = _orig_units2
 

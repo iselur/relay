@@ -3936,8 +3936,11 @@ def _locked_relabel(spec_id: str, snapshot: dict, new_fields: dict, recheck=None
                 return False
             if recheck is not None and not recheck():
                 return False
+            # Fields may be computed FROM the in-lock state (round-3 blocking 1: a detail
+            # append must concatenate onto what is canonical NOW, not a pre-lock capture).
+            fields = new_fields(cur) if callable(new_fields) else new_fields
             atomic_write(STATE / f"{spec_id}.json",
-                         json.dumps({**cur, **new_fields, "updated": now()}, indent=2))
+                         json.dumps({**cur, **fields, "updated": now()}, indent=2))
             return True
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
@@ -4015,9 +4018,14 @@ def cmd_reconcile() -> None:
                 # Full teardown, not a bare slice stop: producer-first (a no-op if truly gone),
                 # then slice, then verify fail-closed — same path as cancel/timeout (B6).
                 td = teardown_attempt(aid, unit)
-            cur = read_state(spec_id) or {}
-            if cur.get("attempt_id") == aid and cur.get("status") == "interrupted":
-                write_state(spec_id, {**cur, "detail": (cur.get("detail", "")
+            # The detail append is ITSELF a locked CAS (round-3 blocking 1): it lands only if
+            # the canonical state is still OUR interrupted relabel of THIS attempt — a fresh
+            # attempt that claimed the spec meanwhile (new attempt_id, 'launching') is left
+            # untouched. The appended text concatenates onto the in-lock detail, never onto a
+            # pre-lock capture; an empty teardown note writes nothing at all.
+            if _teardown_detail(td):
+                _locked_relabel(spec_id, {"attempt_id": aid, "status": "interrupted"},
+                                lambda cur: {"detail": (cur.get("detail", "")
                                                         + _teardown_detail(td))})
             if aid and not td["verified"]:
                 escalate(spec_id, "reconcile teardown could not be verified clean (B6)",
