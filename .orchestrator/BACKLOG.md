@@ -20,16 +20,16 @@ against this description: what matches, what doesn't, what is missing.
    tier the brief policy. In flight.
 2. **Auto-resume after a usage window** — a long-lived session plus a small watchdog that restarts
    it and alerts when work is pending but nothing has run. Approved by the operator 2026-07-14;
-   replaces the timers deleted on 2026-07-13 (they fired, but each one-shot session died the moment
-   it ended its turn).
+   replaces the one-shot timers deleted on 2026-07-13.
 3. **Ship a real product, end to end** — pick the top idea from the private shortlist
    (`~/orchestrator-private/IDEAS-shortlist/`), give it its own repo, and push one deliberately
    small feature through idea → brief → tickets → build → test → review → merge → running.
    product: new repo from the private shortlist (name it at intake)
 4. **Close the worker credential/network gap** (SECURITY.md gap 1): remove or broker the Codex
    login exposure and block build-phase network, or state per-spec why it must stay.
-5. **Make approvals human-provable** (SECURITY.md gap 2): replace file/environment approvals with a
-   mechanism software on this box cannot fabricate.
+5. **Make approvals human-provable; grant covers low risk** (SECURITY.md gap 2; owner 2026-07-16):
+   the autonomy grant authorizes low-risk dispatches, no per-spec file; default/high risk keep
+   owner approvals on a mechanism software on this box cannot fabricate. Owner confirms `main` only.
 6. **Move the test grade out of the worker's reach** (SECURITY.md gap 3): result file outside the
    worktree; protect `scripts/test` like the tests it runs.
 7. **Measure whether review catches bugs**: plant three known defects, run the normal pipeline,

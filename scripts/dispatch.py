@@ -3006,6 +3006,15 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
                       f"no reviewer was invoked")
     diff = git("diff", f"{lc['base_sha']}..{wc}", cwd=wt)
     schema_obj = _verdict_schema_for_attempt(att)
+    # R73 falsifier finding (SPEC-019-1): the codex reviewer transcribed spec_digest with a
+    # dropped repeated byte ("…0a0a0b…" → "…0a0b…") and the binding equality check refused the
+    # verdict. The echo fields are pinned as const in the schema the reviewer's structured
+    # output must satisfy, so a CLI-enforced schema cannot emit a mistyped binding; the
+    # validator's own equality checks below are unchanged and still authoritative.
+    for _fld, _val in (("spec_digest", lc["spec_digest"]), ("base_sha", lc["base_sha"]),
+                       ("worker_commit", wc)):
+        if _fld in schema_obj.get("properties", {}):
+            schema_obj["properties"][_fld] = {**schema_obj["properties"][_fld], "const": _val}
     schema_version = schema_obj.get("properties", {}).get("schema_version", {}).get("const")
     quality_instructions = ""
     if schema_version == "3":
