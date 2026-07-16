@@ -558,7 +558,12 @@ expected = (
     "your work.\n"
     "Inspect relevant code and tests before editing. For non-trivial tasks, maintain a "
     "concise, revisable implementation checklist covering intended files and verification; "
-    "skip it for trivial tasks. The approved spec and evidence gates remain binding. If "
+    "skip it for trivial tasks.\n"
+    "Implement the simplest, cleanest solution that satisfies the spec — no abstractions or "
+    "configurability beyond what the spec designs. Keep the diff surgical: touch no adjacent "
+    "code, comments, or formatting; match the existing style; remove only what your own "
+    "change orphaned. State non-obvious assumptions in your final report.\n"
+    "The approved spec and evidence gates remain binding. If "
     "discovery invalidates the spec or approved scope (impossible acceptance criteria, wrong "
     "test command, inadequate scope), stop and report SPEC_BLOCKED on its own line followed by "
     "the reason — never improvise beyond the spec."
@@ -568,7 +573,7 @@ expected = (
     + "nothing else. Stay strictly within the approved scope. If the findings cannot be "
     + "addressed within the spec and scope, report SPEC_BLOCKED.\n"
     + json.dumps({"f": ["x"]}, indent=2))
-check("worker prompt is byte-identical to the pre-split builder (incl. remediation block)",
+check("worker prompt is byte-identical to the canonical builder (incl. remediation block)",
       d.worker_prompt_text(att, lc_prompt, 2) == expected)
 
 sys.exit(1 if fails else 0)
