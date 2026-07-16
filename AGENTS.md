@@ -11,7 +11,7 @@ A model swap is one edit there, never to the rulebook; a new model also adds its
 | owner | the human | approves specs, merges `main` |
 | orchestrator | Claude Code on this box (Opus 4.8 high; Fable 5 default retired at owner direction 2026-07-15) | dispatches, reviews worker diffs, reports |
 | worker | Codex CLI (`gpt-5.6-luna`) | research, drafts, implementation, tests (BUILD phase) |
-| reviewer | whichever vendor did NOT author the work | never self-review, never same-vendor review |
+| reviewer | per `scripts/models.json` (bound reviewer + failover) | never reviews its own work |
 
 Bound reviewer and its retirement failover: see `scripts/models.json` (owner 2026-07-15: Fable
 while it lasts; on the model-not-found signature the dispatcher retries once, durably recorded).
@@ -19,7 +19,7 @@ while it lasts; on the model-not-found signature the dispatcher retries once, du
 ## What this repo is
 
 An orchestrator that dispatches worker jobs from schema-validated specs, checks the output (work
-untouched → in scope → tests actually ran → cross-vendor review), and opens PRs the owner merges.
+untouched → in scope → tests actually ran → bound review), and opens PRs the owner merges.
 
 ## Stack
 
