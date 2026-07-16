@@ -18,4 +18,6 @@ assert_squeeze() {
 }
 
 assert_squeeze 'a   b  c' 'a b c'
+assert_squeeze $'a\t\tb   c' 'a b c'
+assert_squeeze $'a \t b' 'a b'
 assert_squeeze '' ''
