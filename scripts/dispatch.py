@@ -2289,8 +2289,7 @@ def _grade(attempt_id: str) -> None:
         # T2, same doctrine as the BUILD half: an unisolated TEST phase without a recorded
         # operator exposure acceptance is a tampered/hand-edited record — refuse.
         # error_launch, not failed_launch: the refusal must be TERMINAL so `dispatch await`
-        # resolves it immediately (the three pre-existing failed_launch paths are the recorded
-        # backlog defect; new refusal paths do not add to it).
+        # resolves it immediately.
         if not lc.get("isolation", False) and not lc.get("exposure_accepted"):
             finish("error_launch", ERR_NO_ISOLATION,
                    detail="launch record has isolation:false without a recorded operator "
@@ -2675,7 +2674,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
     # code as the operator on the strength of a file.
     iso = lc.get("isolation", False)
     if not iso and not lc.get("exposure_accepted"):
-        finish("failed_launch", ERR_NO_ISOLATION,
+        finish("error_launch", ERR_NO_ISOLATION,
                detail="launch record has isolation:false without a recorded operator exposure "
                       "acceptance — refusing to run worker code as the operator")
     # B6: ONE absolute attempt deadline, fixed at launch (cmd_launch). Every phase below spends down
@@ -2771,7 +2770,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                                              prompt, isolated=True, argv_prefix=argv_prefix)
             worker_ceiling_s = remaining_ceiling_s(deadline_ts)
             if worker_ceiling_s <= 0:
-                finish("failed_launch", ERR_TIMEOUT,
+                finish("error_launch", ERR_TIMEOUT,
                        detail="attempt deadline already exhausted before the worker phase could "
                               "start (single absolute ceiling, B6); refusing")
             wc = isolated_run(
@@ -2787,7 +2786,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             # started worker run arbitrarily far past the deadline. None => no time left => refuse.
             prefix = deadline_timeout_prefix(deadline_ts)
             if prefix is None:
-                finish("failed_launch", ERR_TIMEOUT,
+                finish("error_launch", ERR_TIMEOUT,
                        detail="attempt deadline already exhausted before the worker phase could "
                               "start (single absolute ceiling, B6); refusing")
             scrubbed = worker_adapter.worker_env(OPERATOR_HOME, OPERATOR_USER)
