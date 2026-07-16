@@ -1,0 +1,15 @@
+{
+  "approver": "val (in-chat full-autonomy grant 2026-07-16; low-risk dispatches grant-covered \u2014 escalations/R70-R73-programB-C-owner-grant-full-autonomy-2026-07-16.md)",
+  "timestamp": "2026-07-16T13:26:00Z",
+  "spec_id": "SPEC-021",
+  "spec_digest": "2e8aa9048f0169b48a0e0323ba07f7680cc2f111931318cd8cb720397582753e",
+  "spec_digest_method": "sha256(specs/SPEC-021.yaml)",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "risk_class": "low",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/initials.sh"
+  ],
+  "base_branch": "ready-for-main",
+  "note": "R73 Job 3 falsifier (reshaped checkpoint 2): live subagent-mode dispatch. Worker model comes from the local uncommitted models.json flip (no worker_model pin, so the config default drives resolution); reviewer stays the config default."
+}

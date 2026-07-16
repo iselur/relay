@@ -1,0 +1,36 @@
+id: SPEC-021
+title: Add an initials shell helper with tests
+risk_class: low
+depends_on: []
+objective: >
+  An initials function in scripts/lib/initials.sh prints the first character of each
+  whitespace-separated word of its first argument, uppercased, concatenated with no separator.
+  R73 Job 3 falsifier E2E fixture: a stock dispatch with the worker role locally configured to
+  a claude model must freeze worker_vendor=claude / worker_mode=subagent, take its BUILD from an
+  orchestrator-session subagent, be graded end to end by `dispatch continue` (isolated test,
+  attestation, bound review), and reach passed_pr_opened. Small real work in the proven fixture
+  shape (SPEC-020's pattern with fresh content).
+in_scope:
+  - scripts/lib/**
+  - tests/initials.sh
+out_of_scope:
+  - .github/**
+  - specs/**
+  - .orchestrator/**
+acceptance_criteria:
+  - "initials 'hello brave world' prints 'HBW'."
+  - "initials 'already Upper case' prints 'AUC'."
+  - "initials 'single' prints 'S'."
+  - "initials '' prints an empty string."
+  - "Runs of internal whitespace collapse to word boundaries: initials 'a  b' prints 'AB'."
+  - >-
+    tests/initials.sh sources the helper, asserts all of the above, and exits 0 when all
+    pass.
+test_command: bash tests/initials.sh
+regression_command: bash tests/initials.sh
+regression_test_paths:
+  - tests/initials.sh
+hard_ceiling_hours: 2
+needs_network: false
+context:
+  - scripts/lib/
