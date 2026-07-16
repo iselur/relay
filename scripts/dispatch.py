@@ -240,13 +240,18 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
         if vm.get(model) is None:
             die(f"launch refused: {key} {model!r} is not declared in vendor_map "
                 f"({MODEL_CONFIG}) — an undeclared model cannot be vendor-classified")
-    # R73 round-2 review (medium): the worker phase is hard-wired to the Codex runtime until the
-    # worker adapter ships (R73 Job 2) — a non-codex worker would resolve, freeze a truthful
-    # vendor, and then execute under the wrong CLI. Refuse it at resolution, not at run time.
-    if vm[resolved["worker_model"]] != "codex":
+    # R73 Job 2 (supersedes the round-2 hard-wired codex check): the worker phase executes
+    # through the worker-adapter registry pinned at dispatcher import — a vendor with no
+    # registered worker adapter would resolve, freeze a truthful vendor, and then have no CLI
+    # to execute under. Refuse it at resolution, before any side effects, not at run time.
+    # Today the registry is codex-only; claude joins in R73 Job 3 (subagent worker runtime).
+    if VENDOR_ADAPTERS is None:
+        die(f"launch refused: vendor adapters failed to load at dispatcher start "
+            f"({VENDOR_ADAPTERS_ERR}); fail closed")
+    if vm[resolved["worker_model"]] not in VENDOR_ADAPTERS.worker_vendors():
         die(f"launch refused: worker_model {resolved['worker_model']!r} is "
-            f"{vm[resolved['worker_model']]}-vendor, but the worker phase is codex-only until "
-            f"the worker adapter exists (R73 Job 2)")
+            f"{vm[resolved['worker_model']]}-vendor, and no worker adapter exists for that "
+            f"vendor (known: {'/'.join(VENDOR_ADAPTERS.worker_vendors())})")
     # R73 Job 1: vendors freeze WITH the models — run-time selects the CLI adapter from these
     # fields and never re-infers from a live config.
     resolved["worker_vendor"] = vm[resolved["worker_model"]]
@@ -1645,6 +1650,14 @@ def isolated_run(unit, argv, cwd, rw_paths, private_network, ceiling_s, stdout, 
     # refs/replace, so a grader's OWN in-process `git` object reads would still resolve replacement
     # objects unless the child's environment disables them. Export it into every hardened grader
     # unit (candidate-isolated + regression phases + the spec test_command all route through here).
+    # R73 Job 2 rounds 1+2: the worker's vendor auth/state variables are adapter surface — the
+    # worker call site supplies them via env_extra (worker_adapter.iso_env_extra), which
+    # OVERRIDES this base by dict merge, so a Job 3 vendor injects its own without touching
+    # other units. CODEX_HOME itself STAYS in the base env (round-2 review): every isolated
+    # unit — runtime probes, spec test_command, regression and integration graders — carried it
+    # before Job 2, and a test_command reading $CODEX_HOME must not change terminal status
+    # under a behavior-identical refactor. Retiring the legacy base variable is Job 3 work,
+    # reviewable together with the non-worker units' environment contract.
     envs = {"HOME": str(WORKER_HOME), "PATH": "/usr/bin:/bin",
             "CODEX_HOME": str(WORKER_HOME / ".codex"), "TERM": "dumb", "LANG": "C.UTF-8",
             "GIT_NO_REPLACE_OBJECTS": "1", **(env_extra or {})}
@@ -1654,24 +1667,6 @@ def isolated_run(unit, argv, cwd, rw_paths, private_network, ceiling_s, stdout, 
            "--", *argv]
     with open(os.devnull) as devnull:
         return subprocess.run(cmd, stdin=devnull, stdout=stdout, stderr=stderr)
-
-
-def last_agent_message(events_path: Path) -> str:
-    """Recover the worker's final message from the JSONL stream (isolated workers can't write the
-    evidence dir under the operator's home, so --output-last-message is unavailable)."""
-    msg = ""
-    try:
-        for line in events_path.read_text().splitlines():
-            try:
-                e = json.loads(line)
-            except Exception:
-                continue
-            it = e.get("item") or {}
-            if it.get("type") == "agent_message" and it.get("text"):
-                msg = it["text"]
-    except Exception:
-        pass
-    return msg
 
 
 def validate_worktree_safe(wt: Path) -> list[str]:
@@ -2416,11 +2411,28 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
         deadline_ts = time.time() + float(lc.get("hard_ceiling_hours", DEFAULT_CEILING_HOURS)) * 3600
     # Make the resolved deadline authoritative for every phase reached through lc (esp. review()).
     lc["deadline_ts"] = deadline_ts
-    # Codex flags common to both paths. Fast mode (priority service tier): faster wall-clock at the
-    # SAME model + reasoning depth. `service_tier` is the real key (`model_service_tier` is rejected).
-    codex_args = ["exec", "--cd", str(wt),
-                  "-m", lc["worker_model"], "-c", f"model_reasoning_effort={lc['worker_effort']}",
-                  "-c", "service_tier=priority", "--skip-git-repo-check", "--json"]
+    # R73 Job 2: worker CLI mechanics live behind the vendor adapter, selected by the FROZEN
+    # worker vendor — same fail-closed doctrine as review(): the module pinned at dispatcher
+    # import, corrupt/partial vendor records and unknown vendors refuse before any worker runs.
+    # Round-3 review (major): these refusals record error_launch — the canonical TERMINAL
+    # infrastructure status (`dispatch await` resolves it immediately; it consumes no
+    # remediation budget) — never failed_launch, which is in neither TERMINAL nor LIVE.
+    vendors = lc_frozen_vendor_fields(lc)
+    if vendors is None:
+        finish("error_launch", ERR_LAUNCH,
+               detail="launch record carries a partial set of frozen vendor fields (corrupt "
+                      "launch.json); fail closed — no worker was invoked")
+    if VENDOR_ADAPTERS is None:
+        finish("error_launch", ERR_LAUNCH,
+               detail=f"vendor adapters failed to load at dispatcher start "
+                      f"({VENDOR_ADAPTERS_ERR}); fail closed — no worker was invoked")
+    try:
+        worker_adapter = VENDOR_ADAPTERS.get_worker_adapter(vendors["worker_vendor"])
+    except Exception as exc:
+        finish("error_launch", ERR_LAUNCH,
+               detail=f"worker adapter unavailable for vendor "
+                      f"{vendors.get('worker_vendor')!r}: {exc}; fail closed — "
+                      f"no worker was invoked")
     with open(raw / "events.jsonl", "w") as ev, open(raw / "worker-stderr.txt", "w") as er:
         if iso:
             # D5: worker runs as codex-worker in a hardened system service. Codex's own sandbox is
@@ -2455,14 +2467,16 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                                   f"and run (stale: {stale or 'no pins recorded'}, "
                                   f"tree_ok={tree_ok}); refusing")
                 argv_prefix, binds = rt["argv"], [tuple(b) for b in rt["binds"]]
-            else:  # launch record predates runtime pinning: resolve live
-                runtime = worker_codex_runtime()
+            else:  # launch record predates runtime pinning: resolve live (adapter delegates
+                # to the module-level worker_codex_runtime — trust machinery stays here)
+                runtime = worker_adapter.runtime(worker_codex_runtime)
                 if runtime is None:
                     finish("failed_worker_error", ERR_WORKER,
                            detail="no worker-launchable Codex runtime (npm package + system "
                                   "node, or a native ELF binary)")
                 argv_prefix, binds, _entry = runtime
-            argv = [*argv_prefix, *codex_args, "-s", "danger-full-access", prompt]
+            argv = worker_adapter.build_argv(lc["worker_model"], lc["worker_effort"], wt,
+                                             prompt, isolated=True, argv_prefix=argv_prefix)
             worker_ceiling_s = remaining_ceiling_s(deadline_ts)
             if worker_ceiling_s <= 0:
                 finish("failed_launch", ERR_TIMEOUT,
@@ -2470,9 +2484,10 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                               "start (single absolute ceiling, B6); refusing")
             wc = isolated_run(
                 lc["worker_unit"], argv, cwd=str(wt),
-                rw_paths=[str(wt), str(WORKER_HOME / ".codex")],
+                rw_paths=[str(wt), *worker_adapter.iso_rw_paths(WORKER_HOME)],
                 private_network=False, ceiling_s=worker_ceiling_s, stdout=ev, stderr=er,
-                binds=binds, slice_name=attempt_slice(attempt_id))
+                binds=binds, slice_name=attempt_slice(attempt_id),
+                env_extra=worker_adapter.iso_env_extra(WORKER_HOME))
         else:
             # Fallback (fresh box / CI): same-user launch with Codex's bwrap sandbox. No systemd
             # RuntimeMaxSec here, so cap the run itself at the time remaining to the absolute deadline
@@ -2483,22 +2498,15 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                 finish("failed_launch", ERR_TIMEOUT,
                        detail="attempt deadline already exhausted before the worker phase could "
                               "start (single absolute ceiling, B6); refusing")
-            scrubbed = {
-                "HOME": str(OPERATOR_HOME), "USER": OPERATOR_USER, "LOGNAME": OPERATOR_USER,
-                "PATH": f"{OPERATOR_HOME}/.local/bin:/usr/bin:/bin",
-                "CODEX_HOME": f"{OPERATOR_HOME}/.codex", "TERM": "dumb", "LANG": "C.UTF-8",
-            }
-            worker_cmd = [*prefix, "codex", *codex_args, "--sandbox", "workspace-write",
-                          "--output-last-message", str(raw / "worker-last-message.txt"), prompt]
+            scrubbed = worker_adapter.worker_env(OPERATOR_HOME, OPERATOR_USER)
+            worker_cmd = [*prefix, *worker_adapter.build_argv(
+                lc["worker_model"], lc["worker_effort"], wt, prompt, isolated=False,
+                last_message_path=raw / "worker-last-message.txt")]
             with open(os.devnull) as devnull:
                 wc = subprocess.run(worker_cmd, env=scrubbed, stdin=devnull, stdout=ev, stderr=er)
 
     stderr_txt = (raw / "worker-stderr.txt").read_text()
-    if iso:
-        last_message = last_agent_message(raw / "events.jsonl")
-    else:
-        last_message = (raw / "worker-last-message.txt").read_text() \
-            if (raw / "worker-last-message.txt").exists() else ""
+    last_message = worker_adapter.recover_last_message(raw, iso)
 
     # policy-note item 2: worker signalled the spec is unworkable. Old approval is void; a spec
     # revision + new approval digest is required. Terminal, but NOT a worker failure.
@@ -2507,7 +2515,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                detail="worker reported SPEC_BLOCKED; spec revision + new approval required",
                worker_message=last_message.strip()[:2000])
 
-    ec = classify_worker(wc.returncode, stderr_txt, raw / "events.jsonl")
+    ec = worker_adapter.classify_error(wc.returncode, stderr_txt, raw)
     if ec is not None:
         # policy-note item 1: a quota/rate-limit mid-attempt is INTERRUPTED (external capacity),
         # not a merit failure. Preserve evidence, stop; resume ONLY as a fresh attempt when
@@ -2518,7 +2526,11 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                           "after capacity returns. Never hand-finish this worktree.")
         # NEVER inline stderr here: result.json is pushed as provenance and raw worker stderr can
         # carry secrets (round-1 review). await shows a local-only tail from the gitignored file.
-        finish("failed_worker_error", ec, worker_exit=wc.returncode,
+        # The recorded class comes from the dispatcher's own vocabulary: an adapter answer
+        # outside it records as the generic worker class (detail keeps the adapter's literal).
+        finish("failed_worker_error",
+               ec if ec in (ERR_AUTH, ERR_SANDBOX, ERR_WORKER) else ERR_WORKER,
+               worker_exit=wc.returncode,
                detail=f"worker error class={ec}; stderr kept in raw/worker-stderr.txt")
 
     # --- D5 path-safety gate: reject planted symlinks/special files BEFORE any operator-context step
@@ -2536,10 +2548,13 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                detail="worker produced no changes")
     git("add", "-A", cwd=wt)
     env = os.environ.copy()
-    env["GIT_AUTHOR_NAME"] = f"Codex {lc['worker_model']}"
+    # R73 Job 2: vendor-neutral authorship — the author string is display metadata; authorship
+    # VENDOR always derives from the attempt's frozen launch.json (scripts/review B18), never
+    # from this name, so a claude worker (Job 3) is not mislabeled as Codex-authored.
+    env["GIT_AUTHOR_NAME"] = f"Worker {lc['worker_model']}"
     env["GIT_AUTHOR_EMAIL"] = "codex-worker@orchestrator.local"
     msg = (f"{spec_id}: worker output (attempt {n})\n\n"
-           f"Codex {lc['worker_model']} (reasoning={lc['worker_effort']}), packaged by the "
+           f"Worker {lc['worker_model']} (reasoning={lc['worker_effort']}), packaged by the "
            f"orchestrator (G1-A/C).\n\nspec_digest: {lc['spec_digest']}\n"
            f"base_sha: {lc['base_sha']}\nattempt: {n}")
     cp = run(["git", "commit", "-q", "-m", msg], cwd=str(wt), env=env)
@@ -2710,27 +2725,17 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
 
 
 # ----------------------------------------------------------- worker helpers ----
-def classify_worker(exit_code: int, stderr: str, events_path: Path):
-    """Return a structured error class, or None if the worker ran to completion."""
-    low = stderr.lower()
-    if "429" in stderr or "too many requests" in low or "rate limit" in low:
-        return ERR_QUOTA
-    if "not logged in" in low or "401" in stderr or "403" in stderr or "unauthorized" in low:
-        return ERR_AUTH
-    # A worker killed by RuntimeMaxSec: unit terminated; codex exit is nonzero/none.
-    saw_turn_complete = False
-    try:
-        for line in events_path.read_text().splitlines():
-            if '"type":"turn.completed"' in line or '"turn.completed"' in line:
-                saw_turn_complete = True
-    except Exception:
-        pass
-    if not saw_turn_complete and exit_code != 0:
-        # Sandbox failures surface in the final message / stderr.
-        if "sandbox" in low or "operation not permitted" in low or "bwrap" in low:
-            return ERR_SANDBOX
-        return ERR_WORKER
-    return None
+# classify_worker and last_agent_message moved into the worker adapter (R73 Job 2,
+# scripts/vendor_adapters.py CodexWorker): output recovery and error classification are
+# vendor CLI mechanics. The recorded error-class vocabulary (ERR_*) stays defined here.
+def valid_attempt_branch(branch, attempt_id: str) -> bool:
+    """True only for a branch name that provably belongs to this attempt: exactly one
+    namespace segment, a slash, then the exact attempt id (today: codex/SPEC-NNN-n). The
+    frozen lc["branch"] is DATA feeding destructive deletion (R73 Job 2 round-1 review,
+    blocking) — a corrupt record naming main, ready-for-main, an owner branch, or another
+    attempt's branch must never reach `git branch -D` / remote delete."""
+    return (isinstance(branch, str)
+            and re.fullmatch(r"[A-Za-z0-9._-]+/" + re.escape(attempt_id), branch) is not None)
 
 
 def base_moved(wt: Path, base_branch: str, base_sha: str) -> tuple[str, bool]:
@@ -4178,8 +4183,27 @@ def cmd_integrate(attempt_ids: list[str]) -> None:
         for wt in (ISO_WORKTREES / aid, WORKTREES / aid):   # D5 worktrees live under /srv now
             if wt.exists():
                 run(["git", "worktree", "remove", "--force", str(wt)], cwd=str(ROOT))
-        run(["git", "branch", "-D", f"codex/{aid}"], cwd=str(ROOT))
-        run(["git", "push", "-q", "origin", "--delete", f"codex/{aid}"], cwd=str(ROOT))
+        # R73 Job 2: delete the FROZEN branch from the attempt's own launch record instead of
+        # reconstructing codex/{attempt_id}. Round-1 review (BLOCKING): the recorded value is
+        # data feeding destructive local+remote deletion, so it must prove it belongs to THIS
+        # attempt before anything is deleted — valid_attempt_branch requires one namespace
+        # segment plus the exact attempt id, which no base/protected/owner branch ever carries.
+        # Anything unreadable or failing that proof leaves the branch for manual cleanup — a
+        # leftover branch is visible and harmless; deleting a guessed or corrupt name is neither.
+        try:
+            lc_branch = json.loads(
+                (ATTEMPTS / sid / str(by_spec[sid]) / "launch.json").read_text())["branch"]
+        except Exception as exc:
+            print(f"note: {aid}: launch.json branch unreadable ({exc}); "
+                  f"branch left for manual cleanup")
+            lc_branch = None
+        if lc_branch is not None and not valid_attempt_branch(lc_branch, aid):
+            print(f"note: {aid}: recorded branch {lc_branch!r} does not name this attempt's "
+                  f"worker namespace; branch left for manual cleanup")
+            lc_branch = None
+        if lc_branch:
+            run(["git", "branch", "-D", lc_branch], cwd=str(ROOT))
+            run(["git", "push", "-q", "origin", "--delete", lc_branch], cwd=str(ROOT))
         report["integrated"].append(aid)
 
     report["provenance_pr"] = _commit_provenance(order)
