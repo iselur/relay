@@ -12,34 +12,34 @@ a recommendation, breaks it into tickets, logs them, improves the plan, executes
 result, tests it, deploys it, and maintains what it ships. Every holistic review measures the setup
 against this description: what matches, what doesn't, what is missing.
 
-## Next up (operator-ordered)
+## Next up (operator-ordered 2026-07-16)
 
-1. **Auto-resume after a usage window** — long-lived session plus a watchdog that restarts it and
-   alerts when work is pending but nothing has run (operator-approved 2026-07-14).
-2. **Ship a real product, end to end** — top idea from `~/orchestrator-private/IDEAS-shortlist/`,
+1. **Raise the review-round cap from 3 to 5** (owner 2026-07-16, spent-cap escalation during the
+   worker-adapter review): CLAUDE.md rule 3, `scripts/review`'s round counter/refusal,
+   tests/review_cap.sh — review-machinery change, its own gated row, judged by installed gates.
+2. **Codex priority tier fast → standard** (cost lever from the 2026-07-15 token findings; owner
+   2026-07-16): flip worker/reviewer/spec-author Codex calls to standard processing; watch dispatch ceilings.
+3. **Auto-resume after a usage window** — long-lived session plus a watchdog that restarts it and
+   alerts when work is pending but nothing has run (operator-approved 2026-07-14). Needs a plan,
+   then finish: fold in the user-presence standby rework now under owner-granted extra review rounds.
+4. **Program B (rev 4)** — rotation, task leases, watchdog, compaction lifecycle; falsifier first.
+5. **Program C (rev 4, after B)** — thin orchestrator, specialists, authoring flip, unpin `CLAUDE_CODE_SUBAGENT_MODEL`.
+6. **Ship a real product, end to end** — top idea from `~/orchestrator-private/IDEAS-shortlist/`,
    its own repo, one small feature through idea → brief → tickets → build → test → review → merge → running.
    product: new repo from the private shortlist (name it at intake)
-3. **Close the worker credential/network gap** (SECURITY.md gap 1): remove or broker the Codex
-   login exposure and block build-phase network, or state per-spec why it must stay.
-4. **Make approvals human-provable; grant covers low risk** (SECURITY.md gap 2; owner 2026-07-16):
-   grant authorizes low-risk dispatches, no per-spec file; default/high risk keep owner approvals
-   on a mechanism this box's software cannot fabricate. Owner confirms `main` only.
-5. **Move the test grade out of the worker's reach** (SECURITY.md gap 3): result file outside the
-   worktree; protect `scripts/test` like the tests it runs.
-6. **Measure whether review catches bugs**: plant three known defects, run the normal pipeline,
-   count catches; set review scope based on the result, not on faith.
-7. **Work the 2026-07-15 Codex audit findings** — 18 defects, 8 high, in the dispatcher's approval,
-   grading, cancel, and merge gates; trust-critical, overlaps items 4–5. Report (untracked):
-   `.orchestrator/reviews/codex-audit-2026-07-15/report.md`.
-8. **Program B (rev 4, after A)** — rotation, task leases, watchdog, compaction lifecycle; falsifier first.
-9. **Program C (rev 4, after B)** — thin orchestrator, specialists, authoring flip, unpin `CLAUDE_CODE_SUBAGENT_MODEL`.
-10. **Raise the review-round cap from 3 to 5** (owner 2026-07-16, spent-cap escalation during the
-    worker-adapter review): CLAUDE.md rule 3, `scripts/review`'s round counter/refusal,
-    tests/review_cap.sh — review-machinery change, its own gated row, judged by installed gates.
-11. **Fix failed_launch terminal statuses** — three shipped `_run_pipeline` refusal paths
-    (ERR_NO_ISOLATION, two deadline refusals) record failed_launch, in neither TERMINAL nor LIVE, so
-    `dispatch await` polls 8h (worker-adapter round-3 finding). Small spec: error_launch or TERMINAL, plus await test.
+7. **Fix failed_launch terminal statuses** — three `_run_pipeline` refusal paths record a status in
+   neither TERMINAL nor LIVE, so `dispatch await` polls 8h. Small spec: error_launch or TERMINAL, plus await test.
+8. **Restrict worker build-phase egress before the first product-repo dispatch** (SECURITY.md gap 1,
+   LOW-MEDIUM 2026-07-16): worker uid reaches only the model API; the credential-broker fix stays parked.
 
-## Parked
+## Parked (owner 2026-07-16: keep for the future)
 
+- Approvals rework (SECURITY.md gap 2): the autonomy grant covers low risk, owner confirms `main` only.
+- Move the test grade out of the worker's reach (SECURITY.md gap 3).
+- Measure whether review catches bugs: plant three known defects, count catches, size review scope from the result.
+- 2026-07-15 audit remainder: re-verified 2026-07-16 — seven of eight highs already fixed on main,
+  the last a low-risk merge-window race (owner enables GitHub's up-to-date-branch rule); four
+  state-machine mediums confirmed but low risk. Report: claude-out/audit-reverify-2026-07-16.md.
+- Fable retirement follow-through: after the owner's manual flip, point the bound reviewer in
+  `scripts/models.json` at its successor via a reviewed PR.
 - External benchmark score and cost reporting — after a real product exists.
