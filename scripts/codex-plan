@@ -20,7 +20,7 @@ flag, standard when no flag is given. Ambiguity picks the HIGHER tier.
               an architecture decision across components
 A full brief must contain every anatomy section (checked below): outcome, scope
 and non-goals, frozen decisions, assumptions, the earliest falsifiable proof,
-gates, verification, rollback, deferred, definition of done.
+slices, gates, verification, rollback, deferred, definition of done.
 
 Supply TASK as arguments or, when no task argument is given, on standard input.
 EOF
@@ -163,6 +163,7 @@ and put real content under each — a heading with filler is worse than none:
 ## Frozen decisions
 ## Assumptions
 ## Earliest falsifiable proof
+## Slices
 ## Gates
 ## Verification
 ## Rollback
@@ -178,6 +179,9 @@ Rules for the content:
   that verifies it.
 - Earliest falsifiable proof: the smallest end-to-end run that would prove this
   whole approach wrong, done FIRST, before anything is built around it.
+- Slices: an ordered list of independently shippable increments — one PR each —
+  with what each one proves when it lands. Several small PRs beat one big one; a
+  single-slice program states why one PR suffices.
 - Every gate names the artifact or command that proves it was passed, who
   arbitrates it, and the explicit stop-or-escalate action when it fails.
 - Reference existing specs, rules, and code; never copy them in.
@@ -247,7 +251,7 @@ fi
 if [[ "$tier" == "brief" ]]; then
   if ! awk -v out="$stdout_path" '
     BEGIN {
-      n = split("Outcome|Scope and non-goals|Frozen decisions|Assumptions|Earliest falsifiable proof|Gates|Verification|Rollback|Deferred|Definition of done", want, "|")
+      n = split("Outcome|Scope and non-goals|Frozen decisions|Assumptions|Earliest falsifiable proof|Slices|Gates|Verification|Rollback|Deferred|Definition of done", want, "|")
       for (i = 1; i <= n; i++) required[tolower(want[i])] = 1
       next_want = 1; fence = 0
     }

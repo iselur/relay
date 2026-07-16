@@ -29,7 +29,8 @@ Prefer a fresh session per workstream.
    evidence); the smallest end-to-end run that would prove the whole approach wrong, done FIRST; each
    checkpoint with the command that proves it passed, who decides, and what happens when it fails;
    how the work is verified; how it is undone; what is left for later; and how anyone outside can
-   tell it is done. Reviewed once, then the program runs end to end — the owner steps in only at the
+   tell it is done; and the slices — independently shippable increments, several small PRs over one
+   big one. Reviewed once, then the program runs end to end — the owner steps in only at the
    checkpoints. Reference the brief, never copy it; what we learn later is added with a date and
    reopens the checkpoints it touches. Briefs are working files: delete them once the work ships,
    git keeps them.
@@ -38,6 +39,9 @@ Prefer a fresh session per workstream.
 7. **Maximal delegation:** the orchestrator delegates every delegable task to the worker, and works
    directly only when no worker is available or the task is its own (dispatch, review, the trust
    boundary). Nothing reviews its own work; the owner sets role models and vendors in scripts/models.json.
+8. **Code discipline:** the simplest, cleanest solution that works; modularity and generality are
+   design decisions recorded in the brief, never improvised in code. Diffs are surgical: touch no
+   adjacent code, comments, or formatting; match existing style; remove only what your change orphaned.
 
 ## Safety invariants (never violate)
 

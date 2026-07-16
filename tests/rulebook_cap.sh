@@ -7,15 +7,15 @@ cd "$(dirname "$0")/.."
 
 fails=0
 lines=$(wc -l < CLAUDE.md)
-if [ "$lines" -le 65 ]; then
-  echo "  ok: CLAUDE.md is $lines lines (cap 65)"
+if [ "$lines" -le 70 ]; then
+  echo "  ok: CLAUDE.md is $lines lines (cap 70)"
 else
-  echo "  FAIL: CLAUDE.md is $lines lines — cap is 65. A rule must REPLACE something, not stack (R26/R29)."
+  echo "  FAIL: CLAUDE.md is $lines lines — cap is 70. A rule must REPLACE something, not stack (R26/R29)."
   fails=1
 fi
 
-# The five working rules must actually be present — the cap must not be satisfied by deleting them.
-for marker in "Intake:" "One workstream:" "Review cap:" "Communication:" "ONE brief"; do
+# The six working rules must actually be present — the cap must not be satisfied by deleting them.
+for marker in "Intake:" "One workstream:" "Review cap:" "Communication:" "ONE brief" "Code discipline:"; do
   if grep -q "$marker" CLAUDE.md; then
     echo "  ok: rule present: $marker"
   else
