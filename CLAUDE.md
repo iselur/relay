@@ -52,8 +52,9 @@ Prefer a fresh session per workstream.
 - A safety-machinery change is never checked, approved, reviewed, or merged by the new version of
   itself: the installed version runs every gate, and the new one goes live only after separate
   approval and installation.
-- The reviewer gets only spec, diff, and evidence — no tools; the verdict binds. A verdict covers
-  only the exact code it was shown; moved code means a fresh review.
+- The reviewer gets only spec, diff, and evidence — claude: all tools denied; codex: read-only
+  sandbox (accepted residual, SECURITY.md); the verdict binds, and covers only the exact code it
+  was shown; moved code means a fresh review.
 - Owner credentials stay inside the orchestrator trust domain; external-CLI workers cannot reach
   the owner's home. Known gaps are in SECURITY.md. Never claim more protection than tests prove.
 - Stop a job with `dispatch cancel`, never by killing a process number — that once killed the

@@ -65,15 +65,20 @@ class CodexReviewer:
             obj = json.loads(raw)
         except Exception:
             obj = None
-        if obj is None and raw.startswith("```"):
-            # Compatibility fallback: strip one leading ```/```json fence line and the trailing
-            # fence, then retry. Anything else stays None → the gate fails closed upstream.
-            body = raw.split("\n", 1)[1] if "\n" in raw else ""
-            body = body.rsplit("```", 1)[0]
-            try:
-                obj = json.loads(body.strip())
-            except Exception:
-                obj = None
+        if obj is None:
+            # Compatibility fallback (R73 round-1 review: the loose strip was fail-open — it
+            # accepted a missing closing fence, arbitrary fence labels, and dropped prose after
+            # the last fence, so a PASS object followed by contradictory prose still extracted).
+            # Accept EXACTLY one ```/```json fence pair: opener is the first line, the closer is
+            # the LAST line, the body alone must parse. Anything else — no closer, another
+            # label, trailing content — stays None and the gate fails closed upstream.
+            lines = raw.splitlines()
+            if (len(lines) >= 3 and lines[0].strip() in ("```", "```json")
+                    and lines[-1].strip() == "```"):
+                try:
+                    obj = json.loads("\n".join(lines[1:-1]))
+                except Exception:
+                    obj = None
         return obj if isinstance(obj, dict) else None
 
 

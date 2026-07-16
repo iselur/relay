@@ -73,14 +73,21 @@ LEGACY_LAUNCH_DEFAULTS = {
 # before vendor freezing legally carry 3 model keys + 0 vendor keys, which must read as legacy
 # here — never as corrupt (owner-extension precedent: partial sets refuse, disjoint eras don't).
 LEGACY_VENDOR_DEFAULTS = {"worker_vendor": "codex", "reviewer_vendor": "claude"}
+KNOWN_VENDORS = ("claude", "codex")   # closed world: matches scripts/models_check.py VENDORS
 
 
 def lc_frozen_vendor_fields(lc: dict) -> "dict | None":
     """Both frozen vendor fields from a launch record, the pre-freezing defaults when NEITHER
-    is present, and None — refuse, fail closed — when exactly one is (corrupt record)."""
+    is present, and None — refuse, fail closed — when exactly one is (corrupt record) or when
+    either value is not a known vendor (R73 round-1 review: presence alone let a corrupt
+    worker_vendor ride along while routing happened on reviewer_vendor only; BOTH frozen
+    values must be classifiable or the record is corrupt)."""
     present = [k for k in LEGACY_VENDOR_DEFAULTS if k in lc]
     if len(present) == len(LEGACY_VENDOR_DEFAULTS):
-        return {k: lc[k] for k in LEGACY_VENDOR_DEFAULTS}
+        fields = {k: lc[k] for k in LEGACY_VENDOR_DEFAULTS}
+        if any(v not in KNOWN_VENDORS for v in fields.values()):
+            return None
+        return fields
     if not present:
         return dict(LEGACY_VENDOR_DEFAULTS)
     return None
@@ -196,11 +203,16 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
     }
     vm = cfg["vendor_map"]
     armed = resolved["reviewer_model"] == resolved["reviewer_failover_trigger"]
-    if resolved["reviewer_model"] == resolved["worker_model"] or (
-            armed and resolved["reviewer_fallback_model"] == resolved["worker_model"]):
+    # R73 round-1 review (blocking): compare EFFECTIVE (alias-resolved) models, not config ids —
+    # an alias pointing one model id at another would otherwise pass the distinct-id check while
+    # the CLI invokes the worker's own weights. models_check refuses model-targeting aliases at
+    # validation; this is the resolution-time backstop and also covers plain id equality.
+    _eff = lambda m: resolved["cli_aliases"].get(m, m)
+    if _eff(resolved["reviewer_model"]) == _eff(resolved["worker_model"]) or (
+            armed and _eff(resolved["reviewer_fallback_model"]) == _eff(resolved["worker_model"])):
         die(f"launch refused: {resolved['worker_model']!r} would review its own work "
-            f"(reviewer or armed fallback equals worker_model; nothing reviews its own work, "
-            f"CLAUDE.md rule 7)")
+            f"(reviewer or armed fallback equals worker_model after alias resolution; nothing "
+            f"reviews its own work, CLAUDE.md rule 7)")
     checked = [("worker_model", resolved["worker_model"]),
                ("reviewer_model", resolved["reviewer_model"])]
     if armed:

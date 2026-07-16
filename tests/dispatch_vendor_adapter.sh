@@ -68,6 +68,16 @@ check("codex verdict: probe-captured bare JSON parses",
       cx.extract_verdict(probe) == json.loads(probe))
 check("codex verdict: fenced JSON falls back to fence-strip",
       cx.extract_verdict("```json\n" + probe + "\n```") == json.loads(probe))
+check("codex verdict: bare ``` fence also accepted",
+      cx.extract_verdict("```\n" + probe + "\n```") == json.loads(probe))
+# R73 round-1 review (blocking): the fallback must be an EXACT fence pair — anything looser was
+# fail-open (a PASS object with contradictory prose after the closer still extracted).
+check("codex verdict: missing closing fence is refused",
+      cx.extract_verdict("```json\n" + probe) is None)
+check("codex verdict: prose after the closing fence is refused",
+      cx.extract_verdict("```json\n" + probe + "\n```\nBLOCKING: unsafe") is None)
+check("codex verdict: non-json fence label is refused",
+      cx.extract_verdict("```yaml\n" + probe + "\n```") is None)
 check("codex verdict: non-dict JSON is refused",
       cx.extract_verdict('["issue"]') is None and cx.extract_verdict('"PASS"') is None)
 check("codex verdict: prose is refused", cx.extract_verdict("LGTM, PASS") is None)
@@ -86,6 +96,12 @@ check("zero vendor fields is a legal pre-freezing record (codex worker, claude r
       == {"worker_vendor": "codex", "reviewer_vendor": "claude"})
 check("exactly one vendor field is corrupt (None)",
       d.lc_frozen_vendor_fields({"worker_vendor": "codex"}) is None)
+# R73 round-1 review (medium): presence alone let a corrupt worker_vendor ride along while
+# routing happened on reviewer_vendor — BOTH frozen values must be known vendors.
+check("unknown worker_vendor in a full record is corrupt (None)",
+      d.lc_frozen_vendor_fields({"worker_vendor": "gemini", "reviewer_vendor": "codex"}) is None)
+check("unknown reviewer_vendor in a full record is corrupt (None)",
+      d.lc_frozen_vendor_fields({"worker_vendor": "codex", "reviewer_vendor": "gemini"}) is None)
 cfg = d.load_model_config()
 r = d.resolve_launch_models({"worker_model": "gpt-5.6-luna",
                              "reviewer_model": "gpt-5.6-sol"}, cfg)

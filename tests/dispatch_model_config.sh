@@ -187,6 +187,24 @@ check("same-vendor different-model pairing resolves (the falsifier shape)",
       d.resolve_launch_models({"worker_model": "gpt-5.6-luna",
                                "reviewer_model": "gpt-5.6-sol"}, cfg)
       ["reviewer_model"] == "gpt-5.6-sol")
+# R73 round-1 review (blocking): an alias targeting another declared model must refuse at
+# validation (alias masquerade), and resolution compares alias-resolved EFFECTIVE models.
+mc_spec = importlib.util.spec_from_file_location("mc", "scripts/models_check.py")
+mc = importlib.util.module_from_spec(mc_spec); mc_spec.loader.exec_module(mc)
+masq = json.loads(json.dumps(good))
+masq["cli_aliases"]["gpt-5.6-sol"] = "gpt-5.6-luna"
+check("alias targeting another declared model refuses validation",
+      any("targets another declared model" in e for e in mc.validate(masq)))
+alias_cfg = json.loads(json.dumps(cfg))
+alias_cfg["cli_aliases"] = {**alias_cfg.get("cli_aliases", {}), "gpt-5.6-sol": "gpt-5.6-luna"}
+def resolve_with(approval, c):
+    try:
+        d.resolve_launch_models(approval, c); return "ok"
+    except SystemExit as e:
+        return f"exit{e.code}"
+check("alias-resolved effective self-review refuses launch (exit 2)",
+      resolve_with({"worker_model": "gpt-5.6-luna", "reviewer_model": "gpt-5.6-sol"},
+                   alias_cfg) == "exit2")
 
 # Alias map semantics: exact translation for listed ids, pass-through for everything else.
 aliases = cfg["cli_aliases"]

@@ -104,6 +104,15 @@ def validate(cfg) -> list:
         # or dispatch could launch a model that scripts/review can never classify.
         for m in sorted(named_models - set(vm)):
             errs.append(f"model named in config but not declared in vendor_map: {m}")
+    if isinstance(aliases, dict):
+        # R73 round-1 review (blocking): an alias whose TARGET is itself a declared model would
+        # let one model masquerade as another at invocation time — resolution would compare the
+        # distinct config ids while the CLI runs the alias target (self-review laundered through
+        # cli_aliases). Aliases map a model id to its vendor-CLI name, never to another model.
+        for k, v in sorted(aliases.items()):
+            if _nonempty_str(v) and v != k and (v in vm or v in named_models):
+                errs.append(f"cli_aliases.{k} targets another declared model ({v}): an alias "
+                            f"maps a model id to its CLI name, never to a different model")
 
     # Owner decision 2026-07-16: vendor PAIRING is the owner's call, made by editing this
     # config — nothing here polices same- vs cross-vendor. Two mechanical rules remain:
