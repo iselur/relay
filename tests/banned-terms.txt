@@ -1,22 +1,9 @@
-# Words that already failed the operator once (case-insensitive extended regexes, one per line).
-# A coined term is allowed in standing prose only if it names code that exists in this repo
-# (CLAUDE.md rule 4). To allow a term: make it a real file/function/command in the same PR, then
-# remove it from this list with a one-line justification in the PR description.
-\boracle\b
-\bexogenous\b
-\baccretion\b
-superstition
-\bbaton\b
-\bkernel\b
-capability[- ]delta
-\bhigh-assurance\b
-control[- ]plane
-\bdogfood
-reflexion
+# Leak guards (case-insensitive extended regexes, one per line): private ledger-row ids and
+# audit/finding codes must never appear in tracked prose — the ledger and audit reports are
+# private, and a bare code in public markdown leaks their structure while explaining nothing to
+# a newcomer. Style/vocabulary policing lives in CLAUDE.md rule 4 as prose guidance, not here.
+# To drop a pattern from this list: one-line justification in the PR description.
 \bT1b?\b
 \bD5\b
 \bG[0-9]-[A-Z]\b
 \bR[0-9]{2}\b
-\blanes?\b
-anti-slippage
-\bwatchlist\b

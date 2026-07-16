@@ -24,6 +24,9 @@ proves them), **configured assumptions** (set up outside this repo, verified man
 
 - Direct pushes to `main` are rejected; `ready-for-main` requires a PR with the `ci` check green —
   GitHub ruleset, not a repo test.
+- Both protected branches also require a PR's branch to be up to date with its base before merge
+  (GitHub strict status-check policy, enabled 2026-07-16), so a green `ci` verdict always ran
+  against the base that is actually being merged into — again a GitHub setting, not a repo test.
 - Ubuntu's `bwrap-userns-restrict` AppArmor profile is installed and enforcing (host setup, not a
   repo test — `tests/worker_userns.sh` fails if it is absent). It lets Codex build its own sandbox
   on Ubuntu 24.04. The profile is attached to the `bwrap` program, so the worker user can run
