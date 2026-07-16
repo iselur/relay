@@ -38,7 +38,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-MODEL="gpt-5.6-sol"
 out_root=".orchestrator/reviews"
 topic=""
 author=""
@@ -46,6 +45,16 @@ contexts=()
 prompt_parts=()
 
 die() { printf 'review: %s\n' "$*" >&2; exit 2; }
+
+# R71: the reviewer-of-orchestrator-artifacts model comes from the machine config, fetched
+# through scripts/models_check.py — which validates the WHOLE config first (round-1 review: a
+# config missing any section, vendor_map included, must refuse the review outright, not just the
+# one value this script reads). Fail closed; there is no hard-coded fallback.
+MODELS_CFG="$ROOT/scripts/models.json"
+MODELS_CHECK="$ROOT/scripts/models_check.py"
+[ -f "$MODELS_CFG" ] || die "models config missing: $MODELS_CFG (fail closed)"
+MODEL=$(python3 "$MODELS_CHECK" "$MODELS_CFG" get roles.orchestrator_artifact_reviewer.model) \
+  || die "models config invalid, or roles.orchestrator_artifact_reviewer.model unusable: $MODELS_CFG"
 
 while (($#)); do
   case "$1" in
@@ -71,19 +80,13 @@ plans_root="$ROOT/.orchestrator/plans"
 iso_worktrees="/srv/codexwork/worktrees"
 local_worktrees="$ROOT/.worktrees"
 
-# Classify a recorded model name (e.g. launch.json's worker_model) into a vendor. Refuses to guess:
-# an unrecognized model name is NOT silently trusted either way.
+# Classify a recorded model name (e.g. launch.json's worker_model) into a vendor via the explicit
+# vendor_map in scripts/models.json — no substring guessing. models_check validates the whole
+# config (including its vendor-contradiction tripwire) before answering; a model absent from the
+# map, an invalid config, or any read error yields 'unknown' and the caller refuses it: a new
+# model must be declared in the map before anything it authored can be vendor-classified.
 classify_model() {
-  python3 -c "
-import sys
-m = sys.argv[1].lower()
-if 'claude' in m or 'fable' in m:
-    print('claude')
-elif 'gpt' in m or 'codex' in m or 'sol' in m:
-    print('codex')
-else:
-    print('unknown')
-" "$1"
+  python3 "$MODELS_CHECK" "$MODELS_CFG" vendor "$1" 2>/dev/null || echo unknown
 }
 
 # Prints 'VENDOR<TAB>evidence note' on stdout. Never calls die()/exit — it runs inside a command

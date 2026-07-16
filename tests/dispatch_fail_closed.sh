@@ -216,8 +216,14 @@ good_verdict = {"spec_digest": "d" * 64, "base_sha": "b" * 40, "worker_commit": 
                 "schema_version": "rv1", "verdict": "PASS",
                 "criteria": [{"id": "C1", "result": "MET"}], "scope_finding": "in scope",
                 "regression_finding": "n/a", "security_findings": "none"}
+# R71: the failover pair and CLI alias map now come frozen from launch.json (sourced from
+# scripts/models.json at launch); review() reads only these lc fields, never a module constant.
 lc69 = {"worktree": str(repo), "base_sha": "b" * 40, "spec_digest": "d" * 64,
-        "reviewer_model": "claude-fable-5", "reviewer_effort": "high"}
+        "reviewer_model": "claude-fable-5", "reviewer_effort": "high",
+        "reviewer_failover_trigger": "claude-fable-5",
+        "reviewer_fallback_model": "claude-opus-4-8",
+        "cli_aliases": {"claude-fable-5": "fable"}}
+FALLBACK = lc69["reviewer_fallback_model"]
 
 calls = []; cwds = []
 def failover_run(cmd, **kw):
@@ -234,17 +240,17 @@ check("failover: end-to-end valid PASS verdict is ACCEPTED from the fallback",
       verdict is not None and verdict.get("verdict") == "PASS")
 check("failover: primary then fallback model asked for, in that order",
       calls[0][calls[0].index("--model") + 1] == "fable"
-      and calls[1][calls[1].index("--model") + 1] == d.REVIEWER_FALLBACK_MODEL)
+      and calls[1][calls[1].index("--model") + 1] == FALLBACK)
 check("failover: lc reviewer_model now names the model that produced the verdict",
-      lc69["reviewer_model"] == d.REVIEWER_FALLBACK_MODEL)
+      lc69["reviewer_model"] == FALLBACK)
 check("failover: fallback invocation carries identical flags except the model",
       [a for a in calls[0] if a not in ("fable",)]
-      == [a for a in calls[1] if a not in (d.REVIEWER_FALLBACK_MODEL,)])
+      == [a for a in calls[1] if a not in (FALLBACK,)])
 check("failover: both invocations ran from a neutral cwd outside the repo",
       all(c and not pathlib.Path(c).resolve().is_relative_to(d.ROOT.resolve()) for c in cwds))
 fo = json.loads((att69 / "raw" / "reviewer-failover.json").read_text())
 check("failover: audit record has both models and BOTH invocations' exit codes + stderr",
-      fo["from_model"] == "claude-fable-5" and fo["to_model"] == d.REVIEWER_FALLBACK_MODEL
+      fo["from_model"] == "claude-fable-5" and fo["to_model"] == FALLBACK
       and fo["primary_returncode"] == 1 and "model gone" in fo["primary_stderr_tail"]
       and fo["fallback_returncode"] == 0 and fo["fallback_stderr_tail"] == "")
 check("failover: both envelopes and an escalation are durable",
@@ -267,7 +273,7 @@ att73 = tmp / "attempts" / "SPEC-905" / "1"; (att73 / "raw").mkdir(parents=True)
 verdict, raw = d.review(att73, "SPEC-905", lc73, "c" * 40)
 fo73 = json.loads((att73 / "raw" / "reviewer-failover.json").read_text())
 check("failover: a failing fallback is fail-closed with both outcomes recorded",
-      verdict is None and len(calls) == 2 and lc73["reviewer_model"] == d.REVIEWER_FALLBACK_MODEL
+      verdict is None and len(calls) == 2 and lc73["reviewer_model"] == FALLBACK
       and fo73["primary_returncode"] == 1 and "model gone" in fo73["primary_stderr_tail"]
       and fo73["fallback_returncode"] == 7 and "fallback exploded" in fo73["fallback_stderr_tail"])
 
@@ -289,12 +295,42 @@ def notfound_run(cmd, **kw):
     calls.append(cmd)
     return subprocess.CompletedProcess(cmd, 1, stdout=notfound, stderr="")
 d.run = notfound_run
-lc71 = dict(lc69, reviewer_model=d.REVIEWER_FALLBACK_MODEL)
+lc71 = dict(lc69, reviewer_model=FALLBACK)
 att71 = tmp / "attempts" / "SPEC-903" / "1"; (att71 / "raw").mkdir(parents=True)
 verdict, raw = d.review(att71, "SPEC-903", lc71, "c" * 40)
 check("failover: 404 on a non-primary model does not retry (no failover-of-the-failover)",
       verdict is None and len(calls) == 1
       and not (att71 / "raw" / "reviewer-failover.json").exists())
+
+# R71 round-2 review: a legacy launch record (predates the models config, so no trigger/
+# fallback/alias fields) keeps EXACTLY the behavior it was launched under — the shipped Fable
+# CLI alias and the shipped Fable→Opus retirement retry. An in-flight attempt crossing the
+# upgrade is neither stranded (unaliased --model) nor stripped of its failover.
+calls = []
+d.run = failover_run
+lc74 = {"worktree": str(repo), "base_sha": "b" * 40, "spec_digest": "d" * 64,
+        "reviewer_model": "claude-fable-5", "reviewer_effort": "high"}
+att74 = tmp / "attempts" / "SPEC-908" / "1"; (att74 / "raw").mkdir(parents=True)
+verdict, raw = d.review(att74, "SPEC-908", lc74, "c" * 40)
+check("legacy launch record keeps the shipped alias and Fable→Opus failover",
+      verdict is not None and verdict.get("verdict") == "PASS" and len(calls) == 2
+      and calls[0][calls[0].index("--model") + 1] == "fable"
+      and calls[1][calls[1].index("--model") + 1] == "claude-opus-4-8"
+      and lc74["reviewer_model"] == "claude-opus-4-8"
+      and (att74 / "raw" / "reviewer-failover.json").exists())
+
+# Owner-extension round 1: a PARTIAL set of frozen fields is a corrupt record, not a legacy one —
+# review() refuses before invoking any reviewer, mixing nothing with the legacy defaults.
+calls = []
+d.run = failover_run
+lc75 = {"worktree": str(repo), "base_sha": "b" * 40, "spec_digest": "d" * 64,
+        "reviewer_model": "claude-fable-5", "reviewer_effort": "high",
+        "cli_aliases": {"claude-fable-5": "fable"}}   # aliases present, trigger/fallback missing
+att75 = tmp / "attempts" / "SPEC-909" / "1"; (att75 / "raw").mkdir(parents=True)
+verdict, raw = d.review(att75, "SPEC-909", lc75, "c" * 40)
+check("partial frozen fields are a corrupt record: no verdict, zero reviewer invocations",
+      verdict is None and len(calls) == 0 and "partial" in raw
+      and not (att75 / "raw" / "reviewer-failover.json").exists())
 
 # Deadline honesty: the timeout prefix is recomputed per invocation, so a fallback whose budget
 # was burned by the failing primary is REFUSED, not started with a stale allowance.
@@ -320,14 +356,14 @@ check("failover: exhausted deadline refuses the fallback invocation (fail closed
 # model (post-failover) through the single tested writer used by the dispatch pipeline. Passing the
 # fallback model proves the recorded attribution follows the model that produced the verdict.
 attp = tmp / "attempts" / "SPEC-906" / "1"; (attp / "raw").mkdir(parents=True)
-d.write_review_record(attp, dict(good_verdict), d.REVIEWER_FALLBACK_MODEL)
+d.write_review_record(attp, dict(good_verdict), FALLBACK)
 rec = json.loads((attp / "review.json").read_text())
 check("review.json binds effective_reviewer_model = the model that produced the verdict",
-      rec["effective_reviewer_model"] == d.REVIEWER_FALLBACK_MODEL and rec["verdict"] == "PASS"
+      rec["effective_reviewer_model"] == FALLBACK and rec["verdict"] == "PASS"
       # the writer copies the verdict — the reviewer's own object is not mutated with our key.
       and "effective_reviewer_model" not in good_verdict)
 attn = tmp / "attempts" / "SPEC-907" / "1"; (attn / "raw").mkdir(parents=True)
-d.write_review_record(attn, None, d.REVIEWER_FALLBACK_MODEL)
+d.write_review_record(attn, None, FALLBACK)
 check("review.json for a null verdict is an empty record, no bogus attribution",
       (attn / "review.json").read_text().strip() == "{}")
 

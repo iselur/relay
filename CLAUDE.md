@@ -2,7 +2,7 @@
 
 This file is the whole rulebook; CI caps its size. A new rule requires a real failure in shipped
 work and REPLACES a line, never stacks. Roles, not model names: **owner** (the human),
-**orchestrator**, **worker**, **reviewer** — AGENTS.md maps roles to today's models and commands.
+**orchestrator**, **worker**, **reviewer** — scripts/models.json maps roles to today's models; AGENTS.md holds the commands.
 
 ## Session start
 
@@ -37,13 +37,14 @@ Prefer a fresh session per workstream.
    model agreement everywhere else — agreement is not evidence.
 7. **Maximal delegation:** the orchestrator delegates every delegable task to the worker, and works
    directly only when no worker is available or the task is its own (dispatch, review, the trust
-   boundary). The reviewer is never the same vendor as the author.
+   boundary). Nothing reviews its own work; the owner sets role models and vendors in scripts/models.json.
 
 ## Safety invariants (never violate)
 
-- `main` changes only by the owner, or by the orchestrator merging a `ready-for-main` PR into `main` whose own `ci` check is green and whose exact diff holds a binding cross-vendor PASS (owner grant 2026-07-15). `ready-for-main` changes only through a pull request with `ci` green.
-- Workers run as a separate identity; no isolation means no launch. `ORCH_ALLOW_UNISOLATED=1`
-  overrides worker isolation, needs the owner's explicit instruction, and its use is recorded.
+- `main` changes only by the owner, or by the orchestrator merging a `ready-for-main` PR into `main` whose own `ci` check is green and whose exact diff holds a binding PASS (owner grant 2026-07-15). `ready-for-main` changes only through a pull request with `ci` green.
+- External-CLI workers run as a separate identity; no isolation means no launch.
+  `ORCH_ALLOW_UNISOLATED=1` needs the owner's explicit instruction, and its use is recorded.
+  Subagent workers run inside the orchestrator's own session and trust domain.
 - A test that did not run did not pass; a worker's prose is never a grade.
 - Every high-risk dispatch needs an approval file from the owner, which the orchestrator never
   writes. Editing the spec voids the approval. Unclassified or ambiguous work is high-risk;
@@ -53,8 +54,8 @@ Prefer a fresh session per workstream.
   approval and installation.
 - The reviewer gets only spec, diff, and evidence — no tools; the verdict binds. A verdict covers
   only the exact code it was shown; moved code means a fresh review.
-- Only the orchestrator holds owner credentials; workers cannot reach the owner's home. Known gaps
-  are in SECURITY.md. Never claim more protection than the tests prove.
+- Owner credentials stay inside the orchestrator trust domain; external-CLI workers cannot reach
+  the owner's home. Known gaps are in SECURITY.md. Never claim more protection than tests prove.
 - Stop a job with `dispatch cancel`, never by killing a process number — that once killed the
   wrong thing. Interrupted work restarts as a fresh attempt; never finish it by hand.
 - Autonomy is off by default and needs an explicit grant file — untracked `AUTONOMY.local.json`,

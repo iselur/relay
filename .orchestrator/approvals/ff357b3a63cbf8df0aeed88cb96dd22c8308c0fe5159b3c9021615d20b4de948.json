@@ -1,18 +1,10 @@
 {
-  "approver": "orchestrator-on-behalf-of-val (Level 1.5 grant; D5 isolated E2E)",
-  "timestamp": "2026-07-13T15:14:58Z",
   "spec_id": "SPEC-012",
   "spec_digest": "ff357b3a63cbf8df0aeed88cb96dd22c8308c0fe5159b3c9021615d20b4de948",
-  "spec_digest_method": "sha256(specs/SPEC-012.yaml)",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "approver": "iselur",
+  "approved_scope": ["scripts/lib/**", "tests/squeeze.sh"],
   "risk_class": "low",
-  "approved_scope": [
-    "scripts/lib/**",
-    "tests/squeeze.sh"
-  ],
-  "worker_model": "gpt-5.6-sol",
-  "worker_reasoning_effort": "high",
-  "reviewer_model": "claude-fable-5",
-  "reviewer_effort": "high",
-  "base_branch": "integration",
-  "note": "D5 isolated-pipeline E2E fixture."
+  "timestamp": "2026-07-16T06:28:51Z",
+  "note": "R73 falsifier (PLAN-006 checkpoint 1): same-vendor different-model bound review; models resolve from scripts/models.json (worker gpt-5.6-luna default, bound reviewer flipped locally to gpt-5.6-sol); no model pins by design."
 }

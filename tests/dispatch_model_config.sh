@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# R71: scripts/models.json is the machine source of truth for role→model defaults, the reviewer
+# failover pair, the CLI alias map, and the closed-world vendor map. This proves the dispatcher
+# side fails CLOSED on any config problem, that an approval pin beats the config default (but
+# never a cross-vendor violation), and that a role-model swap is a one-line config edit.
+# DELIBERATELY not in tests/execution-policy.tsv (round-3 review, finding 1): a box-precondition
+# entry would run at every launch from the sanitized grader tree, which has no venv — the skip
+# below would then block ALL launches. Same default mode + skip contract as
+# tests/dispatch_fail_closed.sh: no venv on CI; SKIP LOUDLY there.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+PY="${ORCH_TEST_PY:-.venv/bin/python}"
+if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
+  echo "SKIP dispatch_model_config.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  exit 77   # did NOT run — never a pass (T1/R26)
+fi
+
+"$PY" - <<'PY'
+import copy, hashlib, importlib.util, json, pathlib, sys, tempfile
+
+spec = importlib.util.spec_from_file_location("d", "scripts/dispatch.py")
+d = importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
+
+fails = []
+def check(name, cond):
+    print(("ok   " if cond else "FAIL ") + name)
+    if not cond: fails.append(name)
+
+# The LIVE tracked config must load — this file being valid is a box precondition for every launch.
+live_path = d.MODEL_CONFIG
+live_bytes = live_path.read_bytes()
+live = d.load_model_config()
+check("live scripts/models.json loads and schema-validates", isinstance(live, dict))
+check("live config carries all six rev-4 roles",
+      set(live["roles"]) == {"orchestrator", "spec_author", "utility_subagent", "worker",
+                             "bound_reviewer", "orchestrator_artifact_reviewer"})
+check("live vendor_map covers every model named anywhere in the config",
+      set(live["vendor_map"])
+      >= ({r["model"] for r in live["roles"].values()}
+          | {live["reviewer_failover"]["trigger_model"],
+             live["reviewer_failover"]["fallback_model"]}))
+
+# All remaining cases run against a scratch copy; the live file must come out untouched.
+tmp = pathlib.Path(tempfile.mkdtemp())
+scratch = tmp / "models.json"
+d.MODEL_CONFIG = scratch
+
+def load_result():
+    """'ok' when the config loads, 'exit<code>' when load_model_config() dies."""
+    try:
+        d.load_model_config(); return "ok"
+    except SystemExit as e:
+        return f"exit{e.code}"
+
+good = json.loads(live_bytes)
+
+# Fail closed: missing, unreadable-as-JSON, wrong version, and each required piece removed in turn.
+check("missing config refuses launch (exit 2)", load_result() == "exit2")
+scratch.write_text("{truncated")
+check("malformed JSON refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["schema_version"] = "2"
+scratch.write_text(json.dumps(bad))
+check("unsupported schema_version refuses launch (exit 2)", load_result() == "exit2")
+for section in ("roles", "reviewer_failover", "cli_aliases", "vendor_map"):
+    bad = copy.deepcopy(good); del bad[section]
+    scratch.write_text(json.dumps(bad))
+    check(f"config without {section} refuses launch (exit 2)", load_result() == "exit2")
+for role in good["roles"]:
+    bad = copy.deepcopy(good); del bad["roles"][role]
+    scratch.write_text(json.dumps(bad))
+    check(f"config without roles.{role} refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["roles"]["worker"]["model"] = ""
+scratch.write_text(json.dumps(bad))
+check("empty role model refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["vendor_map"]["some-model"] = "other-vendor"
+scratch.write_text(json.dumps(bad))
+check("vendor outside claude|codex refuses launch (exit 2)", load_result() == "exit2")
+# Round-1 review, finding 3: a config that is not valid UTF-8 must refuse with exit 2, not an
+# uncaught decode traceback.
+scratch.write_bytes(b'\xff\xfe{ not utf-8 }')
+check("non-UTF-8 config refuses launch (exit 2)", load_result() == "exit2")
+# Round-1 review, finding 1: vendor RELATIONSHIPS are validated, not just vendor values. A known
+# vendor prefix declared as the other vendor is the misdeclaration that would allow same-vendor
+# review to pass — refused. And every model the config names must be declared in vendor_map.
+bad = copy.deepcopy(good); bad["vendor_map"]["gpt-5.6-sol"] = "claude"
+scratch.write_text(json.dumps(bad))
+check("gpt model declared as claude vendor refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["vendor_map"]["claude-opus-4-8"] = "codex"
+scratch.write_text(json.dumps(bad))
+check("claude model declared as codex vendor refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); del bad["vendor_map"][bad["roles"]["worker"]["model"]]
+scratch.write_text(json.dumps(bad))
+check("role model missing from vendor_map refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); del bad["vendor_map"][bad["reviewer_failover"]["fallback_model"]]
+scratch.write_text(json.dumps(bad))
+check("failover model missing from vendor_map refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["cli_aliases"]["claude-fable-5"] = 7
+scratch.write_text(json.dumps(bad))
+check("non-string CLI alias refuses launch (exit 2)", load_result() == "exit2")
+# Owner decision 2026-07-16: vendor pairing is config-authored, never policed — a same-vendor
+# config VALIDATES. The mechanical rule that remains: the failover pair may not span vendors
+# (the retry would switch CLIs mid-attempt).
+sv = copy.deepcopy(good)
+sv["roles"]["worker"]["model"] = "claude-sonnet-4-6"    # same vendor as the bound reviewer
+scratch.write_text(json.dumps(sv))
+check("same-vendor worker/bound-reviewer config VALIDATES (owner authority)",
+      load_result() == "ok")
+bad = copy.deepcopy(good)
+bad["reviewer_failover"]["fallback_model"] = "gpt-5.6-sol"   # claude trigger, codex fallback
+scratch.write_text(json.dumps(bad))
+check("cross-vendor failover pair refuses launch (exit 2)", load_result() == "exit2")
+# Round-2 review, finding 3: the models_check CLI itself (the shell consumers' path) must refuse
+# non-UTF-8 bytes with exit 2, not a decode traceback.
+import subprocess
+scratch.write_bytes(b'\xff\xfe{ not utf-8 }')
+cli = subprocess.run([sys.executable, "scripts/models_check.py", str(scratch),
+                      "get", "roles.spec_author.model"], capture_output=True, text=True)
+check("models_check CLI refuses non-UTF-8 config (exit 2, no value printed)",
+      cli.returncode == 2 and cli.stdout == "" and "unreadable" in cli.stderr)
+cli = subprocess.run([sys.executable, "scripts/models_check.py", str(scratch)],
+                     capture_output=True, text=True)
+check("models_check CLI validate-only mode also refuses non-UTF-8 (exit 2, silent stdout, "
+      "stderr names the config PATH)",
+      cli.returncode == 2 and cli.stdout == ""
+      and "unreadable" in cli.stderr and str(scratch) in cli.stderr)
+
+scratch.write_text(json.dumps(good))
+check("valid config loads cleanly", load_result() == "ok")
+cfg = d.load_model_config()
+
+# Precedence through the ONE resolver cmd_launch persists: config default when the approval
+# omits (or empties) a field; a non-empty approval pin wins; failover pair + aliases always frozen.
+r = d.resolve_launch_models({}, cfg)
+check("approval omitting models gets config defaults",
+      r["worker_model"] == cfg["roles"]["worker"]["model"]
+      and r["worker_effort"] == cfg["roles"]["worker"]["effort"]
+      and r["reviewer_model"] == cfg["roles"]["bound_reviewer"]["model"]
+      and r["reviewer_effort"] == cfg["roles"]["bound_reviewer"]["effort"])
+check("resolver freezes failover pair and alias map from config",
+      r["reviewer_failover_trigger"] == cfg["reviewer_failover"]["trigger_model"]
+      and r["reviewer_fallback_model"] == cfg["reviewer_failover"]["fallback_model"]
+      and r["cli_aliases"] == cfg["cli_aliases"])
+# Pins must be DECLARED models (authorship classification) and never the worker itself
+# (self-review); vendor pairing is not policed (owner decision 2026-07-16).
+pinned = d.resolve_launch_models(
+    {"worker_model": "gpt-5.6-sol", "worker_reasoning_effort": "low",
+     "reviewer_model": "claude-opus-4-8", "reviewer_effort": "medium"}, cfg)
+check("cross-vendor approval pins beat config defaults",
+      pinned["worker_model"] == "gpt-5.6-sol" and pinned["worker_effort"] == "low"
+      and pinned["reviewer_model"] == "claude-opus-4-8" and pinned["reviewer_effort"] == "medium")
+empty = d.resolve_launch_models({"worker_model": "", "reviewer_model": ""}, cfg)
+check("empty-string pins fall back to config defaults (not trusted)",
+      empty["worker_model"] == cfg["roles"]["worker"]["model"]
+      and empty["reviewer_model"] == cfg["roles"]["bound_reviewer"]["model"])
+check("even a pinned approval still freezes the config failover pair",
+      pinned["reviewer_failover_trigger"] == cfg["reviewer_failover"]["trigger_model"]
+      and pinned["reviewer_fallback_model"] == cfg["reviewer_failover"]["fallback_model"])
+
+def resolve_result(approval):
+    try:
+        d.resolve_launch_models(approval, cfg); return "ok"
+    except SystemExit as e:
+        return f"exit{e.code}"
+
+# Same-vendor pins resolve freely; unmapped pins refuse; same-MODEL refuses always.
+check("same-vendor worker pin resolves (config/approval authority)",
+      d.resolve_launch_models({"worker_model": "claude-sonnet-4-6"}, cfg)
+      ["worker_model"] == "claude-sonnet-4-6")
+check("pinning an unmapped worker model refuses launch (exit 2)",
+      resolve_result({"worker_model": "mystery-model-9"}) == "exit2")
+check("pinning an unmapped reviewer model refuses launch (exit 2)",
+      resolve_result({"reviewer_model": "mystery-model-9"}) == "exit2")
+check("armed failover keeps the config fallback in the resolved fields",
+      d.resolve_launch_models({"worker_model": "gpt-5.6-sol"}, cfg)
+      ["reviewer_fallback_model"] == cfg["reviewer_failover"]["fallback_model"])
+# "Nothing reviews its own work" — the one hard limit (CLAUDE.md rule 7): the resolved
+# reviewer, or an ARMED fallback, equal to the worker model refuses unconditionally.
+check("same-model reviewer==worker refuses launch (exit 2)",
+      resolve_result({"worker_model": "claude-fable-5"}) == "exit2")
+check("same-model pinned both ways refuses launch (exit 2)",
+      resolve_result({"worker_model": "gpt-5.6-sol",
+                      "reviewer_model": "gpt-5.6-sol"}) == "exit2")
+check("armed fallback equal to the worker refuses launch (exit 2)",
+      resolve_result({"worker_model": "claude-opus-4-8"}) == "exit2")
+check("same-vendor different-model pairing resolves (the falsifier shape)",
+      d.resolve_launch_models({"worker_model": "gpt-5.6-luna",
+                               "reviewer_model": "gpt-5.6-sol"}, cfg)
+      ["reviewer_model"] == "gpt-5.6-sol")
+
+# Alias map semantics: exact translation for listed ids, pass-through for everything else.
+aliases = cfg["cli_aliases"]
+check("listed model id translates to its CLI alias",
+      aliases.get("claude-fable-5", "claude-fable-5") == "fable")
+check("unlisted model id passes through unchanged",
+      aliases.get("some-new-model", "some-new-model") == "some-new-model")
+
+# Closed-world vendor map: known ids map exactly; an absent id is absent, never guessed.
+vm = cfg["vendor_map"]
+check("vendor_map classifies known ids exactly",
+      vm.get("gpt-5.6-luna") == "codex" and vm.get("gpt-5.6-sol") == "codex"
+      and vm.get("claude-fable-5") == "claude" and vm.get("claude-opus-4-8") == "claude"
+      and vm.get("claude-sonnet-4-6") == "claude")
+check("unknown model is absent from vendor_map (not guessed)",
+      vm.get("some-hypothetical-model") is None)
+
+# The point of R71: a role-model swap is ONE config value edit — no code change anywhere.
+swapped = copy.deepcopy(good)
+swapped["roles"]["worker"]["model"] = "gpt-7-hypothetical"
+swapped["vendor_map"]["gpt-7-hypothetical"] = "codex"
+scratch.write_text(json.dumps(swapped))
+r_swapped = d.resolve_launch_models({}, d.load_model_config())
+check("a one-line worker-model swap changes default resolution with no code edit",
+      r_swapped["worker_model"] == "gpt-7-hypothetical")
+
+# ...and none of the scratch work touched the live tracked config.
+d.MODEL_CONFIG = live_path
+check("live scripts/models.json is byte-identical after the test",
+      hashlib.sha256(live_path.read_bytes()).hexdigest()
+      == hashlib.sha256(live_bytes).hexdigest())
+
+sys.exit(1 if fails else 0)
+PY
+echo "PASS dispatch_model_config.sh"

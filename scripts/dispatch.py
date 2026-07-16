@@ -26,6 +26,7 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -52,10 +53,50 @@ WORKTREES = ROOT / ".worktrees"
 HALT = ORCH / "HALT"
 SPEC_SCHEMA = SPECS / "spec.schema.json"
 VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
-# R69: where the bound reviewer lands when its pinned model is retired by the API (Fable 5
-# retirement, ~2026-07-19). Owner decision 2026-07-15: keep Fable while it resolves, fail over
-# to Opus 4.8 automatically — but only on the deterministic model-not-found signature.
-REVIEWER_FALLBACK_MODEL = "claude-opus-4-8"
+# R71: the machine source of truth for role→model mapping (rev-4 taxonomy), including the R69
+# bound-reviewer failover pair. Loaded ONCE per launch by load_model_config() and frozen into
+# launch.json (lc), so a mid-run edit never changes a running attempt. Any read or validation
+# error refuses the launch — there is no silent hard-coded fallback.
+MODEL_CONFIG = ROOT / "scripts" / "models.json"
+# Pre-R71 launch records carry none of the frozen config fields. An attempt in flight across the
+# upgrade keeps EXACTLY the behavior it was launched under (round-2 review, finding 2): the
+# shipped Fable CLI alias and the shipped Fable→Opus retirement retry. These constants describe
+# those historical records — they are compatibility, not a fallback for config errors, and no
+# NEW launch ever reads them (cmd_launch always freezes the config's values).
+LEGACY_LAUNCH_DEFAULTS = {
+    "reviewer_failover_trigger": "claude-fable-5",
+    "reviewer_fallback_model": "claude-opus-4-8",
+    "cli_aliases": {"claude-fable-5": "fable"},
+}
+# R73 Job 1: launch records that predate vendor freezing were all codex-worker/claude-reviewer.
+# A SEPARATE all-or-none group from LEGACY_LAUNCH_DEFAULTS: records from the config era but
+# before vendor freezing legally carry 3 model keys + 0 vendor keys, which must read as legacy
+# here — never as corrupt (owner-extension precedent: partial sets refuse, disjoint eras don't).
+LEGACY_VENDOR_DEFAULTS = {"worker_vendor": "codex", "reviewer_vendor": "claude"}
+
+
+def lc_frozen_vendor_fields(lc: dict) -> "dict | None":
+    """Both frozen vendor fields from a launch record, the pre-freezing defaults when NEITHER
+    is present, and None — refuse, fail closed — when exactly one is (corrupt record)."""
+    present = [k for k in LEGACY_VENDOR_DEFAULTS if k in lc]
+    if len(present) == len(LEGACY_VENDOR_DEFAULTS):
+        return {k: lc[k] for k in LEGACY_VENDOR_DEFAULTS}
+    if not present:
+        return dict(LEGACY_VENDOR_DEFAULTS)
+    return None
+
+
+def lc_frozen_model_fields(lc: dict) -> "dict | None":
+    """The three frozen model fields from a launch record: the record's own when ALL are present,
+    the shipped pre-config defaults when NONE are (a genuine pre-R71 record), and None — refuse,
+    fail closed — for a PARTIAL set (owner-extension round 1: per-key fallback would silently mix
+    a damaged new record with legacy values instead of surfacing the corruption)."""
+    present = [k for k in LEGACY_LAUNCH_DEFAULTS if k in lc]
+    if len(present) == len(LEGACY_LAUNCH_DEFAULTS):
+        return {k: lc[k] for k in LEGACY_LAUNCH_DEFAULTS}
+    if not present:
+        return dict(LEGACY_LAUNCH_DEFAULTS)
+    return None
 # Approval artifact shapes (B1). Approvals were trusted by digest+instance equality only, and the
 # per-attempt high-risk approval by mere file EXISTENCE — an empty or garbage file authorized a
 # high-risk dispatch. Both are now schema-validated AND bound to this spec/instance (and attempt).
@@ -99,6 +140,82 @@ ATTEMPT_APPROVAL_SCHEMA = {
         "note": {"type": "string"},
     },
 }
+def load_model_config() -> dict:
+    """Load and validate scripts/models.json (R71). Fail closed on ANY error — a missing,
+    unreadable, non-UTF-8, malformed, or invalid config refuses the launch with exit 2; nothing
+    falls back to a hard-coded model. Validation lives in scripts/models_check.py, the ONE
+    validator every consumer shares (round-1 review: the shell consumers must check the whole
+    config, not one path — a second schema here would drift from theirs). Called once in
+    cmd_launch(); the values are frozen into launch.json, so editing the config mid-run cannot
+    change a running attempt (lc freeze semantics)."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "models_check", ROOT / "scripts" / "models_check.py")
+        models_check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(models_check)
+    except Exception as exc:
+        die(f"models validator missing or broken (scripts/models_check.py): {exc} — fail closed")
+    try:
+        raw = MODEL_CONFIG.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        die(f"models config missing or unreadable ({MODEL_CONFIG}): {exc} — fail closed")
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        die(f"models config is not valid JSON ({MODEL_CONFIG}): {exc} — fail closed")
+    errs = models_check.validate(cfg)
+    if errs:
+        die(f"models config invalid ({MODEL_CONFIG}): " + "; ".join(errs))
+    return cfg
+
+
+def resolve_launch_models(approval: dict, cfg: dict) -> dict:
+    """The launch-frozen model fields (R71), as ONE tested resolver: an approval's non-empty pin
+    wins, otherwise the config default (`or`, not .get(default) — an empty-string pin falls back
+    instead of being trusted). The failover pair and alias map are always frozen from config.
+    cmd_launch persists exactly this dict into launch.json, so a test asserts the precedence and
+    freeze directly rather than inferring it from a full launch.
+
+    Owner decision 2026-07-16: vendor pairing is the owner's call, made in scripts/models.json —
+    nothing here polices same- vs cross-vendor. Two checks remain, both mechanical: every model
+    in a runnable pairing must be DECLARED in vendor_map (an unmapped pin cannot be
+    vendor-classified for authorship, so it is refused, not guessed), and the resolved reviewer
+    may never be the SAME MODEL as the resolved worker ("nothing reviews its own work", CLAUDE.md
+    rule 7 — a verdict from the weights that authored the diff is not a review)."""
+    resolved = {
+        "worker_model": approval.get("worker_model") or cfg["roles"]["worker"]["model"],
+        "worker_effort": (approval.get("worker_reasoning_effort")
+                          or cfg["roles"]["worker"]["effort"]),
+        "reviewer_model": (approval.get("reviewer_model")
+                           or cfg["roles"]["bound_reviewer"]["model"]),
+        "reviewer_effort": (approval.get("reviewer_effort")
+                            or cfg["roles"]["bound_reviewer"]["effort"]),
+        "reviewer_failover_trigger": cfg["reviewer_failover"]["trigger_model"],
+        "reviewer_fallback_model": cfg["reviewer_failover"]["fallback_model"],
+        "cli_aliases": cfg["cli_aliases"],
+    }
+    vm = cfg["vendor_map"]
+    armed = resolved["reviewer_model"] == resolved["reviewer_failover_trigger"]
+    if resolved["reviewer_model"] == resolved["worker_model"] or (
+            armed and resolved["reviewer_fallback_model"] == resolved["worker_model"]):
+        die(f"launch refused: {resolved['worker_model']!r} would review its own work "
+            f"(reviewer or armed fallback equals worker_model; nothing reviews its own work, "
+            f"CLAUDE.md rule 7)")
+    checked = [("worker_model", resolved["worker_model"]),
+               ("reviewer_model", resolved["reviewer_model"])]
+    if armed:
+        checked.append(("reviewer_fallback_model", resolved["reviewer_fallback_model"]))
+    for key, model in checked:
+        if vm.get(model) is None:
+            die(f"launch refused: {key} {model!r} is not declared in vendor_map "
+                f"({MODEL_CONFIG}) — an undeclared model cannot be vendor-classified")
+    # R73 Job 1: vendors freeze WITH the models — run-time selects the CLI adapter from these
+    # fields and never re-infers from a live config.
+    resolved["worker_vendor"] = vm[resolved["worker_model"]]
+    resolved["reviewer_vendor"] = vm[resolved["reviewer_model"]]
+    return resolved
+
+
 VENV_PY = ROOT / ".venv" / "bin" / "python"
 EXECUTION_POLICY = ROOT / "tests" / "execution-policy.tsv"
 TEST_RUNTIME_ROOT = Path("/opt/orchestrator-test-runtime")
@@ -1664,6 +1781,10 @@ def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
     host_id = Path("/etc/machine-id").read_text().strip() if Path("/etc/machine-id").exists() else "unknown"
     boot_id = (Path("/proc/sys/kernel/random/boot_id").read_text().strip()
                if Path("/proc/sys/kernel/random/boot_id").exists() else "unknown")
+    # The grader tree never contains the untracked .venv, so interpreter-needing drills
+    # (codex_runtime.sh) must get the root-owned runtime explicitly; absent runtime -> unset,
+    # and the drill's own SKIP fails the gate closed exactly as before.
+    test_rt = trusted_test_runtime()
     with open(lock, "w") as lf, materialized_grader_tree(installed_commit, ROOT) as gtree:
         fcntl.flock(lf, fcntl.LOCK_EX)
         for rel in box_tests:
@@ -1677,7 +1798,8 @@ def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
                    "LANG": "C.UTF-8", "ORCH_OPERATOR_USER": OPERATOR_USER,
                    # round-3: the grader worktree shares refs/replace; disable it for the box
                    # drill's own git object reads too (it reads scripts/dispatch.py etc.).
-                   "GIT_NO_REPLACE_OBJECTS": "1"}
+                   "GIT_NO_REPLACE_OBJECTS": "1",
+                   **({"ORCH_TEST_PY": test_rt["python"]} if test_rt else {})}
             run_path = _grader_run_path(gtree, rel)
             before_test = sha256_file(run_path)
             with open(log, "w") as out:
@@ -1802,6 +1924,13 @@ def cmd_launch(spec_id: str) -> None:
 
     ctx = preflight(spec_id)
     spec, digest, approval = ctx["spec"], ctx["digest"], ctx["approval"]
+    # R71: role→model defaults come from scripts/models.json, read once here and frozen into lc
+    # below. An approval that explicitly pins a model still wins (owner decision 2026-07-15).
+    # Resolution (incl. the cross-vendor revalidation of pins) happens HERE, before the attempt
+    # claim, branch, or worktree exist — an invalid pin refuses cleanly with no side effects
+    # (owner-extension round 1: a late die() stranded a claimed 'launching' state).
+    cfg = load_model_config()
+    launch_models = resolve_launch_models(approval, cfg)
     spec_bytes = ctx["spec_bytes"]   # the single buffer preflight read/hashed/parsed (B2 round-2)
 
     n = next_attempt(spec_id)
@@ -1911,10 +2040,11 @@ def cmd_launch(spec_id: str) -> None:
         "needs_network": spec.get("needs_network", False),
         "base_sha": base_sha, "branch": branch,
         "base_branch": approval.get("base_branch", AUTOMATION_BASE),
-        "worktree": str(wt), "worker_model": approval.get("worker_model", "gpt-5.6-luna"),
-        "worker_effort": approval.get("worker_reasoning_effort", "high"),
-        "reviewer_model": approval.get("reviewer_model", "claude-fable-5"),
-        "reviewer_effort": approval.get("reviewer_effort", "high"),
+        # R71: model fields from the ONE tested resolver (run pre-side-effects above) — config
+        # defaults, approval pin wins, failover pair + alias map frozen here; review() reads
+        # only lc, never the live config.
+        "worktree": str(wt),
+        **launch_models,
         "test_command": spec["test_command"], "approved_scope": approval["approved_scope"],
         "regression_command": spec.get("regression_command"),
         "regression_test_paths": spec.get("regression_test_paths", []),
@@ -2850,6 +2980,30 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     # policy-note item 2: mandatory structured rubric. The worker's plan/checklist is NEVER
     # included here (confirmation-bias contamination) — only spec, diff, and orchestrator evidence.
     wt = Path(lc["worktree"])
+    # The frozen model fields are resolved ONCE, up front: all three from the record, or the
+    # shipped legacy trio for a genuine pre-R71 record; a partial set is a corrupt record and
+    # yields no verdict at all (fail closed, before any reviewer invocation).
+    frozen = lc_frozen_model_fields(lc)
+    if frozen is None:
+        return None, ("launch record carries a partial set of frozen model fields "
+                      "(corrupt launch.json); fail closed — no reviewer was invoked")
+    # R73 Job 1: the CLI adapter is selected by the FROZEN reviewer vendor (all-or-none group of
+    # its own; pre-freezing records are legally codex-worker/claude-reviewer). Adapter loading
+    # failures, unknown vendors, and partial vendor records all yield no verdict — fail closed.
+    vendors = lc_frozen_vendor_fields(lc)
+    if vendors is None:
+        return None, ("launch record carries a partial set of frozen vendor fields "
+                      "(corrupt launch.json); fail closed — no reviewer was invoked")
+    try:
+        spec_mod = importlib.util.spec_from_file_location(
+            "vendor_adapters", ROOT / "scripts" / "vendor_adapters.py")
+        vendor_adapters = importlib.util.module_from_spec(spec_mod)
+        spec_mod.loader.exec_module(vendor_adapters)
+        adapter = vendor_adapters.get_reviewer_adapter(vendors["reviewer_vendor"])
+    except Exception as exc:
+        return None, (f"reviewer adapter unavailable for vendor "
+                      f"{vendors.get('reviewer_vendor')!r}: {exc}; fail closed — "
+                      f"no reviewer was invoked")
     diff = git("diff", f"{lc['base_sha']}..{wc}", cwd=wt)
     schema_obj = _verdict_schema_for_attempt(att)
     schema_version = schema_obj.get("properties", {}).get("schema_version", {}).get("const")
@@ -2910,11 +3064,19 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
                    indent=2, sort_keys=True) + "\n\n"
         "=== DIFF ===\n" + diff
     )
+    # R73 Job 1: the adapter shapes the prompt for its CLI's structured-output mechanism (claude:
+    # identity, schema rides in argv; codex: schema text appended, enforced via --output-schema
+    # written durably under raw/ — PrivateTmp-safe by construction). The durable review-request
+    # is the SHAPED prompt: exactly what the reviewer saw.
+    req = adapter.reviewer_prompt(req, schema_obj)
+    schema_path = att / "raw" / "review-schema.json"
+    schema_path.write_text(json.dumps(schema_obj, indent=2))
     (att / "raw" / "review-request.txt").write_text(req)
-    # D5: the reviewer is a Claude process running as the operator, judging WORKER-CONTROLLED diff text — a
-    # confused-deputy risk (SOL). It gets the full spec + diff + evidence in the prompt and needs NO
-    # host filesystem access, so ALL tools (incl. Read/Grep/Glob) are denied: a prompt-injected
-    # reviewer cannot browse the operator's files. Nothing to inspect beyond what the orchestrator provided.
+    # D5: the reviewer is an LLM process running as the operator, judging WORKER-CONTROLLED diff
+    # text — a confused-deputy risk (SOL). It gets the full spec + diff + evidence in the prompt
+    # and needs NO host filesystem access. A CLAUDE reviewer has all tools denied; a CODEX
+    # reviewer's read-only sandbox limits only model-spawned commands (its own file-read surface
+    # is an accepted residual, SECURITY.md). Nothing to inspect beyond what the orchestrator provided.
     # B6 round-2 finding 3: the reviewer LLM call is the one long control-plane phase; cap it at the
     # remaining time to the absolute deadline too (the outer unit's RuntimeMaxSec is the whole-attempt
     # backstop, this bounds the phase itself). None => no time left => fail closed (no verdict).
@@ -2928,20 +3090,12 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
         prefix = deadline_timeout_prefix(dl) if dl is not None else []
         if prefix is None:
             return "attempt deadline exhausted before the review phase (B6); fail closed"
-        cmd = [
-            *prefix,
-            "claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema_obj),
-            "--model", model_id.replace("claude-fable-5", "fable"),
-            "--effort", lc["reviewer_effort"],
-            # B16 round-2: cwd isolation alone does not strip user-level customizations. Verified
-            # against the installed CLI (flags parse; envelope shape unchanged): --safe-mode drops
-            # all customizations (skills/hooks/plugins), --tools "" leaves no tool surface,
-            # --strict-mcp-config with no --mcp-config yields zero MCP servers, and
-            # --no-session-persistence writes no transcript. The denylist stays as belt-and-braces.
-            "--safe-mode", "--tools", "", "--strict-mcp-config", "--no-session-persistence",
-            "--disallowedTools", "Read", "Grep", "Glob", "Bash", "Write", "Edit", "NotebookEdit",
-            "WebFetch", "WebSearch", "Task", "--permission-mode", "manual",
-        ]
+        # R73 Job 1: argv comes from the vendor adapter (claude keeps the exact B16-hardened
+        # flag set, verbatim, inside ClaudeReviewer; codex uses --output-schema + read-only
+        # sandbox). Aliases come from the frozen launch config; ids without an alias pass
+        # through unchanged, and pre-config records keep the shipped alias (round-2 review).
+        cmd = [*prefix, *adapter.build_argv(model_id, lc["reviewer_effort"], schema_obj,
+                                            frozen["cli_aliases"], schema_path)]
         # B16 + reviewer isolation: run from an empty directory OUTSIDE this repo so the reviewer
         # process loads no project rulebook or memory (it must see only spec+diff+evidence, and that
         # context is pure token waste for a tools-denied one-shot). TMPDIR may point inside the repo,
@@ -2956,32 +3110,41 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     cp = invoke_reviewer(lc["reviewer_model"])
     if isinstance(cp, str):
         return None, cp
-    # Fable-retirement failover (owner decision 2026-07-15). The pinned reviewer stays
-    # claude-fable-5 while the model exists; when the API retires it, this ONE deterministic
-    # signature — nonzero exit plus the CLI's structured model-not-found envelope, from the pinned
-    # primary only — triggers a single rerun on the fallback model. Nothing else retries: an auth
-    # failure, rate limit, timeout, or malformed envelope must never buy the diff a second reviewer
-    # roll. The retry cannot weaken the gate — it fires only when the primary produced no verdict
-    # at all (nonzero exit, verdict-bearing envelopes rejected by the trigger). Both envelopes,
-    # both exit codes, and an escalation record are kept, and lc["reviewer_model"] is updated
-    # IN PLACE so review.json's sibling records, result.json, and the PR body all attribute the
-    # verdict to the model that actually produced it (round-1 review: misattribution was blocking).
-    if (cp.returncode != 0 and lc["reviewer_model"] == "claude-fable-5"
+    # Reviewer-retirement failover (owner decision 2026-07-15; R71: the trigger/fallback pair now
+    # comes frozen from scripts/models.json via lc — launch records that predate the config keep
+    # the shipped pair via LEGACY_LAUNCH_DEFAULTS, unchanged behavior for in-flight attempts).
+    # The bound reviewer stays the pinned primary while the model exists; when the API retires
+    # it, this ONE deterministic signature — nonzero exit plus
+    # the CLI's structured model-not-found envelope, from the pinned primary only — triggers a
+    # single rerun on the fallback model. Nothing else retries: an auth failure, rate limit,
+    # timeout, or malformed envelope must never buy the diff a second reviewer roll. The retry
+    # cannot weaken the gate — it fires only when the primary produced no verdict at all (nonzero
+    # exit, verdict-bearing envelopes rejected by the trigger). Both envelopes, both exit codes,
+    # and an escalation record are kept, and lc["reviewer_model"] is updated IN PLACE so
+    # review.json's sibling records, result.json, and the PR body all attribute the verdict to the
+    # model that actually produced it (round-1 review: misattribution was blocking).
+    # R73 Job 1: the failover is CLAUDE-specific by design — its discriminator parses the claude
+    # CLI's envelope. Gating on the frozen reviewer vendor means a codex reviewer error can never
+    # buy a retry, even if its output happens to mimic the claude 404 envelope.
+    if (cp.returncode != 0
+            and vendors["reviewer_vendor"] == "claude"
+            and lc["reviewer_model"] == frozen["reviewer_failover_trigger"]
             and reviewer_model_unavailable(cp.stdout)):
+        fallback_model = frozen["reviewer_fallback_model"]
         primary = cp
         from_model = lc["reviewer_model"]
         (att / "raw" / "review-envelope-primary.json").write_text(primary.stdout or "")
         escalate(spec_id, "reviewer model retired; failed over to fallback for this attempt",
                  {"attempt": str(att), "from_model": from_model,
-                  "to_model": REVIEWER_FALLBACK_MODEL})
-        lc["reviewer_model"] = REVIEWER_FALLBACK_MODEL
-        cp = invoke_reviewer(REVIEWER_FALLBACK_MODEL)
+                  "to_model": fallback_model})
+        lc["reviewer_model"] = fallback_model
+        cp = invoke_reviewer(fallback_model)
         # Round-2 review, finding 2: the audit record is written AFTER the fallback runs so the
         # fallback's own outcome is preserved too — not just the primary's. A fallback that refuses
         # to start (deadline exhausted → a refusal string) or exits nonzero must leave a durable
         # trace; the earlier version recorded only the primary and silently lost a failed fallback.
         record = {
-            "from_model": from_model, "to_model": REVIEWER_FALLBACK_MODEL,
+            "from_model": from_model, "to_model": fallback_model,
             "trigger": "type=result is_error api_error_status=404 model-not-found",
             "primary_returncode": primary.returncode,
             "primary_stderr_tail": (primary.stderr or "")[-2000:], "created": now(),
@@ -2997,9 +3160,11 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     (att / "raw" / "review-envelope.json").write_text(cp.stdout or "")
     if cp.returncode != 0:
         return None, cp.stdout
-    try:
-        verdict = json.loads(json.loads(cp.stdout)["result"])
-    except Exception:
+    # R73 Job 1: verdict extraction is the adapter's (claude: envelope double-parse; codex: bare
+    # JSON with a fence-strip fallback). None ⇒ no verdict; validate_review_verdict stays the
+    # vendor-neutral gate that actually binds the verdict to this exact code.
+    verdict = adapter.extract_verdict(cp.stdout or "")
+    if verdict is None:
         return None, cp.stdout
     if not validate_review_verdict(verdict, schema_obj, lc, wc):
         return None, cp.stdout

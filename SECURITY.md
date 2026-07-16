@@ -32,9 +32,12 @@ proves them), **configured assumptions** (set up outside this repo, verified man
   else; the cost is that any program on this box that runs `bwrap` reaches more of the operating
   system's isolation machinery than before. `tests/worker_userns.sh` proves the worker still
   cannot reach the owner's home through it.
-- Approvals bind to the spec digest and instance identity; the reviewer runs with all tools
-  denied; autonomy applies only to `dispatch merge` — enforced by `scripts/dispatch.py` code
-  paths that the repo suite exercises only partially.
+- Approvals bind to the spec digest and instance identity; a CLAUDE bound reviewer runs with
+  all tools denied (a CODEX bound reviewer has no tool-denial flag: its read-only sandbox
+  limits only model-spawned shell commands, so as an operator subprocess it keeps codex's own
+  file-read surface — an accepted, permanent residual of the vendor-general reviewer); autonomy
+  applies only to `dispatch merge` — enforced by `scripts/dispatch.py` code paths that the repo
+  suite exercises only partially.
 
 ## Known gaps (fixes queued in `.orchestrator/BACKLOG.md`)
 

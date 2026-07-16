@@ -21,6 +21,10 @@ bad() { echo "  FAIL: $1"; fails=1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/repo/scripts" "$tmp/repo/.orchestrator"
 cp -p scripts/review "$tmp/repo/scripts/review"
+# R71: scripts/review reads $ROOT/scripts/models.json (reviewer model + vendor_map) through
+# $ROOT/scripts/models_check.py; the copied script's ROOT is the temp repo, so both sit beside it.
+cp -p scripts/models.json "$tmp/repo/scripts/models.json"
+cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
 
 cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -139,6 +143,36 @@ rc=$?
   || bad "correctly-derived codex authorship gave exit $rc, expected 4 (self-review vendor gate)"
 [ -e .orchestrator/reviews/real-codex-topic ] && bad "self-review refusal still created review state" \
   || ok "self-review refusal writes nothing"
+
+# 4. UNKNOWN MODEL (R71): an attempt whose recorded worker_model is absent from vendor_map must be
+#    refused, never guessed into a vendor — a net-new model requires an explicit vendor_map entry
+#    before anything it authored can be classified.
+mkdir -p .orchestrator/attempts/SPEC-903/1
+printf '{"worker_model": "mystery-model-9", "spec_id": "SPEC-903", "attempt": 1}\n' \
+  > .orchestrator/attempts/SPEC-903/1/launch.json
+printf 'diff --git a/y b/y\n+mystery model wrote this\n' > .orchestrator/attempts/SPEC-903/1/diff.patch
+scripts/review --topic unknown-model --author codex --context .orchestrator/attempts/SPEC-903/1/diff.patch "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" != 0 ] && ok "a model absent from vendor_map is refused, not guessed (exit $rc)" \
+  || bad "an unmapped model was silently vendor-classified"
+[ -e .orchestrator/reviews/unknown-model ] && bad "unknown-model refusal still created review state" \
+  || ok "unknown-model refusal writes nothing"
+
+# 5. WHOLE-CONFIG VALIDATION (round-1 review): a config missing a required section — vendor_map
+#    here — must refuse the review at startup, even for an ordinary claude-authored context that
+#    never needs a vendor lookup. Only the one jq-style value being present is NOT enough.
+python3 - "$tmp/repo/scripts/models.json" <<'GUT'
+import json, sys
+cfg = json.load(open(sys.argv[1])); del cfg["vendor_map"]
+json.dump(cfg, open(sys.argv[1], "w"))
+GUT
+scripts/review --topic gutted-config --author claude --context claude-note.md "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" != 0 ] && ok "config without vendor_map refuses the review outright (exit $rc)" \
+  || bad "a config missing vendor_map still ran a review"
+[ -e .orchestrator/reviews/gutted-config ] && bad "gutted-config refusal still created review state" \
+  || ok "gutted-config refusal writes nothing"
+cp -p "$ROOT/scripts/models.json" scripts/models.json   # restore for any later cases
 
 [ "$fails" -eq 0 ] && echo "PASS review_authorship.sh" || echo "FAIL review_authorship.sh"
 exit "$fails"
