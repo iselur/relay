@@ -7,6 +7,10 @@
 # Behaviors, in the brief's order of precedence:
 #   HALT      .orchestrator/HALT present -> strict no-op. Checked at entry, after the lock, and
 #             again inside every function that mutates state, touches tmux, or raises an alert.
+#   STANDBY   any claude process outside this watchdog's own pane (an owner session, attached or
+#             not; a background job) -> supervision pauses for the tick and resumes by itself once
+#             none remain (owner decision 2026-07-15: automation never works beside the owner).
+#             HALT stays the manual switch and is checked first; alert delivery still retries.
 #   (a)       pending work + no session  -> create session, launch claude with a chosen
 #             --session-id (deterministic recovery target), paste the tracked resume prompt.
 #   (b)       claude exited in the pane  -> relaunch with --resume <recorded id>. A recorded id
@@ -102,6 +106,96 @@ valid_uuid() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 record_run() { put "$WD/last-run" "$(now)"; rm -f "$WD/ALERT-idle"; }
 bump_generation() { local g; g=$(get "$WD/generation"); put "$WD/generation" "$(( ${g:-0} + 1 ))"; }
 
+# ---- user-presence standby (owner decision 2026-07-15) --------------------------------------------
+# The watchdog must never work beside the owner: ANY claude process it does not supervise —
+# interactive or background job, attached or not — parks supervision for the tick. The only claude
+# that is OURS is one whose parent chain reaches our session's single pane, and that pane is
+# trusted only when the on-disk ownership records prove the session is the one this watchdog
+# launched. Everything else — a foreign same-named session, a multi-pane session, an unreadable
+# process table, a pid that cannot be attributed — counts as a user session: failing toward
+# standby can only ever launch LESS, never more. The whole ancestry resolves from ONE process-table
+# snapshot, so a pid exiting and being reused between lookups cannot stitch a false chain.
+own_pane_binding() {
+  # Prints the supervised pane's pid ONLY while ownership is provable NOW: a valid recorded
+  # conversation id whose prompt was delivered, plus a live single-pane session whose identity
+  # triple (tmux session id : creation epoch : pane pid) equals the one the launcher recorded
+  # before it ever delivered a prompt. A same-named session the owner created later fails the
+  # triple even with stale-but-valid conversation records: tmux does not reuse session ids within
+  # a server's lifetime, and the creation epoch and pane pid must match besides.
+  local sid recorded current
+  sid=$(get "$WD/session-id")
+  valid_uuid "${sid:-}" || return 0
+  [ "$(get "$WD/launched")" = "$sid" ] || return 0
+  recorded=$(get "$WD/pane")
+  [[ "$recorded" =~ ^\$[0-9]+:[0-9]+:[0-9]+:%[0-9]+$ ]] || return 0
+  session_exists || return 0
+  current=$(tmux list-panes -t "$SESSION" -F '#{session_id}:#{session_created}:#{pane_pid}:#{pane_id}' 2>/dev/null) || return 0
+  [ "$current" = "$recorded" ] || return 0
+  printf '%s\n' "$current" | cut -d: -f3
+}
+user_claude_present() {
+  local pane_pid snapshot pid ppid comm p depth
+  local -A parent=() pcomm=()
+  local claudes=()
+  # The pane identity is resolved BEFORE the snapshot so the snapshot can vouch for it below: the
+  # pane pid counts only if the same table shows it alive as a shell. A pid reused across that
+  # boundary would have to come back as a shell while the recorded triple still matches a live
+  # session — narrowed, not zero; what a 10-minute poller can promise is bounded and said so.
+  pane_pid=$(own_pane_binding)
+  if ! snapshot=$(ps -eo pid=,ppid=,comm= 2>/dev/null); then
+    # An unreadable process table cannot prove absence: stand down AND say so — a broken ps must
+    # never park supervision silently forever.
+    alert_raise standby-indeterminate "cannot read the process table (ps failed); treating it as user presence"
+    return 0
+  fi
+  while read -r pid ppid comm; do
+    [ -n "${pid:-}" ] || continue
+    parent[$pid]=${ppid:-}
+    pcomm[$pid]=${comm:-}
+    [ "${comm:-}" = "claude" ] && claudes+=("$pid")
+  done <<< "$snapshot"
+  [ "${#claudes[@]}" -gt 0 ] || return 1
+  if [ -n "$pane_pid" ]; then
+    case "${pcomm[$pane_pid]:-}" in bash|sh|dash|zsh) ;; *) pane_pid="" ;; esac
+  fi
+  for pid in "${claudes[@]}"; do
+    [ -n "$pane_pid" ] || return 0
+    p=$pid depth=0
+    while [ "$depth" -lt 64 ]; do
+      [ "$p" = "$pane_pid" ] && continue 2
+      p=${parent[$p]:-}
+      case "$p" in ''|0|1) break ;; esac
+      depth=$((depth + 1))
+    done
+    return 0
+  done
+  return 1
+}
+
+# ---- action authorization (round-3 review, finding 1) --------------------------------------------
+# Ownership classification above answers "is any claude the owner's?"; THIS answers "is the session
+# named $SESSION still the exact one this watchdog created?" — required before every action that
+# types into or kills an existing session, launched marker or not. A recreated same-name session
+# fails the triple (tmux never reuses a session id within a server's lifetime, and the creation
+# epoch and pane pid must match besides); an unreadable or missing record proves nothing and
+# refuses. Acting on the bare name was round 3's HIGH finding: with no claude running anywhere,
+# standby never triggers, and a foreign empty session could be typed into or killed.
+verify_target_session() {
+  # On success prints the verified SESSION ID — the stable target every action must use
+  # (extra-round review 2): tmux never reuses a session id within a server's lifetime, so a
+  # replacement occurring after this read makes the action fail instead of landing on the
+  # replacement through the name. Verifying and then acting by name would leave the window open.
+  local recorded current
+  recorded=$(get "$WD/pane")
+  [[ "$recorded" =~ ^\$[0-9]+:[0-9]+:[0-9]+:%[0-9]+$ ]] || return 1
+  current=$(tmux list-panes -t "$SESSION" -F '#{session_id}:#{session_created}:#{pane_pid}:#{pane_id}' 2>/dev/null) || return 1
+  [ "$current" = "$recorded" ] || return 1
+  printf '%s %s\n' "${recorded%%:*}" "${recorded##*:}"
+}
+refuse_foreign() { # $1 the refused action — a visible refusal, deduped by alert_raise
+  alert_raise foreign-session "session is not verifiably the supervised one (identity mismatch or unreadable record); $1 refused"
+}
+
 launch_new() {
   halted && return 0
   local sid; sid=$(uuidgen)
@@ -116,12 +210,41 @@ launch_new() {
   put "$WD/respawns" 0
   # Failed actions are RETRIED next tick and never count as a run: a run that did not happen must
   # not refresh last-run, or a persistently broken launch would suppress the idle alert forever.
-  tmux new-session -d -s "$SESSION" -c "$ROOT" -x 220 -y 50 \
+  # The identity of the created session comes from the CREATION COMMAND ITSELF: -P prints the new
+  # session's triple, so the binding can never capture a same-name replacement the way a later
+  # name lookup could (extra-round review, finding 2). An unparseable print withholds the prompt
+  # and refuses visibly — nothing is ever attributed by name. Even a launch a HALT interrupts
+  # leaves this record on disk, so the later teardown has something to verify.
+  local pane
+  pane=$(tmux new-session -d -P -F '#{session_id}:#{session_created}:#{pane_pid}:#{pane_id}' \
+           -s "$SESSION" -c "$ROOT" -x 220 -y 50) \
     || { note "new-session failed; will retry next tick"; return 1; }
-  tmux pipe-pane -o -t "$SESSION" "cat >> '$WD/transcript.log'" \
-    || note "pipe-pane failed; usage classifier is blind this generation"
+  if [[ "$pane" =~ ^\$[0-9]+:[0-9]+:[0-9]+:%[0-9]+$ ]]; then
+    put "$WD/pane" "$pane"
+  else
+    rm -f "$WD/pane"
+    note "could not record the created session's identity; prompt withheld — the unattributable session is refused until the owner clears it"
+    refuse_foreign "initial prompt"
+    return 1
+  fi
   halted && return 0
-  if tmux send-keys -t "$SESSION" \
+  # LAST GATE before ANY action on the new session — presence (defer to standby), HALT, then
+  # target identity LAST, HALT again: the authorization is the final external read, and every
+  # action below targets the VERIFIED SESSION ID, never the name. pipe-pane runs only past this
+  # gate too (extra-round review 2): it must never attach a replacement session's output to the
+  # transcript, and it must never run under a HALT that landed during creation.
+  if user_claude_present; then note "a user claude appeared mid-tick; prompt withheld — standby owns the next tick"; return 0; fi
+  halted && return 0
+  # Pane mutations target the verified PANE id (%N, never reused): a session-scoped target would
+  # resolve to whatever pane is active at send time (extra-round review 3). kill-session alone
+  # keeps the verified session id.
+  local target tpane
+  if ! target=$(verify_target_session); then refuse_foreign "initial prompt"; return 0; fi
+  tpane=${target##* }
+  halted && return 0
+  tmux pipe-pane -o -t "$tpane" "cat >> '$WD/transcript.log'" \
+    || note "pipe-pane failed; usage classifier is blind this generation"
+  if tmux send-keys -t "$tpane" \
        "claude --session-id $sid --dangerously-skip-permissions \"\$(cat $PROMPT_REL)\"" Enter; then
     # The launched marker is written ONLY after the prompt was delivered: a session whose
     # conversation never started must never be --resume'd (the id names nothing).
@@ -148,30 +271,51 @@ respawn() {
   # or HALT landed after session creation): --resume of it can only error forever. Tear the empty
   # session down instead; the next tick launches fresh with a new id.
   if [ "$(get "$WD/launched")" != "$sid" ]; then
+    # LAST GATE before the teardown — presence, HALT, then identity LAST, HALT again: only a
+    # session whose live identity equals the recorded binding may be killed, and that
+    # authorization is the final external read before the kill (extra-round review, finding 1).
+    # An incomplete launch always recorded its binding at creation, so a mismatch or missing
+    # record means a foreign or unattributable session, refused visibly.
+    if user_claude_present; then note "a user claude appeared mid-tick; incomplete-launch teardown deferred to standby"; return 0; fi
     halted && return 0
-    # The id is dropped only once the empty session is verifiably gone: dropping it while the
-    # session survives a failed kill would read as corrupt-session-id next tick and permanently
-    # refuse recovery. A failed teardown keeps the state and simply retries next tick.
-    if tmux kill-session -t "$SESSION" 2>/dev/null || ! session_exists; then
-      rm -f "$WD/session-id"
+    local target
+    if ! target=$(verify_target_session); then refuse_foreign "incomplete-launch teardown"; return 0; fi
+    target=${target%% *}
+    halted && return 0
+    # The kill targets the verified session id, so a replacement after the verification makes it
+    # fail instead of killing the replacement. The id is dropped only once the empty session is
+    # verifiably gone: dropping it while the session survives a failed kill would read as
+    # corrupt-session-id next tick and permanently refuse recovery. A failed teardown keeps the
+    # state and simply retries next tick.
+    if tmux kill-session -t "$target" 2>/dev/null || ! session_exists; then
+      rm -f "$WD/session-id" "$WD/pane"
       note "incomplete launch detected (id $sid never received its prompt); removed the empty session, will relaunch next tick"
     else
       note "incomplete launch detected but kill-session failed; keeping state, will retry teardown next tick"
     fi
     return 0
   fi
-  # A respawn storm (claude dying instantly every tick) refreshes last-run each time and would
-  # otherwise never alert; count consecutive respawns and say so.
-  local n; n=$(get "$WD/respawns"); n=$(( ${n:-0} + 1 ))
+  # LAST GATE before input — presence (defer to standby), HALT, then target identity LAST, HALT
+  # again: the authorization is the final external read before the send, or a replacement during
+  # the presence scan could receive the --resume by name (extra-round review, finding 1).
+  if user_claude_present; then note "a user claude appeared mid-tick; respawn deferred to standby"; return 0; fi
   halted && return 0
-  put "$WD/respawns" "$n"
-  if [ "$n" -gt 6 ]; then
-    alert_raise respawn-loop "claude has been relaunched $n consecutive times without recorded activity"
-  fi
-  bump_generation
+  local target
+  if ! target=$(verify_target_session); then refuse_foreign "respawn"; return 0; fi
+  target=${target##* }
   halted && return 0
-  if tmux send-keys -t "$SESSION" \
+  if tmux send-keys -t "$target" \
        "claude --resume $sid --dangerously-skip-permissions \"\$(cat $PROMPT_REL)\"" Enter; then
+    # Accounting happens ONLY for a respawn that happened: a refused or deferred respawn advances
+    # neither the storm counter nor the generation (extra-round review, finding 3). A storm
+    # (claude dying instantly every tick) refreshes last-run each time and would otherwise never
+    # alert; count consecutive respawns and say so.
+    local n; n=$(get "$WD/respawns"); n=$(( ${n:-0} + 1 ))
+    put "$WD/respawns" "$n"
+    if [ "$n" -gt 6 ]; then
+      alert_raise respawn-loop "claude has been relaunched $n consecutive times without recorded activity"
+    fi
+    bump_generation
     record_run
     note "claude exited; resumed conversation $sid"
   else
@@ -285,17 +429,32 @@ handle_usage_wait() {
   # A new pane generation cannot inherit a previous generation's wait.
   if [ "$gen" != "$cur" ]; then rm -f "$WD/usage-wait"; return 0; fi
   [ "$(now)" -lt "$epoch" ] && return 0
-  rm -f "$WD/usage-wait"
   if [ "$USAGE_RETRY_MODE" = "active" ]; then
+    # LAST GATE — presence, HALT, then target identity LAST, HALT again: the authorization is the
+    # final external read before the send (extra-round review, finding 1), and the wait is
+    # consumed only AFTER a successful send (round-3 review, finding 2), so a deferred, refused,
+    # or failed retry stays armed for the next tick instead of being silently spent; the residual
+    # is one duplicate retry prompt if the rm itself fails, accepted and benign.
+    if user_claude_present; then note "a user claude appeared mid-tick; the post-reset retry stays armed"; return 0; fi
     halted && return 0
-    if tmux send-keys -t "$SESSION" \
+    local target
+    if ! target=$(verify_target_session); then refuse_foreign "post-reset retry"; return 0; fi
+    target=${target##* }
+    halted && return 0
+    if tmux send-keys -t "$target" \
          "The usage window has reset. Continue the pending orchestrator work; run scripts/watchdog heartbeat when you begin." Enter; then
+      rm -f "$WD/usage-wait"
       record_run
       note "usage window reset; sent one retry prompt"
     else
-      note "send-keys failed for the post-reset retry; the wait is consumed, supervision continues"
+      note "send-keys failed for the post-reset retry; the wait stays armed, will retry next tick"
     fi
   else
+    # Observation mode acts on no session: presence defers consumption, HALT is re-checked after
+    # the presence window, and only then is the wait consumed and recorded.
+    if user_claude_present; then note "a user claude appeared mid-tick; the post-reset retry stays armed"; return 0; fi
+    halted && return 0
+    rm -f "$WD/usage-wait"
     rm -f "$WD/ALERT-usage-would-retry"
     alert_raise usage-would-retry "observation mode: usage window reset; a retry WOULD have been sent"
   fi
@@ -309,15 +468,22 @@ idle_check() { # $1 open row ids (may be empty), $2 live attempt id (may be empt
   base=${last:-0}; [ "${act:-0}" -gt "$base" ] 2>/dev/null && base=$act
   [ "$base" -eq 0 ] && return 0   # nothing ever launched on this install; (a) fires first
   t=$(now)
-  if [ $((t - base)) -ge "$IDLE_ALERT_SECONDS" ]; then
-    # Re-alert at most once per further idle interval.
-    local f="$WD/ALERT-idle" sent
-    if [ -e "$f" ]; then
-      sent=$(sed -n 's/^sent=//p' "$f" | tail -1)
-      if [ -n "$sent" ] && [ $((t - sent)) -ge "$IDLE_ALERT_SECONDS" ]; then rm -f "$f"; fi
-    fi
-    alert_raise idle "idle_seconds=$((t - base)) open_rows=${1:-none}"
+  [ $((t - base)) -ge "$IDLE_ALERT_SECONDS" ] || return 0
+  # Re-alert at most once per further idle interval — but the dedup DECISION is made before the
+  # barrier, so nothing but the record deletion and the raise remains after it.
+  local f="$WD/ALERT-idle" sent expired=0
+  if [ -e "$f" ]; then
+    sent=$(sed -n 's/^sent=//p' "$f" | tail -1)
+    if [ -n "$sent" ] && [ $((t - sent)) -ge "$IDLE_ALERT_SECONDS" ]; then expired=1; fi
   fi
+  # Mid-tick barrier LAST (round-3 review, findings 2 and 3): every read, the timestamp, and the
+  # dedup decision are already done. A user claude that appeared after entry detection IS activity
+  # — an idle alert raised over their shoulder would be false the moment it fired — and HALT is
+  # re-checked after the presence window, before any record is deleted or raised.
+  user_claude_present && return 0
+  halted && return 0
+  [ "$expired" = 1 ] && rm -f "$f"
+  alert_raise idle "idle_seconds=$((t - base)) open_rows=${1:-none}"
 }
 
 # ---- main ---------------------------------------------------------------------------------------
@@ -333,6 +499,34 @@ check() {
   exec 9>>"$WD/lock"
   flock -n 9 || exit 0              # single flight: an overlapping check is a successful no-op
   halted && exit 0
+
+  # Auto mutual exclusion: a user's claude anywhere on the box means launch, respawn, retry,
+  # rotation, and the idle alert all wait. Detection just ran external commands (ps, tmux), so
+  # HALT is re-checked before the marker is touched — HALT precedence survives the detection
+  # window. The marker exists so the journal says each flip once, not once per tick; alert
+  # delivery still retries, because standby pauses supervision, never observability. last-run is
+  # untouched — a standby tick is not a run. Detection happens before anything in the tick spawns
+  # claude itself (check_cli_version runs only past this point), so the watchdog never stands
+  # down for its own version probe. Because entry detection goes stale while the tick reads the
+  # ledger and state, every mutating action below re-checks presence and then re-verifies the
+  # target session's identity as the LAST external read before it acts — and the action itself
+  # is bound to the verified session id, which tmux never reuses within a server's lifetime, so
+  # a replacement after that read makes the action fail instead of landing on it. The residual
+  # is the presence window only, and the NEXT tick's entry check parks whatever slipped through.
+  local present=0
+  user_claude_present && present=1
+  halted && exit 0
+  if [ "$present" = 1 ]; then
+    if [ ! -e "$WD/standby" ]; then
+      put "$WD/standby" "$(now)"
+      note "standby: a user claude session is running; supervision paused until it exits"
+    fi
+    alert_sweep
+    exit 0
+  elif [ -e "$WD/standby" ]; then
+    rm -f "$WD/standby"
+    note "standby cleared: no user claude session running; supervision resumed"
+  fi
 
   local state_line state ids attempt
   state_line=$("$ROOT/scripts/intake" watchdog-state --ids 2>/dev/null) || true
@@ -367,14 +561,29 @@ check() {
       case "$(pane_probe)" in
         dead)
           halted && exit 0
-          local retired; retired=$(get "$WD/session-id")
+          # State reads FIRST, then presence, HALT, and the identity authorization LAST (round-3
+          # finding 2; extra-round finding 1): rotation tears a session down, so the final
+          # external read before the kill is the proof that the target is still the session this
+          # watchdog created. A user claude that appeared after entry detection defers the
+          # rotation; the next tick re-decides from scratch.
+          local retired target; retired=$(get "$WD/session-id")
           if ! valid_uuid "${retired:-}"; then
             # Corrupt ownership stays a visible refusal even when idle: erasing state the
             # pending path refuses to touch would launder a foreign/corrupt session into a
             # clean slate.
             alert_raise corrupt-session-id "idle session with an invalid recorded id; refusing to rotate or erase it"
-          elif tmux kill-session -t "$SESSION" 2>/dev/null || ! session_exists; then
-            rm -f "$WD/session-id" "$WD/launched"
+          elif user_claude_present; then
+            note "a user claude appeared mid-tick; idle rotation deferred"
+          elif halted; then
+            exit 0
+          elif ! target=$(verify_target_session); then
+            # Only the exact session this watchdog created may be rotated away: a recreated
+            # same-name session or an unreadable record refuses, visibly.
+            refuse_foreign "idle rotation"
+          elif halted; then
+            exit 0
+          elif tmux kill-session -t "${target%% *}" 2>/dev/null || ! session_exists; then
+            rm -f "$WD/session-id" "$WD/launched" "$WD/pane"
             note "idle rotation: conversation $retired retired; next pending wake starts fresh"
           else
             note "idle rotation: kill-session failed; keeping state, will retry next tick"
