@@ -15,13 +15,13 @@ import sys
 
 ROLES = ("orchestrator", "spec_author", "utility_subagent", "worker",
          "bound_reviewer", "orchestrator_artifact_reviewer")
-VENDORS = ("claude", "codex")
+VENDORS = ("claude", "codex", "kimi")
 SECTIONS = ("schema_version", "roles", "reviewer_failover", "cli_aliases", "vendor_map")
 # Contradiction TRIPWIRE, not a classifier (round-1 review, finding 1): a name carrying a known
 # vendor prefix may not be declared as the other vendor — that misdeclaration is exactly what
 # would let same-vendor review pass. A name with no known prefix still needs its explicit
 # vendor_map entry; nothing here ever infers a vendor for it.
-PREFIX_RULES = (("claude", "claude"), ("gpt-", "codex"), ("codex", "codex"))
+PREFIX_RULES = (("claude", "claude"), ("gpt-", "codex"), ("codex", "codex"), ("kimi", "kimi"))
 
 
 def _nonempty_str(v) -> bool:
