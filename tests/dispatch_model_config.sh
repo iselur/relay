@@ -169,10 +169,12 @@ check("codex worker pin resolves (config/approval authority)",
       d.resolve_launch_models({"worker_model": "gpt-5.6-sol",
                                "reviewer_model": "claude-fable-5"}, cfg)
       ["worker_model"] == "gpt-5.6-sol")
-# R73 round-2 review (medium): the worker phase is codex-only until Job 2 ships — a claude
-# worker must refuse at resolution, not execute under the codex runtime.
-check("claude worker refuses until the worker adapter exists (exit 2)",
-      resolve_result({"worker_model": "claude-sonnet-4-6"}) == "exit2")
+# R73 Job 3: the claude worker adapter exists (subagent mode) — a claude pin resolves and
+# freezes the mode with the vendor; the fail-closed refusal for adapterless vendors is kept by
+# the unmapped-model cases below (vendor_map is the closed world).
+r_claude = d.resolve_launch_models({"worker_model": "claude-sonnet-4-6"}, cfg)
+check("claude worker pin resolves and freezes worker_mode=subagent (R73 Job 3)",
+      r_claude["worker_vendor"] == "claude" and r_claude["worker_mode"] == "subagent")
 check("pinning an unmapped worker model refuses launch (exit 2)",
       resolve_result({"worker_model": "mystery-model-9"}) == "exit2")
 check("pinning an unmapped reviewer model refuses launch (exit 2)",

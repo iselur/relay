@@ -10,7 +10,7 @@ A model swap is one edit there, never to the rulebook; a new model also adds its
 |---|---|---|
 | owner | the human | approves specs, merges `main` |
 | orchestrator | Claude Code on this box (Opus 4.8 high; Fable 5 default retired at owner direction 2026-07-15) | dispatches, reviews worker diffs, reports |
-| worker | Codex CLI (`gpt-5.6-luna`) | research, drafts, implementation, tests (BUILD phase) |
+| worker | per `scripts/models.json`: Codex CLI (`gpt-5.6-luna`) detached, or a Claude subagent in-session | BUILD phase; a subagent BUILD is graded by `dispatch continue` |
 | reviewer | per `scripts/models.json` (bound reviewer + failover) | never reviews its own work |
 
 Bound reviewer and its retirement failover: see `scripts/models.json` (owner 2026-07-15: Fable
@@ -34,9 +34,9 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
   regex-parsed. Approval files in `.orchestrator/approvals/<digest>.json`.
 - Branches: worker branches `codex/SPEC-NNN-<attempt>`; PRs target `ready-for-main`; promotion to
   `main` is the owner's, or the orchestrator's under the CLAUDE.md grant. Both protected by ruleset.
-- Worker isolation: the worker and the gate tests run as the `codex-worker` user in hardened systemd
-  services; worktrees under `/srv/codexwork/worktrees`. Setup: `scripts/setup-worker-user.sh`.
-  Proof: `tests/worker_isolation.sh`, `tests/worker_userns.sh`.
+- Worker isolation: external-CLI workers and the gate tests run as the `codex-worker` user in hardened
+  systemd services; worktrees under `/srv/codexwork/worktrees`. Setup: `scripts/setup-worker-user.sh`.
+  Proof: `tests/worker_isolation.sh`, `tests/worker_userns.sh`. Subagent workers: SECURITY.md.
 - Evidence: per-attempt under `.orchestrator/attempts/<id>/<n>/`; raw logs untracked, hashes
   tracked. It is an audit record (see SECURITY.md), not immutable.
 

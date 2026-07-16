@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Vendor CLI mechanics for the bound-reviewer and worker roles (R73 Jobs 1-2). Adapters carry
+"""Vendor CLI mechanics for the bound-reviewer and worker roles (R73 Jobs 1-3). Adapters carry
 NO security or policy decisions: the role envelopes — reviewer: neutral cwd outside the repo,
 per-invocation deadline, nonzero-exit refusal before any parse, spec+diff+evidence-only prompt,
-verdict validation and binding; worker: isolation, runtime vetting/pinning, the single attempt
-deadline, path-safety, commit packaging, and every gate — live in scripts/dispatch.py and are
-identical for every vendor. An adapter only knows how to build its CLI's argv, shape its I/O,
-and read the output back. Stdlib only. The reviewer-retirement failover is NOT adapter surface:
-it is Fable-specific by design and dispatch.py gates it on the frozen reviewer vendor being
-claude.
+verdict validation and binding; worker: runtime vetting/pinning, the single attempt deadline,
+path-safety, commit packaging, and every gate — live in scripts/dispatch.py. The worker
+GRADING half is identical for every vendor; the BUILD envelope differs by the adapter's
+declared mode: external-cli BUILDs run isolated under the worker role envelope, subagent
+BUILDs run inside the orchestrator session's trust domain (SECURITY.md). An adapter only knows
+how to build its CLI's argv, shape its I/O, and read the output back. Stdlib only. The
+reviewer-retirement failover is NOT adapter surface: it is Fable-specific by design and
+dispatch.py gates it on the frozen reviewer vendor being claude.
 
 Verified mechanics (R73 probe evidence, 2026-07-16, .orchestrator/evidence/r73-probes.md):
 - claude: `-p --output-format json` emits ONE JSON envelope; the verdict is a JSON string in
@@ -91,6 +93,8 @@ class CodexWorker:
     what stays in dispatch.py. The model id reaches the CLI exactly as frozen in launch.json:
     the worker path has never alias-translated it and no codex model declares a cli_alias;
     alias handling joins this surface only when a vendor's worker CLI needs it."""
+
+    mode = "external-cli"   # detached CLI process under the worker role envelope (D5)
 
     def build_argv(self, model_id, effort, worktree, prompt, isolated,
                    argv_prefix=None, last_message_path=None):
@@ -179,8 +183,34 @@ class CodexWorker:
         return None
 
 
+class ClaudeSubagentWorker:
+    """Claude worker mechanics for SUBAGENT mode (R73 Job 3, owner simplification 2026-07-16):
+    there is NO worker CLI. Anthropic's 2026 ToS keeps Claude execution inside the operator
+    context, so the BUILD phase runs as a subagent of the live orchestrator session — the
+    orchestrator launches `dispatch launch`, runs the subagent itself on the launch-written
+    worker prompt inside the attempt worktree, writes the subagent's final message to
+    raw/worker-last-message.txt, then hands grading to `dispatch continue`. This adapter
+    therefore carries only the surface the SHARED grading half consumes; there is no argv,
+    env, or runtime surface to carry. The role envelope for this mode is the orchestrator
+    trust domain itself (SECURITY.md), plus every unchanged grading gate."""
+
+    mode = "subagent"   # BUILD inside the orchestrator session; grading via dispatch continue
+
+    def recover_last_message(self, raw_dir, isolated):
+        """The subagent's final message, written by the orchestrator before continue. Absence
+        refuses upstream (dispatch continue), so this read stays total here."""
+        p = raw_dir / "worker-last-message.txt"
+        return p.read_text() if p.exists() else ""
+
+    def classify_error(self, exit_code, stderr, raw_dir):
+        """Always completion: a subagent BUILD that failed is cancelled by the orchestrator
+        (`dispatch cancel`), never mis-classified into the CLI error vocabulary — there is no
+        CLI exit code or stderr to classify."""
+        return None
+
+
 _REVIEWERS = {"claude": ClaudeReviewer, "codex": CodexReviewer}
-_WORKERS = {"codex": CodexWorker}
+_WORKERS = {"claude": ClaudeSubagentWorker, "codex": CodexWorker}
 
 
 def get_reviewer_adapter(vendor):
@@ -194,8 +224,15 @@ def get_reviewer_adapter(vendor):
 
 def worker_vendors():
     """Vendors with a registered worker adapter — the resolver refuses any other worker vendor
-    at launch, before side effects (claude joins in R73 Job 3 with the subagent runtime)."""
+    at launch, before side effects."""
     return sorted(_WORKERS)
+
+
+def worker_mode(vendor):
+    """The execution mode a vendor's worker runs under: 'external-cli' (detached CLI process in
+    the worker role envelope) or 'subagent' (BUILD inside the orchestrator session, grading via
+    `dispatch continue`). Unknown vendors raise — the caller fails closed."""
+    return get_worker_adapter(vendor).mode
 
 
 def get_worker_adapter(vendor):

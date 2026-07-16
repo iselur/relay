@@ -171,9 +171,11 @@ for bad in ("main", "ready-for-main", "codex/SPEC-000-2", "codex/SPEC-000-1x",
           not d.valid_attempt_branch(bad, "SPEC-000-1"))
 
 # ---- registry ------------------------------------------------------------------------------
-check("worker vendor registry is codex-only until Job 3", va.worker_vendors() == ["codex"])
+check("worker vendor registry is claude+codex (R73 Job 3)",
+      va.worker_vendors() == ["claude", "codex"])
+check("codex worker mode is external-cli", va.worker_mode("codex") == "external-cli")
 try:
-    va.get_worker_adapter("claude")
+    va.get_worker_adapter("gemini")
     check("unknown worker vendor raises (fail closed upstream)", False)
 except ValueError:
     check("unknown worker vendor raises (fail closed upstream)", True)
