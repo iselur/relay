@@ -1,0 +1,63 @@
+{
+  "verdict": "PASS",
+  "criteria": [
+    {
+      "criterion": "title_case 'hello world' prints 'Hello World'.",
+      "result": "MET",
+      "evidence": "scripts/lib/title_case.sh:16-20 \u2014 word-start char run through `tr 'a-z' 'A-Z'` ('h'\u2192'H', 'w'\u2192'W'); non-initial chars through `tr 'A-Z' 'a-z'` leave 'ello'/'orld' unchanged; asserted at tests/title_case.sh:20."
+    },
+    {
+      "criterion": "title_case 'HELLO WORLD' prints 'Hello World'.",
+      "result": "MET",
+      "evidence": "scripts/lib/title_case.sh:19 \u2014 non-initial branch `tr 'A-Z' 'a-z'` lowercases 'ELLO'\u2192'ello' and 'ORLD'\u2192'orld' while word-start 'H'/'W' pass through uppercase tr unchanged; asserted at tests/title_case.sh:21."
+    },
+    {
+      "criterion": "title_case 'a' prints 'A'.",
+      "result": "MET",
+      "evidence": "scripts/lib/title_case.sh:15-17 \u2014 at_word_start initialized to 1 so the single char is uppercased; asserted at tests/title_case.sh:22."
+    },
+    {
+      "criterion": "title_case '' prints an empty string.",
+      "result": "MET",
+      "evidence": "scripts/lib/title_case.sh:10,23 \u2014 loop condition `i < ${#value}` is immediately false for empty input, result stays empty, `printf '%s\\n' \"\"` emits an empty string; asserted at tests/title_case.sh:23 (command substitution strips only the trailing newline)."
+    },
+    {
+      "criterion": "Runs of internal whitespace are preserved as-is between words: title_case 'a  b' prints 'A  B'.",
+      "result": "MET",
+      "evidence": "scripts/lib/title_case.sh:12-14 \u2014 the `[[ $char == [[:space:]] ]]` branch appends each whitespace char verbatim (no command substitution, no collapsing) and re-arms at_word_start, so 'a  b'\u2192'A  B'; asserted at tests/title_case.sh:24."
+    },
+    {
+      "criterion": "tests/title_case.sh sources the helper, asserts all of the above, and exits 0 when all pass.",
+      "result": "MET",
+      "evidence": "tests/title_case.sh:5 `source scripts/lib/title_case.sh` after cd to repo root; lines 20-24 assert all five cases; under `set -euo pipefail` (line 2) any mismatch returns 1 and aborts non-zero, and the final assert leaves exit status 0 when all pass."
+    }
+  ],
+  "scope_finding": "No drift. Only two files changed, both new: scripts/lib/title_case.sh (matches in-scope glob scripts/lib/**) and tests/title_case.sh (explicitly in scope). No .github/**, specs/**, or .orchestrator/** paths touched. Orchestrator scope check: PASS.",
+  "regression_finding": "None observed. The change is purely additive (two new files, no existing file modified), and all 35 required tests in the installed manifest passed against candidate 48c92451 with attested phase-aware provenance. The candidate-isolated FAIL for tests/codex_runtime.sh and SKIPs for tests/worker_isolation.sh and tests/worker_userns.sh are box-precondition tests whose authoritative box-precondition observations passed, per the recorded phase policy. Caveat: the new tests/title_case.sh is not in the installed required manifest and has no recorded execution; its exit-0 behavior was verified by static trace of the complete diff, which is deterministic and simple.",
+  "security_findings": "None observed. No network use (spec needs_network: false; code has none), no secrets or credential access, no unsafe shell constructs: all expansions are quoted or in safe [[ ]]/(( )) contexts, `LC_ALL=C tr` operates only on single characters via pipe, no eval/exec, and the test cd's relative to its own path without touching anything outside the repo tree.",
+  "reasons": [
+    "All six acceptance criteria are MET, verified by direct trace of the complete contents of the two new files in the diff: word-start uppercasing, non-initial lowercasing, single-char, empty-string, and whitespace-run-preservation behaviors all follow deterministically from scripts/lib/title_case.sh:10-23, and tests/title_case.sh sources the helper and asserts exactly these cases under set -euo pipefail.",
+    "Orchestrator evidence attests integrity PASS, scope PASS, and all 35 required tests passing against the exact candidate commit 48c92451876d1c5c933eb20e0e2af878c49148d1 with phase-aware provenance; the change is additive-only so regression risk is minimal.",
+    "Shell execution was unavailable in this review environment, so the spec test_command could not be re-run here; however, the diff supplies the full byte content of both files and the logic is simple enough that each criterion is unambiguously decidable by inspection, so evidence is neither missing nor ambiguous.",
+    "No blocking scope, regression, or security findings; the only noted caveat (new test absent from the installed required-test manifest, hence no attested run of tests/title_case.sh itself) is an expected artifact of manifest authority being the installed commit and does not contradict any criterion."
+  ],
+  "spec_digest": "7bbc401e7691c8c288bb5dfc6b4f5ba1423f36a4d39c4674dffeea0edffecaf2",
+  "base_sha": "81f4ce038ddca4f720cdead22cbbc9fb75bd6312",
+  "worker_commit": "48c92451876d1c5c933eb20e0e2af878c49148d1",
+  "schema_version": "3",
+  "quality": {
+    "maintainability": {
+      "score": 3,
+      "evidence": "scripts/lib/title_case.sh:16,19 spawn a printf|tr pipeline per character, which is O(n) subprocesses and the main debt; otherwise the function is short, uses local variables, defaults ${1-} safely under set -u, and the state machine (at_word_start) is easy to follow and modify."
+    },
+    "design_fit": {
+      "score": 4,
+      "evidence": "Mirrors the repository's established helper pattern seen in the test manifest (tests/capitalize.sh, tests/lower.sh, tests/upper.sh, tests/trim.sh): a sourceable single-function library under scripts/lib/ paired with a standalone bash test in tests/ that cd's to repo root and sources the helper, exactly as tests/title_case.sh:3-5 does."
+    },
+    "test_quality": {
+      "score": 4,
+      "evidence": "tests/title_case.sh:20-24 covers every spec criterion including the empty-string and internal-whitespace-run boundaries, with a reusable assert helper that prints expected-vs-actual via %q on failure and fails the script under set -e; core plus important boundary cases are covered, though inputs like tabs, punctuation-led words, or multi-word mixed case beyond the spec are not exercised."
+    }
+  },
+  "effective_reviewer_model": "claude-fable-5"
+}

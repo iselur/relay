@@ -1,0 +1,36 @@
+id: SPEC-020
+title: Add a title-case shell helper with tests
+risk_class: low
+depends_on: []
+objective: >
+  A title_case function in scripts/lib/title_case.sh uppercases the first letter of each
+  whitespace-separated word of its first argument and lowercases the rest of each word.
+  R73 Job 2 falsifier E2E fixture: a stock Codex dispatch on the merged adapter-worker train
+  must reach the same terminal status and review.json fields as the pre-refactor baseline
+  (SPEC-019-2). Small real work in the proven fixture shape (SPEC-010's content, re-scoped to
+  the current automation base; SPEC-010's approval bound the retired integration branch and a
+  different instance).
+in_scope:
+  - scripts/lib/**
+  - tests/title_case.sh
+out_of_scope:
+  - .github/**
+  - specs/**
+  - .orchestrator/**
+acceptance_criteria:
+  - "title_case 'hello world' prints 'Hello World'."
+  - "title_case 'HELLO WORLD' prints 'Hello World'."
+  - "title_case 'a' prints 'A'."
+  - "title_case '' prints an empty string."
+  - "Runs of internal whitespace are preserved as-is between words: title_case 'a  b' prints 'A  B'."
+  - >-
+    tests/title_case.sh sources the helper, asserts all of the above, and exits 0 when all
+    pass.
+test_command: bash tests/title_case.sh
+regression_command: bash tests/title_case.sh
+regression_test_paths:
+  - tests/title_case.sh
+hard_ceiling_hours: 2
+needs_network: false
+context:
+  - scripts/lib/

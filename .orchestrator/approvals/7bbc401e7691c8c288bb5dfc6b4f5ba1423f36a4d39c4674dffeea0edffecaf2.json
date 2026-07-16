@@ -1,0 +1,13 @@
+{
+  "spec_id": "SPEC-020",
+  "spec_digest": "7bbc401e7691c8c288bb5dfc6b4f5ba1423f36a4d39c4674dffeea0edffecaf2",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "approver": "val",
+  "approved_scope": [
+    "scripts/lib/**",
+    "tests/title_case.sh"
+  ],
+  "risk_class": "low",
+  "timestamp": "2026-07-16T09:38:29Z",
+  "note": "Owner approval in-session 2026-07-16, verbatim: 'Approved' \u2014 in response to the orchestrator's request naming SPEC-020, low risk, scope scripts/lib/** + tests/title_case.sh, digest 7bbc401e..., stock config, R73 Job 2 falsifier. Transcribed by the orchestrator per the recorded-decision precedent."
+}
