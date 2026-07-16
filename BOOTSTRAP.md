@@ -57,11 +57,11 @@ instance), then `./scripts/dispatch launch <SPEC-ID>` and `./scripts/dispatch aw
 Confirm it runs the worker in isolation, passes the gates + review, and opens a draft PR. **You**
 merge it.
 
-> **Don't dispatch SPEC-001–SPEC-017 for this check.** Their reference implementations
-> (`scripts/lib/*.sh`) already ship in this template — they're fixtures for Relay's own
-> `tests/execution-policy.tsv` suite, not unsolved work. Dispatching one will report
-> `failed_worker_error: worker produced no changes`. Write a fresh spec instead (a new small
-> helper + test is the fastest way to get a genuine end-to-end run).
+> **Don't dispatch the shipped sample specs (SPEC-001–017) for this check.** They are fixtures
+> for Relay's own `tests/execution-policy.tsv` suite, not unsolved work: many are already
+> implemented in `scripts/lib/` (those no-op with `failed_worker_error: worker produced no
+> changes`), and the rest deliberately probe failure and refusal paths — none gives a genuine
+> end-to-end run. Write a fresh spec instead (a new small helper + test is the fastest way).
 
 ## 7. Optional: plan-scoped autonomy
 
