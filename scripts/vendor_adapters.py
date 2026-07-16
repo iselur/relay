@@ -52,7 +52,7 @@ class CodexReviewer:
     def build_argv(self, model_id, effort, schema_obj, cli_aliases, schema_path):
         return [
             "codex", "exec", "-m", cli_aliases.get(model_id, model_id),
-            "-c", f"model_reasoning_effort={effort}", "-c", "service_tier=priority",
+            "-c", f"model_reasoning_effort={effort}",
             "--sandbox", "read-only", "--skip-git-repo-check",
             "--output-schema", str(schema_path),
             "-",  # prompt on stdin — production-proven by scripts/review
@@ -99,7 +99,7 @@ class CodexWorker:
     def build_argv(self, model_id, effort, worktree, prompt, isolated,
                    argv_prefix=None, last_message_path=None):
         args = ["exec", "--cd", str(worktree), "-m", model_id,
-                "-c", f"model_reasoning_effort={effort}", "-c", "service_tier=priority",
+                "-c", f"model_reasoning_effort={effort}",
                 "--skip-git-repo-check", "--json"]
         if isolated:
             # Codex's own sandbox is OFF (-s danger-full-access): it won't construct under the

@@ -272,7 +272,6 @@ errf="$dir/round-$round.stderr"
 if ! codex exec \
     -m "$MODEL" \
     -c model_reasoning_effort=high \
-    -c service_tier=priority \
     --sandbox read-only \
     --skip-git-repo-check \
     - <<<"$prompt" >"$out.partial" 2>"$errf"; then

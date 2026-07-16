@@ -40,7 +40,7 @@ PROMPT = "do the thing"
 PREFIX = ["/usr/bin/node", "/opt/codex/bin/codex.js"]
 LMP = "/tmp/att/raw/worker-last-message.txt"
 common = ["exec", "--cd", WT, "-m", "gpt-5.6-luna",
-          "-c", "model_reasoning_effort=high", "-c", "service_tier=priority",
+          "-c", "model_reasoning_effort=high",
           "--skip-git-repo-check", "--json"]
 check("isolated argv is byte-identical to the pre-adapter dispatcher",
       w.build_argv("gpt-5.6-luna", "high", WT, PROMPT, isolated=True, argv_prefix=PREFIX)

@@ -85,8 +85,6 @@ exec
 gpt-5.6-sol
 -c
 model_reasoning_effort=high
--c
-service_tier=priority
 --sandbox
 read-only
 --skip-git-repo-check

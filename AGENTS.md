@@ -43,9 +43,9 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
 ## Codex on this box
 
 - Model split (from `scripts/models.json`): worker BUILD `gpt-5.6-luna`; plans and reviews `gpt-5.6-sol`.
-- Invocation: `codex exec -m <model per split above> -c model_reasoning_effort=high -c service_tier=priority
+- Invocation: `codex exec -m <model per split above> -c model_reasoning_effort=high
   --sandbox read-only --skip-git-repo-check - <prompt.txt` — prompt on stdin always (argv dies
-  over 130KB). Web search: `-c tools.web_search=true`. The priority tier is a speed setting only.
+  over 130KB). Web search: `-c tools.web_search=true`. Standard tier: never set `service_tier` (owner cost decision 2026-07-16).
 - Consultations run detached (background or `systemd-run --user`) and may legitimately take hours —
   never a minute-scale timeout. Codex runs commands and reads the repo itself (its sandbox needs
   the `bwrap-userns-restrict` AppArmor profile loaded — without it every run dies at
