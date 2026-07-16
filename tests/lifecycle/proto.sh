@@ -42,6 +42,8 @@ lf_init() {  # $1 root, $2 supervisor-token
     : > "$LF_ROOT/.lock"
     printf '%s' "${2:-supervisor}" > "$LF_ROOT/supervisor"
     printf '0' > "$LF_ROOT/.obs_seq"
+    printf '0' > "$LF_ROOT/.last_now"   # the floor ALWAYS exists post-init: a missing or
+    # unreadable floor is corrupt state and fails closed, never "zero"
 }
 
 _lf_id() {
@@ -59,11 +61,11 @@ _lf_crash() { [ "${LF_CRASH_POINT:-}" = "$1" ] && exit 97; return 0; }
 _lf_halt()  { [ -e "$LF_ROOT/HALT" ] && return 9; return 0; }
 _lf_dead()  { [ -e "$LF_ROOT/deadletters/$1" ] && return 3; return 0; }
 
-_lf_now_ro() {  # validated monotonic 'now'; NEVER mutates the floor; fails closed
-    local now last
-    now=$(date +%s 2>/dev/null) || return 1
+_lf_now_ro() {  # validated monotonic 'now'; NEVER mutates the floor; fails closed on a
+    local now last  # missing, UNREADABLE, malformed, or backward floor (init always creates
+    now=$(date +%s 2>/dev/null) || return 1   # the floor — absence is corruption, never zero)
     [[ "$now" =~ ^[0-9]+$ ]] || return 1
-    last=$(cat "$LF_ROOT/.last_now" 2>/dev/null || echo 0)
+    last=$(cat "$LF_ROOT/.last_now" 2>/dev/null) || return 1
     [[ "$last" =~ ^[0-9]+$ ]] || return 1
     [ "$now" -lt "$last" ] && return 1
     echo "$now"
@@ -74,13 +76,17 @@ _lf_bump_floor() {  # publish the floor AFTER the primary record, through the SA
     tmp="$(mktemp "$LF_ROOT/.tmp.XXXXXX")" || exit 1   # lower bound), never half-published.
     printf '%s' "$1" > "$tmp" || { rm -f "$tmp"; exit 1; }
     [ "${LF_HALT_AT:-}" = "floor" ] && : > "$LF_ROOT/HALT"
-    if [ -e "$LF_ROOT/HALT" ]; then rm -f "$tmp"; return 0; fi
+    if [ -e "$LF_ROOT/HALT" ]; then rm -f "$tmp" || exit 1; return 0; fi
     mv "$tmp" "$LF_ROOT/.last_now" || { rm -f "$tmp"; exit 1; }
 }
 
-_lf_commit_gate() {  # $1 staged-tmp (removed if HALT stops the publish)
-    if [ "${LF_HALT_AT:-}" = "commit" ]; then : > "$LF_ROOT/HALT"; fi
-    if [ -e "$LF_ROOT/HALT" ]; then rm -f "${1:-}"; exit 9; fi
+_lf_commit_gate() {  # $1 staged-tmp (removed if HALT stops the publish; a temp that survives
+    if [ "${LF_HALT_AT:-}" = "commit" ]; then : > "$LF_ROOT/HALT"; fi   # removal is REPORTED)
+    if [ -e "$LF_ROOT/HALT" ]; then
+        rm -f -- "${1:-}" 2>/dev/null
+        [ -n "${1:-}" ] && [ -e "$1" ] && echo "lf: WARNING staged temp survived HALT cleanup: $1" >&2
+        exit 9
+    fi
 }
 
 _lf_write() {  # $1 path, stdin content — ANY I/O failure aborts the whole locked transaction
@@ -98,8 +104,9 @@ _lf_create() {  # exactly-once publish; I/O failure aborts, existing target retu
     tmp="$(mktemp "$(dirname "$1")/.tmp.XXXXXX")" || exit 1
     cat > "$tmp" || { rm -f "$tmp"; exit 1; }
     _lf_commit_gate "$tmp"
-    if ln "$tmp" "$1" 2>/dev/null; then rm -f "$tmp"; return 0; fi
-    rm -f "$tmp"; return 1
+    if ln "$tmp" "$1" 2>/dev/null; then rm -f "$tmp" || exit 1; return 0; fi
+    rm -f "$tmp" || exit 1
+    return 1
 }
 
 _lf_remove() {  # gated removal; failure aborts the transaction
@@ -236,13 +243,18 @@ EOF
     ) 9>>"$LF_ROOT/.lock"
 }
 
-lf_jobs_of_lease() {  # $1 row, $2 gen — reverse trace; row regex-escaped, gen strictly numeric
-    _lf_id "$1" || return 1
-    [[ "$2" =~ ^[0-9]+$ ]] || return 1
-    local rr
-    rr=$(_lf_re "$1")
-    grep -l "^row=$rr\$" "$LF_ROOT/jobs/"* 2>/dev/null \
-        | xargs -r grep -l "^generation=$2\$" | xargs -rn1 basename
+lf_jobs_of_lease() {  # $1 row, $2 gen — reverse trace; an UNREADABLE ledger fails the call
+    _lf_id "$1" || return 1               # (round-5 blocking 3: unreadable state is never a
+    [[ "$2" =~ ^[0-9]+$ ]] || return 1    # trusted empty), row regex-escaped, gen numeric
+    local f
+    [ -r "$LF_ROOT/jobs" ] || return 1
+    for f in "$LF_ROOT/jobs/"*; do
+        [ -e "$f" ] || continue
+        [ -r "$f" ] || return 1
+        if grep -q "^row=$(_lf_re "$1")\$" "$f" && grep -q "^generation=$2\$" "$f"; then
+            basename "$f"
+        fi
+    done
 }
 
 # ---- rotation signals -----------------------------------------------------------------------------------
@@ -277,8 +289,9 @@ lf_commit_boundary() {  # $1 row, $2 session, $3 gen
         _lf_halt || exit 9
         _lf_dead "$1" || exit 3
         _lf_auth "$1" "$2" "$3" || exit 1
-        local jobs
-        jobs=$(lf_jobs_of_lease "$1" "$3" | paste -sd, -)
+        local jobs_list jobs
+        jobs_list=$(lf_jobs_of_lease "$1" "$3") || exit 1   # unreadable ledger ABORTS — never
+        jobs=$(printf '%s\n' "$jobs_list" | paste -sd, -)   # a trusted-empty handoff
         _lf_crash before-handoff-write
         _lf_write "$LF_ROOT/handoffs/$1.gen$3" <<EOF
 row=$1
@@ -288,11 +301,14 @@ jobs=$jobs
 source=ledger
 EOF
         _lf_crash after-handoff-write
+        # the released lease RECORDS the departing session (last_session): handoff consumption
+        # verifies the named predecessor against this ledger field unconditionally, jobs or not
         _lf_write "$LF_ROOT/rows/$1.lease" <<EOF
 row=$1
 generation=$3
 session=
 expiry=0
+last_session=$2
 EOF
         _lf_crash after-boundary-release
         [ -e "$LF_ROOT/rows/$1.rotate" ] && _lf_remove "$LF_ROOT/rows/$1.rotate"
@@ -317,17 +333,22 @@ _lf_handoff_valid() {  # $1 handoff-path, $2 row, $3 expected-generation — EXA
     fs=$(sed -n 's/^from_session=//p' "$h")
     _lf_id "$fs" || return 1
     grep -q '^source=ledger$' "$h" || return 1
-    # the jobs field must EQUAL the ledger's recomputed reverse trace — self-assertion refused
+    # the jobs field must EQUAL the ledger's recomputed reverse trace — self-assertion refused,
+    # and an UNREADABLE ledger refuses (never a trusted empty)
     jobs=$(sed -n 's/^jobs=//p' "$h")
-    ledger_jobs=$(lf_jobs_of_lease "$row" "$gen" | paste -sd, -)
+    local ledger_list
+    ledger_list=$(lf_jobs_of_lease "$row" "$gen") || return 1
+    ledger_jobs=$(printf '%s\n' "$ledger_list" | paste -sd, -)
     [ "$jobs" = "$ledger_jobs" ] || return 1
-    # PROVENANCE: when the ledger records jobs for this generation, the predecessor named in
-    # the handoff must be the session those job records name — a valid-looking but foreign
-    # from_session refuses
-    if [ -n "$ledger_jobs" ]; then
-        jsess=$(sed -n 's/^session=//p' "$LF_ROOT/jobs/${ledger_jobs%%,*}")
+    # PROVENANCE, unconditional: the named predecessor must be the session the released lease
+    # RECORDED at the boundary (last_session — present for every boundary handoff), AND every
+    # job record of that generation must name the same session (mixed/malformed records refuse)
+    [ "$fs" = "$(_lf_lease_field "$row" last_session)" ] || return 1
+    local j
+    for j in ${ledger_jobs//,/ }; do
+        jsess=$(sed -n 's/^session=//p' "$LF_ROOT/jobs/$j")
         [ "$fs" = "$jsess" ] || return 1
-    fi
+    done
 }
 
 lf_consume_handoff() {  # $1 row, $2 successor — one locked transaction; successor IN CONTENT
@@ -350,9 +371,13 @@ lf_consume_handoff() {  # $1 row, $2 successor — one locked transaction; succe
         gen=$(_lf_lease_field "$1" generation); gen=${gen:-0}
         [[ "$gen" =~ ^[0-9]+$ ]] || exit 1
         _lf_handoff_valid "$h" "$1" "$gen" || exit 1
+        # read the handoff content FIRST, checked — a failed read aborts before any transition
+        # (round-5 blocking 4: no successor-only partial records)
+        local hcontent
+        hcontent=$(cat "$h") || exit 1
         _lf_crash before-consume
         # 1) durable consumption record: successor named IN CONTENT (dot-safe), fixed filename
-        { echo "successor=$2"; cat "$h"; } | _lf_write "$LF_ROOT/consumed/$1.gen$gen"
+        { echo "successor=$2"; printf '%s\n' "$hcontent"; } | _lf_write "$LF_ROOT/consumed/$1.gen$gen"
         _lf_crash after-consume-record
         # 2) retire the handoff
         _lf_remove "$h"
@@ -461,7 +486,9 @@ _lf_kill_ok() {
         [ "$(sed -n 's/^row=//p' "$f")" = "$row" ] || return 1
         [ "$(sed -n 's/^generation=//p' "$f")" = "$gen" ] || return 1
     done
-    _lf_cas "$row" "$session" "$gen"
+    # FULL authority, not bare CAS (round-5 blocking 2): a forged/malformed/expired lease can
+    # never authorize a kill — the same whole-schema + strictly-live rule as every authority op
+    _lf_auth "$row" "$session" "$gen"
 }
 
 lf_kill_eligible() {
@@ -507,7 +534,15 @@ lf_recover() {  # $1 row -> ONE answer; read-only; dead-letters outrank everythi
         sess=$(_lf_lease_field "$1" session)
         gen=$(_lf_lease_field "$1" generation); gen=${gen:-0}
         if [ -n "$sess" ] && _lf_lease_live "$1"; then
-            echo "owner $sess"
+            # a live-LOOKING lease must also be whole-schema valid before recovery names a
+            # promptable owner (round-5 blocking 2) — a forged/malformed record fails closed
+            if [ "$(_lf_lease_field "$1" row)" = "$1" ] \
+               && [[ "$(_lf_lease_field "$1" generation)" =~ ^[0-9]+$ ]] \
+               && _lf_id "$sess"; then
+                echo "owner $sess"
+            else
+                echo "invalid-lease"
+            fi
         elif [ -f "$LF_ROOT/consumed/$1.gen$gen" ]; then
             # a consumption committed at the CURRENT generation outranks a lingering handoff:
             # the successor is already durably recorded (content field, dot-safe)
@@ -533,6 +568,10 @@ lf_recover_finish() {  # $1 row — retire any leftover handoff, mint the RECORD
         [ -f "$LF_ROOT/consumed/$1.gen$gen" ] || exit 1
         succ=$(sed -n 's/^successor=//p' "$LF_ROOT/consumed/$1.gen$gen")
         _lf_id "$succ" || exit 1
+        # N=1 holds through recovery (round-5 blocking 5): a successor compacted between the
+        # interrupted consumption and this recovery gets NO lease — the row stays fenced for
+        # the owner/authorized procedure, honestly, rather than violating the hard ceiling
+        [ -e "$LF_ROOT/compacted.$succ" ] && exit 1
         now=$(_lf_now_ro) || exit 1
         h=$(ls -1 "$LF_ROOT/handoffs/$1."gen* 2>/dev/null | head -1)
         [ -n "$h" ] && _lf_remove "$h"

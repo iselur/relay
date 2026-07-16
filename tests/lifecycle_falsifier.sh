@@ -163,6 +163,16 @@ cp "$ROOT/h.bak" "$H"; printf 'successor=evil\n' >> "$H"
 lf_consume_handoff ROWP sessQ 2>/dev/null; [ $? -eq 1 ]
 check "an unknown/injected field refuses (closed-world handoff schema)" $?
 cp "$ROOT/h.bak" "$H"
+# NO-JOBS handoff: the predecessor is still ledger-verified via the released lease's
+# last_session field — a forged-but-valid from_session refuses even with zero jobs
+gnj=$(lf_acquire ROWNJ sessNJ 600)
+lf_commit_boundary ROWNJ sessNJ "$gnj"
+sed -i 's/^from_session=.*/from_session=sessForged/' "$ROOT/state/handoffs/ROWNJ.gen$gnj"
+lf_consume_handoff ROWNJ sessQ2 2>/dev/null; [ $? -eq 1 ]
+check "a forged predecessor refuses on a NO-JOBS handoff too (last_session provenance)" $?
+sed -i 's/^from_session=.*/from_session=sessNJ/' "$ROOT/state/handoffs/ROWNJ.gen$gnj"
+lf_consume_handoff ROWNJ sessQ2 >/dev/null
+check "the honest no-jobs handoff consumes cleanly" $?
 cp "$H" "$ROOT/state/handoffs/ROWP.gen999"
 lf_consume_handoff ROWP sessQ 2>/dev/null; [ $? -eq 1 ];       check "TWO handoffs for one row refuse" $?
 rm "$ROOT/state/handoffs/ROWP.gen999"
@@ -190,6 +200,14 @@ floor_before=$(cat "$ROOT/state/.last_now")
 lf_recover ROW2 >/dev/null
 [ "$(cat "$ROOT/state/.last_now")" = "$floor_before" ];        check "read-only recovery never mutates the clock floor" $?
 echo 0 > "$ROOT/state/.last_now"
+chmod 000 "$ROOT/state/.last_now"
+lf_acquire ROW-CLK sessA 60 >/dev/null 2>&1; [ $? -eq 1 ]
+check "an UNREADABLE clock floor refuses acquisition (unreadable is corruption, never zero)" $?
+chmod 644 "$ROOT/state/.last_now"
+mv "$ROOT/state/.last_now" "$ROOT/state/.last_now.away"
+lf_acquire ROW-CLK sessA 60 >/dev/null 2>&1; [ $? -eq 1 ]
+check "a MISSING clock floor refuses too (init always creates it — absence is corruption)" $?
+mv "$ROOT/state/.last_now.away" "$ROOT/state/.last_now"
 
 # ---- HALT: entry sweep + commit instant (no temp residue, no floor advance) --------------------------------
 : > "$ROOT/state/HALT"
@@ -237,7 +255,21 @@ chmod 755 "$ROOT/state/handoffs"
 [ "$rc" -ne 0 ] && [ "$(sed -n 's/^session=//p' "$ROOT/state/rows/ROWIO.lease")" = "sessIO" ] \
   && [ ! -e "$ROOT/state/handoffs/ROWIO.gen$gio" ]
 check "a failed handoff publish ABORTS the boundary — the lease is NOT released (no stranding)" $?
-lf_release ROWIO sessIO "$gio" 2>/dev/null || true
+# an UNREADABLE job ledger aborts the boundary — never a trusted-empty handoff
+chmod 000 "$ROOT/state/jobs/JOBIO"
+lf_commit_boundary ROWIO sessIO "$gio" 2>/dev/null; rc=$?
+chmod 644 "$ROOT/state/jobs/JOBIO"
+[ "$rc" -ne 0 ] && [ "$(sed -n 's/^session=//p' "$ROOT/state/rows/ROWIO.lease")" = "sessIO" ] \
+  && [ ! -e "$ROOT/state/handoffs/ROWIO.gen$gio" ]
+check "an UNREADABLE job ledger ABORTS the boundary (never a trusted-empty job map)" $?
+lf_commit_boundary ROWIO sessIO "$gio" >/dev/null
+chmod 000 "$ROOT/state/handoffs/ROWIO.gen$gio"
+lf_consume_handoff ROWIO sessIO2 2>/dev/null; rc=$?
+chmod 644 "$ROOT/state/handoffs/ROWIO.gen$gio"
+[ "$rc" -ne 0 ] && [ ! -e "$ROOT/state/consumed/ROWIO.gen$gio" ] \
+  && [ -e "$ROOT/state/handoffs/ROWIO.gen$gio" ]
+check "an UNREADABLE handoff ABORTS consumption — no partial successor-only record" $?
+lf_consume_handoff ROWIO sessIO2 >/dev/null
 
 # ---- crash matrix: point-specific oracles AND proven injections ---------------------------------------------
 crash_fails=0
@@ -292,6 +324,12 @@ check "interrupted consumption fences bare acquisition" $?
 LF_ROOT="$CR" lf_consume_handoff CROW s3 >/dev/null 2>&1; [ $? -eq 1 ]
 [ "$(sed -n 's/^successor=//p' "$CR/consumed/CROW.gen1")" = "s2" ]
 check "a SECOND consumer cannot overwrite the recorded successor (duplicate consumption refused)" $?
+# N=1 holds through recovery: a successor compacted after the interrupted consumption gets
+# no lease — probe on a COPY of the fixture so the real recovery below still runs
+CRN="$ROOT/crash-n1"; cp -r "$CR" "$CRN"
+( . tests/lifecycle/proto.sh; LF_ROOT="$CRN"; : > "$CRN/compacted.s2"
+  lf_recover_finish CROW ) >/dev/null 2>&1; [ $? -eq 1 ]
+check "recovery refuses to mint a COMPACTED successor (N=1 survives the crash path)" $?
 fin=$(LF_ROOT="$CR" lf_recover_finish CROW)
 [ "$fin" = "s2" ] && [ "$(LF_ROOT="$CR" lf_recover CROW)" = "owner s2" ] \
   && [ ! -e "$CR/handoffs/CROW.gen1" ]
@@ -360,6 +398,17 @@ lf_kill sessK tmux-id-1 ROW6 "$g6";                             check "repeated 
 lf_release ROW6 sessK "$g6" && g6b=$(lf_acquire ROW6 sessK 600)
 lf_kill_eligible sessK tmux-id-1 ROW6 "$g6b" 2>/dev/null; [ $? -eq 1 ]
 check "old observations cannot be replayed against a NEW lease generation" $?
+# a forged/malformed lease can never authorize a kill, and recovery never names its owner
+gm=$(lf_acquire ROWM sessM 600)
+lf_observe sessM stale id-m ROWM "$gm" m1
+lf_observe sessM stale id-m ROWM "$gm" m2
+sed -i 's/^row=.*/row=FORGED/' "$ROOT/state/rows/ROWM.lease"
+lf_kill sessM id-m ROWM "$gm" 2>/dev/null; [ $? -eq 1 ]
+check "a lease with a FORGED row field cannot authorize a kill (whole-schema authority)" $?
+[ "$(lf_recover ROWM)" = "invalid-lease" ]
+check "recovery reports invalid-lease for a forged record — never a promptable owner" $?
+sed -i 's/^row=.*/row=ROWM/' "$ROOT/state/rows/ROWM.lease"
+lf_release ROWM sessM "$gm"
 
 # ---- N=1 --------------------------------------------------------------------------------------------------------------
 g8=$(lf_acquire ROW7 sessN 60)
