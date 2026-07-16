@@ -63,6 +63,11 @@ cp .orchestrator/plans/PLAN-202.md claude-plan-renamed.md   # id: PLAN-202, clau
 # a Sol model into a 'claude' derivation — both refuse (exit 2), never guess.
 printf -- '---\nid: PLAN-203\nauthor_model: gpt-5.6-sol'"'"'\nstatus: draft\n---\n# body\n' > stray-quote.md
 printf -- '---\nid: PLAN-204\nauthor_model: gpt-5.6-sol\nauthor_model: claude-opus-4-8\nstatus: draft\n---\n# body\n' > dup-key.md
+# Round-4 finding-1 fixture: an invalid UTF-8 byte (\xff) inside a duplicate author_model KEY. Under
+# errors="replace" the byte was silently repaired into a DISTINCT key that dodged duplicate
+# detection, so the plain `author_model: claude-opus-4-8` set the vendor and this Sol-value file
+# derived 'claude'. Strict decoding treats invalid UTF-8 as broken provenance and refuses (exit 2).
+printf -- '---\nid: PLAN-206\nauthor_model\xff: gpt-5.6-sol\nauthor_model: claude-opus-4-8\nstatus: draft\n---\n# body\n' > bad-utf8-dup.md
 # Finding-3 fixtures: two distinct Sol plans (ordering — multiple-plan refusal must precede the
 # codex self-review refusal), reusing PLAN-001 (sol) plus a second sol plan.
 mk_plan .orchestrator/plans/PLAN-205.md gpt-5.6-sol
@@ -308,6 +313,14 @@ rc=$?
 scripts/review --topic plan-406 --author claude --context inline-comment.md "review" >/dev/null 2>&1 \
   && ok "id with an inline comment reviews under its bound topic plan-406" \
   || bad "id with inline comment refused under its bound topic"
+
+# 19. ROUND-4 FINDING 1 — invalid UTF-8 must not be silently repaired into a distinct key to dodge
+#     duplicate detection. `author_model\xff:` + a plain `author_model: claude-opus-4-8` over a Sol
+#     value derived 'claude' under errors="replace"; strict decoding refuses invalid UTF-8 (exit 2).
+scripts/review --topic plan-206 --author claude --context bad-utf8-dup.md "review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 2 ] && ok "invalid UTF-8 in frontmatter refused, not repaired into a distinct key (exit 2)" \
+  || bad "invalid UTF-8 frontmatter gave exit $rc, expected 2"
 
 [ "$fails" -eq 0 ] && echo "PASS review_plan_authorship.sh" || echo "FAIL review_plan_authorship.sh"
 exit "$fails"

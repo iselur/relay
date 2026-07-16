@@ -48,6 +48,23 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
+# R84: the frontmatter provenance check parses YAML with the pinned PyYAML from the orchestrator
+# venv (scripts/requirements.txt), NOT whatever the host's system python happens to carry — a
+# round-4 review found that using system python3 meant the pinned/tested parser was not the one
+# actually deriving provenance. Resolve the SAME interpreter dispatch uses (scripts/dispatch): the
+# dispatch/CI-injected ORCH_TEST_PY when set (the exact runtime the gate verified), else this tree's
+# .venv, else system python3 as a last resort for a venv-less scratch checkout. The production
+# installed review always hits the .venv; the gate/strict suite always sets ORCH_TEST_PY — so the
+# trusted, pinned PyYAML is what parses provenance in every real path, and the system fallback is
+# reached only for a bare developer `./scripts/test` on a copy that has no venv of its own.
+if [[ -n "${ORCH_TEST_PY:-}" ]]; then
+  PY="$ORCH_TEST_PY"
+elif [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PY="$ROOT/.venv/bin/python"
+else
+  PY="python3"
+fi
+
 out_root=".orchestrator/reviews"
 topic=""
 author=""
@@ -63,7 +80,7 @@ die() { printf 'review: %s\n' "$*" >&2; exit 2; }
 MODELS_CFG="$ROOT/scripts/models.json"
 MODELS_CHECK="$ROOT/scripts/models_check.py"
 [ -f "$MODELS_CFG" ] || die "models config missing: $MODELS_CFG (fail closed)"
-MODEL=$(python3 "$MODELS_CHECK" "$MODELS_CFG" get roles.orchestrator_artifact_reviewer.model) \
+MODEL=$("$PY" "$MODELS_CHECK" "$MODELS_CFG" get roles.orchestrator_artifact_reviewer.model) \
   || die "models config invalid, or roles.orchestrator_artifact_reviewer.model unusable: $MODELS_CFG"
 
 while (($#)); do
@@ -95,7 +112,7 @@ local_worktrees="$ROOT/.worktrees"
 # map, an invalid config, or any read error yields 'unknown' and the caller refuses it: a new
 # model must be declared in the map before anything it authored can be vendor-classified.
 classify_model() {
-  python3 "$MODELS_CHECK" "$MODELS_CFG" vendor "$1" 2>/dev/null || echo unknown
+  "$PY" "$MODELS_CHECK" "$MODELS_CFG" vendor "$1" 2>/dev/null || echo unknown
 }
 
 # Prints 'VENDOR<TAB>evidence note' on stdout. Never calls die()/exit — it runs inside a command
@@ -156,12 +173,22 @@ derive_one() {
   local plan_id="-" plan_vendor="" plan_model=""
   if [[ -n "$md_file" ]]; then
     local parsed prc pstatus pid pmodel vendor
-    parsed=$(python3 - "$md_file" <<'PYEOF'
+    parsed=$("$PY" - "$md_file" <<'PYEOF'
 import re, sys
 try:
-    content = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+    with open(sys.argv[1], "rb") as fh:
+        raw = fh.read()
 except Exception:
     print("readfail"); sys.exit(0)
+try:
+    # Decode STRICTLY. errors="replace" was a fail-OPEN path (round-4 review): an invalid UTF-8 byte
+    # inside a key — e.g. `author_model\xff:` — was silently repaired into a DISTINCT key, so it no
+    # longer collided with a plain `author_model:` and the duplicate-key guard never fired, letting a
+    # second author_model set the vendor. Invalid UTF-8 in a provenance file is broken provenance;
+    # refuse rather than repair-then-guess.
+    content = raw.decode("utf-8")
+except UnicodeDecodeError:
+    print("broken\tinvalid UTF-8 in plan frontmatter file — refuse rather than guess"); sys.exit(0)
 try:
     import yaml
 except Exception:
@@ -275,7 +302,7 @@ PYEOF
       printf 'error\t-\t%s is inside dispatch attempt %s/%s but its launch.json is missing (%s); provenance cannot be established\n' "$f" "$spec" "$n" "$lc"
       return 0
     fi
-    wm=$(python3 -c "
+    wm=$("$PY" -c "
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -322,7 +349,7 @@ print(d.get('worker_model') or '')
   if [[ -d "$attempts_root" ]]; then
     local lc wt
     while IFS= read -r lc; do
-      wt=$(python3 -c "
+      wt=$("$PY" -c "
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
