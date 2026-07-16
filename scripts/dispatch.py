@@ -2414,19 +2414,22 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
     # R73 Job 2: worker CLI mechanics live behind the vendor adapter, selected by the FROZEN
     # worker vendor — same fail-closed doctrine as review(): the module pinned at dispatcher
     # import, corrupt/partial vendor records and unknown vendors refuse before any worker runs.
+    # Round-3 review (major): these refusals record error_launch — the canonical TERMINAL
+    # infrastructure status (`dispatch await` resolves it immediately; it consumes no
+    # remediation budget) — never failed_launch, which is in neither TERMINAL nor LIVE.
     vendors = lc_frozen_vendor_fields(lc)
     if vendors is None:
-        finish("failed_launch", ERR_LAUNCH,
+        finish("error_launch", ERR_LAUNCH,
                detail="launch record carries a partial set of frozen vendor fields (corrupt "
                       "launch.json); fail closed — no worker was invoked")
     if VENDOR_ADAPTERS is None:
-        finish("failed_launch", ERR_LAUNCH,
+        finish("error_launch", ERR_LAUNCH,
                detail=f"vendor adapters failed to load at dispatcher start "
                       f"({VENDOR_ADAPTERS_ERR}); fail closed — no worker was invoked")
     try:
         worker_adapter = VENDOR_ADAPTERS.get_worker_adapter(vendors["worker_vendor"])
     except Exception as exc:
-        finish("failed_launch", ERR_LAUNCH,
+        finish("error_launch", ERR_LAUNCH,
                detail=f"worker adapter unavailable for vendor "
                       f"{vendors.get('worker_vendor')!r}: {exc}; fail closed — "
                       f"no worker was invoked")

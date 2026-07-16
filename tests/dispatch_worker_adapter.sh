@@ -135,6 +135,31 @@ try:
 finally:
     d.subprocess.run = _orig_run
 
+# ---- adapter-refusal pipeline outcome is TERMINAL (round-3 major) --------------------------
+# Drive _run_pipeline to the corrupt-vendor-record refusal with a finish stub and assert the
+# RECORDED status is error_launch and a member of TERMINAL — `dispatch await` must resolve the
+# refusal immediately, not poll a status that is in neither TERMINAL nor LIVE for 8 hours.
+import hashlib
+att = pathlib.Path(tempfile.mkdtemp()); (att / "raw").mkdir()
+snap = b"id: SPEC-000\n"
+(att / "spec-snapshot.yaml").write_bytes(snap)
+lc_corrupt = {"spec_digest": hashlib.sha256(snap).hexdigest(), "isolation": True,
+              "deadline_ts": 4102444800.0, "worker_vendor": "codex"}   # one vendor key = corrupt
+recorded = {}
+class _Stop(Exception): pass
+def _finish(status, error_class, **kw):
+    recorded["status"], recorded["error_class"] = status, error_class
+    raise _Stop()
+try:
+    d._run_pipeline("SPEC-000-1", "SPEC-000", 1, att, lc_corrupt,
+                    pathlib.Path("/nonexistent-wt"), att / "raw", _finish)
+except _Stop:
+    pass
+check("corrupt vendor record refusal records error_launch (ERR_LAUNCH)",
+      recorded.get("status") == "error_launch" and recorded.get("error_class") == d.ERR_LAUNCH)
+check("the recorded refusal status is TERMINAL (await resolves immediately)",
+      recorded.get("status") in d.TERMINAL)
+
 # ---- integrate branch-deletion guard (round-1 BLOCKING) -----------------------------------
 check("frozen codex/<aid> branch validates for its own attempt",
       d.valid_attempt_branch("codex/SPEC-000-1", "SPEC-000-1"))
