@@ -76,6 +76,25 @@ LEGACY_VENDOR_DEFAULTS = {"worker_vendor": "codex", "reviewer_vendor": "claude"}
 KNOWN_VENDORS = ("claude", "codex")   # closed world: matches scripts/models_check.py VENDORS
 
 
+def _load_vendor_adapters():
+    """Load scripts/vendor_adapters.py ONCE, at dispatcher import (R73 round-2 review, blocking:
+    loading at review time read the LIVE checkout, so an attempt launched under dispatcher A
+    could execute adapter B installed mid-attempt — an unreviewed mixed version exactly around
+    argv construction and verdict extraction). The module is pinned when this process starts;
+    a load failure pins None and review() fails closed without invoking any reviewer."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "vendor_adapters", ROOT / "scripts" / "vendor_adapters.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod, None
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+VENDOR_ADAPTERS, VENDOR_ADAPTERS_ERR = _load_vendor_adapters()
+
+
 def lc_frozen_vendor_fields(lc: dict) -> "dict | None":
     """Both frozen vendor fields from a launch record, the pre-freezing defaults when NEITHER
     is present, and None — refuse, fail closed — when exactly one is (corrupt record) or when
@@ -221,6 +240,13 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
         if vm.get(model) is None:
             die(f"launch refused: {key} {model!r} is not declared in vendor_map "
                 f"({MODEL_CONFIG}) — an undeclared model cannot be vendor-classified")
+    # R73 round-2 review (medium): the worker phase is hard-wired to the Codex runtime until the
+    # worker adapter ships (R73 Job 2) — a non-codex worker would resolve, freeze a truthful
+    # vendor, and then execute under the wrong CLI. Refuse it at resolution, not at run time.
+    if vm[resolved["worker_model"]] != "codex":
+        die(f"launch refused: worker_model {resolved['worker_model']!r} is "
+            f"{vm[resolved['worker_model']]}-vendor, but the worker phase is codex-only until "
+            f"the worker adapter exists (R73 Job 2)")
     # R73 Job 1: vendors freeze WITH the models — run-time selects the CLI adapter from these
     # fields and never re-infers from a live config.
     resolved["worker_vendor"] = vm[resolved["worker_model"]]
@@ -3006,12 +3032,14 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     if vendors is None:
         return None, ("launch record carries a partial set of frozen vendor fields "
                       "(corrupt launch.json); fail closed — no reviewer was invoked")
+    # R73 round-2 review (blocking): the adapter module is the one PINNED at dispatcher import
+    # (VENDOR_ADAPTERS), never re-read from disk here — a mid-attempt installation cannot swap
+    # the adapter under a running attempt. Pin failure or an unknown vendor yields no verdict.
+    if VENDOR_ADAPTERS is None:
+        return None, (f"vendor adapters failed to load at dispatcher start "
+                      f"({VENDOR_ADAPTERS_ERR}); fail closed — no reviewer was invoked")
     try:
-        spec_mod = importlib.util.spec_from_file_location(
-            "vendor_adapters", ROOT / "scripts" / "vendor_adapters.py")
-        vendor_adapters = importlib.util.module_from_spec(spec_mod)
-        spec_mod.loader.exec_module(vendor_adapters)
-        adapter = vendor_adapters.get_reviewer_adapter(vendors["reviewer_vendor"])
+        adapter = VENDOR_ADAPTERS.get_reviewer_adapter(vendors["reviewer_vendor"])
     except Exception as exc:
         return None, (f"reviewer adapter unavailable for vendor "
                       f"{vendors.get('reviewer_vendor')!r}: {exc}; fail closed — "

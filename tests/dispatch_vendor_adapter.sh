@@ -121,6 +121,11 @@ good_verdict = {"spec_digest": "d" * 64, "base_sha": "b" * 40, "worker_commit": 
                 "criteria": [{"id": "C1", "result": "MET"}], "scope_finding": "in scope",
                 "regression_finding": "n/a", "security_findings": "none"}
 
+# R73 round-2 review (blocking): the adapter module is pinned at dispatcher import — review()
+# consults the pin, never the disk, so a mid-attempt installation cannot swap the adapter.
+check("vendor adapters pinned at dispatcher import",
+      d.VENDOR_ADAPTERS is not None and hasattr(d.VENDOR_ADAPTERS, "get_reviewer_adapter"))
+
 # A codex-vendor bound review, end to end: bare-JSON verdict accepted, schema file durable.
 calls = []
 def codex_ok_run(cmd, **kw):
@@ -143,6 +148,17 @@ check("codex-vendor review: schema file written durably under raw/",
       json.loads((att90 / "raw" / "review-schema.json").read_text()) == vschema)
 check("codex-vendor review: shaped prompt (schema appended) is the durable review request",
       "ONLY one JSON object" in (att90 / "raw" / "review-request.txt").read_text())
+
+# review() consults the PIN, not the disk: with the pin gone, no reviewer is ever invoked.
+att95 = tmp / "attempts" / "SPEC-955" / "1"; (att95 / "raw").mkdir(parents=True)
+_saved_pin, d.VENDOR_ADAPTERS = d.VENDOR_ADAPTERS, None
+_saved_err, d.VENDOR_ADAPTERS_ERR = d.VENDOR_ADAPTERS_ERR, "simulated load failure"
+calls_before = len(calls)
+v95, raw95 = d.review(att95, "SPEC-955", lc90, "c" * 40)
+d.VENDOR_ADAPTERS, d.VENDOR_ADAPTERS_ERR = _saved_pin, _saved_err
+check("missing adapter pin fails closed without invoking any reviewer",
+      v95 is None and "failed to load at dispatcher start" in raw95
+      and len(calls) == calls_before)
 
 # A codex reviewer error whose stdout MIMICS the claude 404 envelope must not buy a retry.
 notfound_mimic = json.dumps({"type": "result", "is_error": True, "api_error_status": 404,

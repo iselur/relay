@@ -163,10 +163,16 @@ def resolve_result(approval):
     except SystemExit as e:
         return f"exit{e.code}"
 
-# Same-vendor pins resolve freely; unmapped pins refuse; same-MODEL refuses always.
-check("same-vendor worker pin resolves (config/approval authority)",
-      d.resolve_launch_models({"worker_model": "claude-sonnet-4-6"}, cfg)
-      ["worker_model"] == "claude-sonnet-4-6")
+# Codex worker pins resolve; non-codex workers refuse until the worker adapter (R73 Job 2);
+# unmapped pins refuse; same-MODEL refuses always.
+check("codex worker pin resolves (config/approval authority)",
+      d.resolve_launch_models({"worker_model": "gpt-5.6-sol",
+                               "reviewer_model": "claude-fable-5"}, cfg)
+      ["worker_model"] == "gpt-5.6-sol")
+# R73 round-2 review (medium): the worker phase is codex-only until Job 2 ships — a claude
+# worker must refuse at resolution, not execute under the codex runtime.
+check("claude worker refuses until the worker adapter exists (exit 2)",
+      resolve_result({"worker_model": "claude-sonnet-4-6"}) == "exit2")
 check("pinning an unmapped worker model refuses launch (exit 2)",
       resolve_result({"worker_model": "mystery-model-9"}) == "exit2")
 check("pinning an unmapped reviewer model refuses launch (exit 2)",
