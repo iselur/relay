@@ -989,6 +989,10 @@ def preflight(spec_id: str) -> dict:
             die(f"dependency {dep} not satisfied (state="
                 f"{st.get('status') if st else 'none'}).", 7)
 
+    # Advisory (R88): overlap with another pending spec is a serialization hint for the operator,
+    # never a refusal — the binding scope gate stays in scope_check.
+    _warn_scope_overlaps(spec_id, spec.get("in_scope", []), spec.get("depends_on", []))
+
     # NOTE: the MAX_PARALLEL concurrency check is NOT here — it must be atomic with the state
     # write so two concurrent launches cannot both pass it. See claim_slot(), called from
     # cmd_launch under the STATE lock.
@@ -3211,6 +3215,45 @@ def _match_glob(path: str, globs: list[str]) -> bool:
         elif _glob_to_regex(g).match(path):
             return True
     return False
+
+
+def _warn_scope_overlaps(spec_id: str, in_scope: list[str], depends_on: list[str]) -> None:
+    """Advisory only (R88): warn when another PENDING spec's in_scope could touch the same paths,
+    so the operator serializes with depends_on BEFORE both are in flight (the binding scope gate
+    stays in scope_check). Conservative — false positives are acceptable for advice: identical
+    globs, a `dir/**` prefix covering the other glob, or a wildcard-free glob the other side
+    matches. Never dies and never changes the launch path: a broken candidate spec, state file,
+    or stderr write skips that candidate, and legacy 'merged' completions are skipped because depends_on accepts
+    only passed_pr_opened — advising them would turn a working launch into an exit-7 refusal."""
+    def covers(a: str, b: str) -> bool:
+        if a == b:
+            return True
+        if a.endswith("/**") and (b == a[:-3] or b.startswith(a[:-3] + "/")):
+            return True
+        return not any(c in b for c in "*?") and _match_glob(b, [a])
+
+    for path in sorted(SPECS.glob("SPEC-*.yaml")):
+        other_id = path.stem
+        if other_id == spec_id:
+            continue
+        try:
+            other = yaml.safe_load(path.read_text())
+            if not isinstance(other, dict) or other_id in depends_on \
+                    or spec_id in other.get("depends_on", []):
+                continue
+            st = read_state(other_id)
+            if st and st.get("status") in ("passed_pr_opened", "merged"):
+                continue
+            hits = [f"'{a}'" if a == b else f"'{a}' ∩ '{b}'"
+                    for a in in_scope for b in other.get("in_scope", [])
+                    if covers(a, b) or covers(b, a)]
+            if hits:
+                # print stays inside the try: a closed/broken stderr must not break the launch
+                print(f"dispatch: WARNING scope overlap: {spec_id} ∩ {other_id} "
+                      f"({', '.join(hits[:5])}). Add depends_on: [{other_id}] to serialize.",
+                      file=sys.stderr)
+        except Exception:
+            continue
 
 
 def scope_check(wt: Path, base: str, wc: str, globs: list[str]) -> dict:
