@@ -256,9 +256,9 @@ assert_file "$run_dir/PLAN-012.stdout"   # the refused oversized default retaine
 # fooled. Each valid brief fixture is padded to an exact line count so the 400/401 boundary is
 # tested for real — the earlier version tested 399 and called it 400.
 sections=(Outcome "Scope and non-goals" "Frozen decisions" Assumptions "Earliest falsifiable proof" \
-          Gates Verification Rollback Deferred "Definition of done")
-valid_brief() { # $1 = total line count (>= 20: ten headings + one content line each)
-  local n=$1 filler=$(( $1 - 20 )) out=""
+          Slices Gates Verification Rollback Deferred "Definition of done")
+valid_brief() { # $1 = total line count (>= 22: eleven headings + one content line each)
+  local n=$1 filler=$(( $1 - 22 )) out=""
   for s in "${sections[@]}"; do out+="## $s"$'\n'"content for $s"$'\n'; done
   ((filler > 0)) && out+="$(body "$filler")"$'\n'
   printf '%s' "${out%$'\n'}"
@@ -274,9 +274,9 @@ for suffix in '' $'\n'; do
   [ "$(try_brief "$(valid_brief 401)$suffix")" = refused ] || fail "a 401-line brief was accepted (cap is 400)"
 done
 
-# Structure, not substrings: each of these contains all ten heading strings and must still fail.
+# Structure, not substrings: each of these contains all eleven heading strings and must still fail.
 all_on_one_line=""; for s in "${sections[@]}"; do all_on_one_line+="## $s "; done
-[ "$(try_brief "$all_on_one_line")" = refused ] || fail "ten headings crammed on ONE line were accepted as a brief"
+[ "$(try_brief "$all_on_one_line")" = refused ] || fail "eleven headings crammed on ONE line were accepted as a brief"
 
 fenced=$'```\n'"$(valid_brief 30)"$'\n```\nprose'
 [ "$(try_brief "$fenced")" = refused ] || fail "headings inside a code fence were accepted as real sections"
@@ -287,7 +287,7 @@ done
 [ "$(try_brief "$empty_section")" = refused ] || fail "a brief with an EMPTY '## Gates' section was accepted"
 
 out_of_order=""; for s in "Scope and non-goals" Outcome "Frozen decisions" Assumptions \
-    "Earliest falsifiable proof" Gates Verification Rollback Deferred "Definition of done"; do
+    "Earliest falsifiable proof" Slices Gates Verification Rollback Deferred "Definition of done"; do
   out_of_order+="## $s"$'\n'"content"$'\n'
 done
 [ "$(try_brief "$out_of_order")" = refused ] || fail "out-of-order sections were accepted"
@@ -304,6 +304,7 @@ duplicated="$(valid_brief 30)"$'\n## Outcome\na second, contradictory outcome'
 
 # The brief prompt must actually ask for the anatomy — the cap alone does not make a brief a brief.
 grep -qi 'earliest falsifiable' "$prompt_file" || fail "brief prompt missing the falsifiable-proof section"
+grep -qi 'independently shippable' "$prompt_file" || fail "brief prompt missing the slices section"
 
 # Contradictory tiers are refused, never last-flag-wins: "ambiguity picks the higher tier".
 for combo in "--small --brief" "--brief --small"; do

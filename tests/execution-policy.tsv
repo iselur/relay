@@ -4,3 +4,4 @@ tests/worker_userns.sh	box-precondition	requires operator sudo and host AppArmor
 tests/plain_language.sh	candidate-read	reads candidate prose; executes no candidate code
 tests/prose_cap.sh	candidate-read	reads candidate prose; executes no candidate code
 tests/codex_runtime.sh	box-precondition	runtime-vetting acceptance cases need operator-owned fixtures + trusted ancestry; infrastructure proof, not candidate logic
+tests/kimi_runtime.sh	box-precondition	runtime-vetting acceptance cases need operator-owned fixtures + trusted ancestry; infrastructure proof, not candidate logic

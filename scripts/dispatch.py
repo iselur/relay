@@ -73,7 +73,7 @@ LEGACY_LAUNCH_DEFAULTS = {
 # before vendor freezing legally carry 3 model keys + 0 vendor keys, which must read as legacy
 # here — never as corrupt (owner-extension precedent: partial sets refuse, disjoint eras don't).
 LEGACY_VENDOR_DEFAULTS = {"worker_vendor": "codex", "reviewer_vendor": "claude"}
-KNOWN_VENDORS = ("claude", "codex")   # closed world: matches scripts/models_check.py VENDORS
+KNOWN_VENDORS = ("claude", "codex", "kimi")   # closed world: matches scripts/models_check.py VENDORS
 
 
 def _load_vendor_adapters():
@@ -989,6 +989,10 @@ def preflight(spec_id: str) -> dict:
             die(f"dependency {dep} not satisfied (state="
                 f"{st.get('status') if st else 'none'}).", 7)
 
+    # Advisory (R88): overlap with another pending spec is a serialization hint for the operator,
+    # never a refusal — the binding scope gate stays in scope_check.
+    _warn_scope_overlaps(spec_id, spec.get("in_scope", []), spec.get("depends_on", []))
+
     # NOTE: the MAX_PARALLEL concurrency check is NOT here — it must be atomic with the state
     # write so two concurrent launches cannot both pass it. See claim_slot(), called from
     # cmd_launch under the STATE lock.
@@ -1434,6 +1438,41 @@ def worker_codex_runtime():
     return None
 
 
+def worker_kimi_runtime():
+    """How an ISOLATED worker runs kimi: (argv prefix, read-only bind mounts, entry file), or
+    None when this box has no worker-launchable install. Native single-ELF ONLY (probe A,
+    .orchestrator/evidence/kimi-probes.md: kimi-code ships as one static binary; no npm layout
+    exists). Candidates are vetted by _trusted_runtime_file, ELF-checked, and fingerprinted at
+    launch so _run refuses a runtime that changed under it; the resolved real binary is
+    bind-mounted past the operator-home boundary to /opt/kimi/kimi."""
+    import shutil
+    cands = [OPERATOR_HOME / ".kimi-code/bin/kimi", OPERATOR_HOME / ".local/bin/kimi",
+             Path("/usr/local/bin/kimi"), Path("/usr/bin/kimi")]
+    which = shutil.which("kimi")
+    if which:
+        cands.append(Path(which))
+    for cand in cands:
+        real = _trusted_runtime_file(cand)
+        if real is None:
+            continue
+        try:
+            with real.open("rb") as fh:
+                elf = fh.read(4) == b"\x7fELF"
+        except OSError:
+            continue
+        if elf:
+            return ["/opt/kimi/kimi"], [(str(real), "/opt/kimi/kimi")], real
+    return None
+
+
+def worker_runtime_resolver(vendor):
+    """The module-level runtime resolver for a frozen worker vendor — selection follows the
+    FROZEN vendor at launch and in the legacy fallback (kimi brief, slice 3). Runtime
+    resolution and vetting are trust machinery and stay in this module; adapters only
+    delegate. Every external-CLI vendor without its own resolver is codex today."""
+    return worker_kimi_runtime if vendor == "kimi" else worker_codex_runtime
+
+
 def runtime_fingerprint(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -1480,7 +1519,19 @@ def pin_runtime_sources(rt_argv: list, rt_binds: list) -> dict:
     for src, _dst in rt_binds:
         sp = Path(src)
         pins[src] = _tree_fingerprint(sp) if sp.is_dir() else runtime_fingerprint(sp)
-    if not rt_argv[0].startswith("/opt/codex"):
+    # argv[0] is host-pinned only when it executes FROM the host (npm's /usr/bin/node); a bind
+    # DESTINATION is not a host path — its source is already pinned above. Recognizing any
+    # destination (was: a literal /opt/codex prefix — kimi slice 3) keeps codex npm/native
+    # behavior identical and lets another vendor's mount (kimi's /opt/kimi/kimi) pin without
+    # probing a nonexistent host path. Round-1 review (high): a degenerate destination (""
+    # or "/") would cover EVERY absolute argv[0] and silently drop the host pin — only a
+    # proper absolute destination below / is recognized; anything else keeps the
+    # conservative host pin (fail closed).
+    def _covered(a0, dst):
+        dst = dst.rstrip("/")
+        return dst.startswith("/") and bool(dst.strip("/")) and (
+            a0 == dst or a0.startswith(dst + "/"))
+    if not any(_covered(rt_argv[0], dst) for _src, dst in rt_binds):
         pins[rt_argv[0]] = runtime_fingerprint(Path(rt_argv[0]))
     return pins
 
@@ -1930,6 +1981,15 @@ def cmd_launch(spec_id: str) -> None:
     cfg = load_model_config()
     launch_models = resolve_launch_models(approval, cfg)
     subagent_mode = launch_models["worker_mode"] == "subagent"
+    # Kimi slice 3: kimi has NO unisolated mode — the CLI cannot set its own working directory
+    # and has no inner sandbox (codex's unisolated fallback keeps bwrap ON; kimi would run with
+    # no confinement at all). The adapter refuses at argv build; refusing HERE keeps the
+    # failure before the attempt is claimed and before any worktree or worker side effect
+    # (preflight's instance bookkeeping is the only earlier write — round-1 review, medium 2).
+    if not iso and launch_models["worker_vendor"] == "kimi":
+        die("REFUSING to launch: kimi workers have no unisolated mode (no --cd, no inner "
+            "sandbox — the hardened service is the only confinement). Provision isolation "
+            "with ./scripts/setup-worker-user.sh, or choose another worker vendor.", 15)
     spec_bytes = ctx["spec_bytes"]   # the single buffer preflight read/hashed/parsed (B2 round-2)
 
     # Same fail-fast doctrine for the worker's Codex runtime: an isolated launch without one dies
@@ -1957,7 +2017,16 @@ def cmd_launch(spec_id: str) -> None:
             die("REFUSING to launch: trusted test runtime failed under service hardening "
                 f"(exit {probe.returncode}).", 15)
     elif iso:
-        rt = worker_codex_runtime()
+        # Kimi slice 3: the resolver follows the FROZEN worker vendor (codex behavior, unit
+        # name included, is byte-identical — the vendor is "codex" there).
+        wv = launch_models["worker_vendor"]
+        rt = worker_runtime_resolver(wv)()
+        if rt is None and wv == "kimi":
+            die("REFUSING to launch: no worker-launchable kimi runtime on this box.\n"
+                "  Isolated kimi workers need a native kimi ELF binary (~/.kimi-code/bin,\n"
+                "  ~/.local/bin, /usr/local/bin, /usr/bin, or on PATH) — owned by\n"
+                "  root/operator, not group/world-writable. Install kimi-code natively,\n"
+                "  then relaunch.", 15)
         if rt is None:
             die("REFUSING to launch: no worker-launchable Codex runtime on this box.\n"
                 "  Isolated workers need EITHER the npm package\n"
@@ -1967,11 +2036,14 @@ def cmd_launch(spec_id: str) -> None:
                 "  Fix: npm install -g --prefix ~/.local @openai/codex   (plus a system node),\n"
                 "       or install the native binary. Then relaunch.", 15)
         rt_argv, rt_binds, rt_entry = rt
-        probe = isolated_run(f"codex-rtprobe-{spec_id}", [*rt_argv, "--version"], cwd=None,
+        probe = isolated_run(f"{wv}-rtprobe-{spec_id}", [*rt_argv, "--version"], cwd=None,
                              rw_paths=[], private_network=True, ceiling_s=120,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, binds=rt_binds)
         if probe.returncode != 0:
-            die("REFUSING to launch: the resolved Codex runtime failed its probe under the real "
+            # Round-1 review (medium 3): codex messages stay byte-identical — "Codex", not the
+            # lowercase vendor token, on every pre-slice-3 path.
+            rt_name = "Codex" if wv == "codex" else wv
+            die(f"REFUSING to launch: the resolved {rt_name} runtime failed its probe under the real "
                 f"service hardening (exit {probe.returncode}).\n"
                 f"  Runtime: {rt_entry}\n"
                 f"  Probe stderr: {(probe.stderr or b'').decode('utf-8', 'replace').strip()[-400:]}",
@@ -2641,7 +2713,14 @@ def worker_prompt_text(att: Path, lc: dict, n: int) -> str:
         "your work.\n"
         "Inspect relevant code and tests before editing. For non-trivial tasks, maintain a "
         "concise, revisable implementation checklist covering intended files and verification; "
-        "skip it for trivial tasks. The approved spec and evidence gates remain binding. If "
+        "skip it for trivial tasks.\n"
+        "Implement the simplest, cleanest solution that satisfies the spec — no abstractions or "
+        "configurability beyond what the spec designs. Fix what matters most first: do not "
+        "engineer around small edge cases the spec does not name — note them in your final "
+        "report instead. Keep the diff surgical: touch no adjacent "
+        "code, comments, or formatting; match the existing style; remove only what your own "
+        "change orphaned. State non-obvious assumptions in your final report.\n"
+        "The approved spec and evidence gates remain binding. If "
         "discovery invalidates the spec or approved scope (impossible acceptance criteria, wrong "
         "test command, inadequate scope), stop and report SPEC_BLOCKED on its own line followed by "
         "the reason — never improvise beyond the spec."
@@ -2753,21 +2832,37 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                 tree_ok = all(trusted_runtime_tree(Path(src)) for src, _dst in rt["binds"]
                               if Path(src).is_dir())
                 if stale or not pins or not entry_ok or not tree_ok:
+                    # Round-1 review (medium 3): codex message stays byte-identical ("Codex").
+                    rt_vendor = ("Codex" if vendors["worker_vendor"] == "codex"
+                                 else vendors["worker_vendor"])
                     finish("failed_worker_error", ERR_WORKER,
-                           detail="Codex runtime changed, vanished or lost trust between launch "
+                           detail=f"{rt_vendor} runtime changed, vanished or lost trust between launch "
                                   f"and run (stale: {stale or 'no pins recorded'}, "
                                   f"tree_ok={tree_ok}); refusing")
                 argv_prefix, binds = rt["argv"], [tuple(b) for b in rt["binds"]]
             else:  # launch record predates runtime pinning: resolve live (adapter delegates
-                # to the module-level worker_codex_runtime — trust machinery stays here)
-                runtime = worker_adapter.runtime(worker_codex_runtime)
+                # to the module-level resolver for the FROZEN vendor — trust machinery stays here)
+                runtime = worker_adapter.runtime(worker_runtime_resolver(vendors["worker_vendor"]))
                 if runtime is None:
                     finish("failed_worker_error", ERR_WORKER,
                            detail="no worker-launchable Codex runtime (npm package + system "
-                                  "node, or a native ELF binary)")
+                                  "node, or a native ELF binary)"
+                                  if vendors["worker_vendor"] == "codex" else
+                                  f"no worker-launchable {vendors['worker_vendor']} runtime "
+                                  f"(native ELF binary)")
                 argv_prefix, binds, _entry = runtime
-            argv = worker_adapter.build_argv(lc["worker_model"], lc["worker_effort"], wt,
-                                             prompt, isolated=True, argv_prefix=argv_prefix)
+            # Kimi slice 3: the frozen alias map rides to the worker adapter — kimi's CLI takes
+            # the provider alias, not the relay model id; codex ignores the keyword (verbatim
+            # contract, tests/dispatch_worker_adapter.sh). A kimi record whose frozen aliases
+            # lack the required entry is refused by the adapter (ValueError) and recorded
+            # TERMINALLY here — never invoked with a raw relay id (round-1 review, medium 4).
+            try:
+                argv = worker_adapter.build_argv(lc["worker_model"], lc["worker_effort"], wt,
+                                                 prompt, isolated=True, argv_prefix=argv_prefix,
+                                                 cli_aliases=lc.get("cli_aliases") or {})
+            except ValueError as exc:
+                finish("error_launch", ERR_LAUNCH,
+                       detail=f"worker argv refused: {exc}")
             worker_ceiling_s = remaining_ceiling_s(deadline_ts)
             if worker_ceiling_s <= 0:
                 finish("error_launch", ERR_TIMEOUT,
@@ -2790,9 +2885,19 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                        detail="attempt deadline already exhausted before the worker phase could "
                               "start (single absolute ceiling, B6); refusing")
             scrubbed = worker_adapter.worker_env(OPERATOR_HOME, OPERATOR_USER)
-            worker_cmd = [*prefix, *worker_adapter.build_argv(
-                lc["worker_model"], lc["worker_effort"], wt, prompt, isolated=False,
-                last_message_path=raw / "worker-last-message.txt")]
+            # Kimi slice 3: an adapter may refuse the unisolated envelope outright (kimi does —
+            # no --cd, no inner sandbox). cmd_launch already refuses such launches before side
+            # effects; this converts a refusal on a hand-carried record into a TERMINAL
+            # error_launch instead of an uncaught exception that would strand the attempt.
+            try:
+                built = worker_adapter.build_argv(
+                    lc["worker_model"], lc["worker_effort"], wt, prompt, isolated=False,
+                    last_message_path=raw / "worker-last-message.txt",
+                    cli_aliases=lc.get("cli_aliases") or {})
+            except ValueError as exc:
+                finish("error_launch", ERR_LAUNCH,
+                       detail=f"worker argv refused: {exc}")
+            worker_cmd = [*prefix, *built]
             with open(os.devnull) as devnull:
                 wc = subprocess.run(worker_cmd, env=scrubbed, stdin=devnull, stdout=ev, stderr=er)
 
@@ -3114,6 +3219,45 @@ def _match_glob(path: str, globs: list[str]) -> bool:
     return False
 
 
+def _warn_scope_overlaps(spec_id: str, in_scope: list[str], depends_on: list[str]) -> None:
+    """Advisory only (R88): warn when another PENDING spec's in_scope could touch the same paths,
+    so the operator serializes with depends_on BEFORE both are in flight (the binding scope gate
+    stays in scope_check). Conservative — false positives are acceptable for advice: identical
+    globs, a `dir/**` prefix covering the other glob, or a wildcard-free glob the other side
+    matches. Never dies and never changes the launch path: a broken candidate spec, state file,
+    or stderr write skips that candidate, and legacy 'merged' completions are skipped because depends_on accepts
+    only passed_pr_opened — advising them would turn a working launch into an exit-7 refusal."""
+    def covers(a: str, b: str) -> bool:
+        if a == b:
+            return True
+        if a.endswith("/**") and (b == a[:-3] or b.startswith(a[:-3] + "/")):
+            return True
+        return not any(c in b for c in "*?") and _match_glob(b, [a])
+
+    for path in sorted(SPECS.glob("SPEC-*.yaml")):
+        other_id = path.stem
+        if other_id == spec_id:
+            continue
+        try:
+            other = yaml.safe_load(path.read_text())
+            if not isinstance(other, dict) or other_id in depends_on \
+                    or spec_id in other.get("depends_on", []):
+                continue
+            st = read_state(other_id)
+            if st and st.get("status") in ("passed_pr_opened", "merged"):
+                continue
+            hits = [f"'{a}'" if a == b else f"'{a}' ∩ '{b}'"
+                    for a in in_scope for b in other.get("in_scope", [])
+                    if covers(a, b) or covers(b, a)]
+            if hits:
+                # print stays inside the try: a closed/broken stderr must not break the launch
+                print(f"dispatch: WARNING scope overlap: {spec_id} ∩ {other_id} "
+                      f"({', '.join(hits[:5])}). Add depends_on: [{other_id}] to serialize.",
+                      file=sys.stderr)
+        except Exception:
+            continue
+
+
 def scope_check(wt: Path, base: str, wc: str, globs: list[str]) -> dict:
     # Finding 4: the scope gate parses this diff to decide what changed — a planted refs/replace
     # could otherwise rewrite the diff and hide an out-of-scope change. Read with replace off.
@@ -3404,8 +3548,11 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
         "with result MET/UNMET and a concrete evidence reference (path/line/diff/test excerpt); "
         "`scope_finding`; `regression_finding`; `security_findings` (injected secrets, unsafe "
         "shell, credential access, network use). PASS only if EVERY criterion is MET and no "
-        "blocking scope/regression/security finding exists; otherwise FAIL. If evidence is "
-        "missing or ambiguous, FAIL (fail closed). `reasons[]` must be non-empty. You MUST echo "
+        "blocking scope/regression/security finding exists; otherwise FAIL. A finding is "
+        "blocking only when genuinely critical: it breaks specified behavior, safety, or "
+        "security, or ships a real regression. Style, taste, and postponable improvements are "
+        "never FAIL grounds — record them in `reasons[]` as 'note:' items for the backlog. If "
+        "evidence is missing or ambiguous, FAIL (fail closed). `reasons[]` must be non-empty. You MUST echo "
         "spec_digest, base_sha and worker_commit verbatim; the verdict is void otherwise. "
         f"schema_version is \"{schema_version}\"." + quality_instructions +
         # B2: the SNAPSHOT taken at launch, never the live spec file — an edit to specs/<id>.yaml
@@ -3455,8 +3602,17 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
         # flag set, verbatim, inside ClaudeReviewer; codex uses --output-schema + read-only
         # sandbox). Aliases come from the frozen launch config; ids without an alias pass
         # through unchanged, and pre-config records keep the shipped alias (round-2 review).
-        cmd = [*prefix, *adapter.build_argv(model_id, lc["reviewer_effort"], schema_obj,
-                                            frozen["cli_aliases"], schema_path)]
+        # Kimi slice 3: the shaped request rides along — kimi has no stdin transport, so its
+        # argv carries the prompt itself; claude/codex ignore the keyword and keep reading
+        # stdin. A ValueError is the adapter refusing the invocation (kimi: missing request,
+        # or a request over the argv byte guard — refused, never truncated) and becomes this
+        # phase's refusal string: no reviewer runs, no verdict exists.
+        try:
+            cmd = [*prefix, *adapter.build_argv(model_id, lc["reviewer_effort"], schema_obj,
+                                                frozen["cli_aliases"], schema_path,
+                                                request=req)]
+        except ValueError as exc:
+            return f"reviewer argv refused: {exc}"
         # B16 + reviewer isolation: run from an empty directory OUTSIDE this repo so the reviewer
         # process loads no project rulebook or memory (it must see only spec+diff+evidence, and that
         # context is pure token waste for a tools-denied one-shot). TMPDIR may point inside the repo,

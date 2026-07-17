@@ -6,19 +6,19 @@ work and REPLACES a line, never stacks. Roles, not model names: **owner** (the h
 
 ## Session start
 
-Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner to reconstruct.
-Prefer a fresh session per workstream.
+Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner to reconstruct. Prefer a fresh session per workstream.
 
 ## Working rules
 
 1. **Intake:** one-line goal and checkable definition of done before any task; ask the owner if
    either is missing. `scripts/intake` before work, close with evidence, `scripts/intake stale` at
    session end — open rows raised to the owner, never dropped. Ledger private, not in this repo.
-2. **One workstream:** one active execution stream. New ideas go to `.orchestrator/BACKLOG.md`,
-   never beside current work. Business ideas stay private.
-3. **Review cap:** up to five adversarial review rounds, each answered by one revision.
-   Trust-critical work with an unresolved critical finding stays BLOCKED: escalate, never ship on
-   a spent cap.
+2. **One workstream:** one active execution stream. New ideas go to `.orchestrator/BACKLOG.md`, never beside current work. Business ideas stay private.
+3. **Review cap:** up to five adversarial review rounds, each answered by one revision. A finding blocks or gets fixed
+   only when genuinely critical, or when the fix buys simplification, better architecture, or better performance — the
+   rest go to the backlog, never a forced revision. If critical findings persist past round two or three, step back as
+   the owner would and weigh simplifying, another approach, splitting the work smaller, or reaching the goal another way;
+   a re-scope restarts as a fresh brief and intake row, telling the owner. Trust-critical work with an unresolved critical finding stays BLOCKED: escalate, never ship on a spent cap.
 4. **Communication:** bottom line first, stay brief. Past one step, keep a live to-do list, never
    back-filled. Coin a term only for code that exists in this repo.
 5. **Every program gets ONE brief, capped at 400 lines** (`scripts/codex-plan` enforces the cap and
@@ -29,15 +29,20 @@ Prefer a fresh session per workstream.
    evidence); the smallest end-to-end run that would prove the whole approach wrong, done FIRST; each
    checkpoint with the command that proves it passed, who decides, and what happens when it fails;
    how the work is verified; how it is undone; what is left for later; and how anyone outside can
-   tell it is done. Reviewed once, then the program runs end to end — the owner steps in only at the
+   tell it is done; and the slices — independently shippable increments, several small PRs over one
+   big one. Reviewed once, then the program runs end to end — the owner steps in only at the
    checkpoints. Reference the brief, never copy it; what we learn later is added with a date and
    reopens the checkpoints it touches. Briefs are working files: delete them once the work ships,
    git keeps them.
-6. **Cross-checking earns its cost** on ideas and briefs; deterministic checks and tests outrank
-   model agreement everywhere else — agreement is not evidence.
+6. **Cross-checking earns its cost** on ideas, briefs, and plans — a plan leaves plan mode only
+   after `scripts/review --author claude` completes and its findings are answered under rule 3;
+   deterministic checks and tests outrank model agreement elsewhere — agreement is not evidence.
 7. **Maximal delegation:** the orchestrator delegates every delegable task to the worker, and works
    directly only when no worker is available or the task is its own (dispatch, review, the trust
    boundary). Nothing reviews its own work; the owner sets role models and vendors in scripts/models.json.
+8. **Code discipline:** the simplest, cleanest solution that works; modularity and generality are
+   design decisions recorded in the brief, never improvised in code. Diffs are surgical: touch no
+   adjacent code, comments, or formatting; match existing style; remove only what your change orphaned.
 
 ## Safety invariants (never violate)
 

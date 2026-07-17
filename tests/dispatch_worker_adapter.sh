@@ -53,6 +53,12 @@ check("unisolated argv is byte-identical (bwrap sandbox on, last-message file)",
 av = w.build_argv("gpt-5.6-luna", "high", WT, PROMPT, isolated=True, argv_prefix=PREFIX)
 check("model id passes through untranslated (asserted on build_argv OUTPUT, round-1 minor)",
       av[av.index("-m") + 1] == "gpt-5.6-luna")
+# Kimi slice 2: build_argv grew an optional cli_aliases keyword (kimi's CLI needs the alias);
+# codex accepts it for signature uniformity and IGNORES it — verbatim contract unchanged.
+check("codex build_argv accepts cli_aliases and still passes the model id verbatim",
+      w.build_argv("gpt-5.6-luna", "high", WT, PROMPT, isolated=True, argv_prefix=PREFIX,
+                   cli_aliases={"gpt-5.6-luna": "some-alias"})
+      == [*PREFIX, *common, "-s", "danger-full-access", PROMPT])
 
 # ---- unisolated env: FULL equality with the pre-refactor scrubbed dict -------------------
 home = pathlib.Path("/home/op")
@@ -170,10 +176,128 @@ for bad in ("main", "ready-for-main", "codex/SPEC-000-2", "codex/SPEC-000-1x",
     check(f"corrupt/foreign branch value {bad!r} refuses deletion",
           not d.valid_attempt_branch(bad, "SPEC-000-1"))
 
+# ---- kimi worker adapter (kimi vendor, slice 2) --------------------------------------------
+# Mechanics per .orchestrator/evidence/kimi-probes.md: -p argv prompt (no exec subcommand),
+# -m takes the CLI provider alias from the frozen cli_aliases, stream-json output, -y
+# auto-approval (no inner sandbox; the hardened service is the sole confinement), no effort
+# flag (K3 carries kimi's own effort model), and NO unisolated mode at all.
+kw = va.get_worker_adapter("kimi")
+KPREFIX = ["/home/codex-worker/.kimi-code/bin/kimi"]
+KAL = {"kimi-k3": "kimi-code/k3"}
+check("kimi isolated argv: prefix, -p prompt, provider alias, stream-json, -y",
+      kw.build_argv("kimi-k3", "max", WT, PROMPT, isolated=True, argv_prefix=KPREFIX,
+                    cli_aliases=KAL)
+      == [*KPREFIX, "-p", PROMPT, "-m", "kimi-code/k3", "--output-format", "stream-json", "-y"])
+kav = kw.build_argv("kimi-k3", "max", WT, PROMPT, isolated=True, argv_prefix=KPREFIX,
+                    cli_aliases=KAL)
+check("kimi argv carries no codex flags (exec/--cd/--sandbox/--json/effort) and no worktree path",
+      not any(f in kav for f in ("exec", "--cd", "--sandbox", "--json", WT))
+      and not any("model_reasoning_effort" in a for a in kav))
+# Round-1 review of slice 3 (medium 4): kimi's CLI accepts only its provider aliases, so a
+# frozen alias map without the required entry REFUSES — the raw relay id must never reach
+# the CLI (deliberately flipping the slice-2 pass-through convention for kimi).
+try:
+    kw.build_argv("kimi-k3", "max", WT, PROMPT, isolated=True, argv_prefix=KPREFIX)
+    kimi_noalias_raises = False
+except ValueError:
+    kimi_noalias_raises = True
+check("kimi without its required alias entry refuses (fail closed, never the raw id)",
+      kimi_noalias_raises)
+# Round-2 review: an IDENTITY alias (raw id laundered through the map) and a non-string
+# alias value must refuse the same way — the alias is a non-empty string DISTINCT from the id.
+for bad_aliases in ({"kimi-k3": "kimi-k3"}, {"kimi-k3": 7}, {"kimi-k3": "  "}, "not-a-dict"):
+    try:
+        kw.build_argv("kimi-k3", "max", WT, PROMPT, isolated=True, argv_prefix=KPREFIX,
+                      cli_aliases=bad_aliases)
+        check(f"kimi refuses corrupt alias mapping {bad_aliases!r}", False)
+    except ValueError:
+        check(f"kimi refuses corrupt alias mapping {bad_aliases!r}", True)
+try:
+    kw.build_argv("kimi-k3", "max", WT, PROMPT, isolated=False, last_message_path=LMP)
+    kimi_uniso_raises = False
+except ValueError:
+    kimi_uniso_raises = True
+check("kimi unisolated build refuses (no --cd, no inner sandbox; fail closed)",
+      kimi_uniso_raises)
+check("kimi unisolated scrubbed env is total and carries no CODEX_HOME analog",
+      kw.worker_env(home, "op") == {
+          "HOME": "/home/op", "USER": "op", "LOGNAME": "op",
+          "PATH": "/home/op/.local/bin:/usr/bin:/bin", "TERM": "dumb", "LANG": "C.UTF-8"})
+check("kimi isolated rw extra is exactly the worker's fixed .kimi-code state home",
+      kw.iso_rw_paths(pathlib.Path("/home/codex-worker")) == ["/home/codex-worker/.kimi-code"])
+check("kimi isolated env extra is empty (no KIMI_HOME-style override exists, probe A)",
+      kw.iso_env_extra(pathlib.Path("/home/codex-worker")) == {})
+check("kimi runtime() delegates to the injected module-level resolver",
+      kw.runtime(lambda: sentinel) is sentinel)
+kraw = pathlib.Path(tempfile.mkdtemp())
+(kraw / "events.jsonl").write_text(
+    json.dumps({"role": "user", "content": "prompt echo"}) + "\n"
+    + "garbage line\n"
+    + json.dumps({"role": "assistant", "content": "first"}) + "\n"
+    + json.dumps({"role": "assistant", "content": "KIMI-LAST"}) + "\n")
+check("kimi recovery takes the LAST assistant line, isolated and unisolated alike "
+      "(no --output-last-message exists; both paths read the captured stream)",
+      kw.recover_last_message(kraw, True) == "KIMI-LAST"
+      and kw.recover_last_message(kraw, False) == "KIMI-LAST")
+check("kimi recovery with no capture is empty, not an error",
+      kw.recover_last_message(pathlib.Path(tempfile.mkdtemp()), True) == "")
+check("kimi zero exit classifies as completion (None)",
+      kw.classify_error(0, "", kraw) is None)
+check("kimi 429/rate-limit classifies as quota (best-effort, probe E unobserved)",
+      kw.classify_error(1, "HTTP 429", kraw) == d.ERR_QUOTA)
+check("kimi membership signature classifies as auth (probe E)",
+      kw.classify_error(1, "unable to verify your membership benefits", kraw) == d.ERR_AUTH)
+check("kimi config.invalid classifies as generic worker error (probe E: exit 1)",
+      kw.classify_error(1, "error: failed to run prompt: config.invalid: bad model", kraw)
+      == d.ERR_WORKER)
+check("kimi never classifies sandbox_denial (no inner sandbox exists)",
+      kw.classify_error(1, "bwrap: operation not permitted", kraw) == d.ERR_WORKER)
+
+# Kimi slice 3 at the PIPELINE (deliberately flipping the slice-2 unclassifiable refusal):
+# a full kimi vendor record now classifies, routes to KimiWorker, and fails closed one gate
+# later — at runtime resolution (stubbed absent) via the vendor-selected resolver in the
+# live-resolve fallback (no pinned worker_runtime in the record). Still TERMINAL, still
+# before any kimi CLI invocation.
+lc_kimi = {"spec_digest": hashlib.sha256(snap).hexdigest(), "isolation": True,
+           "deadline_ts": 4102444800.0,
+           "worker_vendor": "kimi", "reviewer_vendor": "claude"}
+_saved_kimi_rt = d.worker_kimi_runtime
+d.worker_kimi_runtime = lambda: None
+recorded.clear()
+try:
+    d._run_pipeline("SPEC-000-1", "SPEC-000", 1, att, lc_kimi,
+                    pathlib.Path("/nonexistent-wt"), att / "raw", _finish)
+except _Stop:
+    pass
+d.worker_kimi_runtime = _saved_kimi_rt
+check("kimi record classifies; absent kimi runtime fails closed TERMINALLY (worker error)",
+      recorded.get("status") == "failed_worker_error" and recorded.get("status") in d.TERMINAL
+      and recorded.get("error_class") == d.ERR_WORKER)
+
+# Round-1 review of slice 3 (medium 5): a HAND-CARRIED unisolated kimi record (cmd_launch can
+# never produce one — it refuses kimi+unisolated before claiming) must land TERMINALLY as
+# error_launch through the pipeline's ValueError conversion, never as an uncaught exception
+# that strands the attempt. exposure_accepted gets it past T2 to the actual gate under test.
+lc_kimi_uniso = {"spec_digest": hashlib.sha256(snap).hexdigest(), "isolation": False,
+                 "exposure_accepted": True, "deadline_ts": 4102444800.0,
+                 "worker_vendor": "kimi", "reviewer_vendor": "claude",
+                 "worker_model": "kimi-k3", "worker_effort": "max",
+                 "cli_aliases": {"kimi-k3": "kimi-code/k3"}}
+recorded.clear()
+try:
+    d._run_pipeline("SPEC-000-1", "SPEC-000", 1, att, lc_kimi_uniso,
+                    pathlib.Path("/nonexistent-wt"), att / "raw", _finish)
+except _Stop:
+    pass
+check("hand-carried unisolated kimi record refuses TERMINALLY (error_launch, no crash)",
+      recorded.get("status") == "error_launch" and recorded.get("status") in d.TERMINAL
+      and recorded.get("error_class") == d.ERR_LAUNCH)
+
 # ---- registry ------------------------------------------------------------------------------
-check("worker vendor registry is claude+codex (R73 Job 3)",
-      va.worker_vendors() == ["claude", "codex"])
+check("worker vendor registry is claude+codex+kimi (kimi vendor, slice 2)",
+      va.worker_vendors() == ["claude", "codex", "kimi"])
 check("codex worker mode is external-cli", va.worker_mode("codex") == "external-cli")
+check("kimi worker mode is external-cli", va.worker_mode("kimi") == "external-cli")
 try:
     va.get_worker_adapter("gemini")
     check("unknown worker vendor raises (fail closed upstream)", False)

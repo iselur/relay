@@ -15,13 +15,13 @@ import sys
 
 ROLES = ("orchestrator", "spec_author", "utility_subagent", "worker",
          "bound_reviewer", "orchestrator_artifact_reviewer")
-VENDORS = ("claude", "codex")
+VENDORS = ("claude", "codex", "kimi")
 SECTIONS = ("schema_version", "roles", "reviewer_failover", "cli_aliases", "vendor_map")
 # Contradiction TRIPWIRE, not a classifier (round-1 review, finding 1): a name carrying a known
 # vendor prefix may not be declared as the other vendor — that misdeclaration is exactly what
 # would let same-vendor review pass. A name with no known prefix still needs its explicit
 # vendor_map entry; nothing here ever infers a vendor for it.
-PREFIX_RULES = (("claude", "claude"), ("gpt-", "codex"), ("codex", "codex"))
+PREFIX_RULES = (("claude", "claude"), ("gpt-", "codex"), ("codex", "codex"), ("kimi", "kimi"))
 
 
 def _nonempty_str(v) -> bool:
@@ -113,6 +113,16 @@ def validate(cfg) -> list:
             if _nonempty_str(v) and v != k and (v in vm or v in named_models):
                 errs.append(f"cli_aliases.{k} targets another declared model ({v}): an alias "
                             f"maps a model id to its CLI name, never to a different model")
+        # Kimi slice 3 (rounds 1-2 review): the kimi CLI accepts only its provider aliases,
+        # never relay model ids — a kimi-vendor model without a cli_aliases entry would freeze
+        # an alias map its adapter must refuse at every invocation, and an IDENTITY alias
+        # (model id mapped to itself) would launder the raw relay id straight through the
+        # translation. Required at validation: a non-empty alias DISTINCT from the model id.
+        for m, v in sorted(vm.items()):
+            if v == "kimi" and (not _nonempty_str(aliases.get(m)) or aliases.get(m) == m):
+                errs.append(f"vendor_map.{m} is kimi-vendor but cli_aliases has no distinct "
+                            f"entry for it (the kimi CLI accepts only its provider aliases, "
+                            f"never relay model ids)")
 
     # Owner decision 2026-07-16: vendor PAIRING is the owner's call, made by editing this
     # config — nothing here polices same- vs cross-vendor. Two mechanical rules remain:

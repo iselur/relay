@@ -17,15 +17,50 @@ Verified mechanics (R73 probe evidence, 2026-07-16, .orchestrator/evidence/r73-p
 - codex: `exec --output-schema <FILE> -` (prompt on stdin, no --json) exits 0 with the BARE
   schema-conforming JSON object on stdout — no fences observed; fence-stripping is a
   compatibility fallback only.
+- kimi: top-level `-p` one-shot (no exec subcommand); the prompt is argv-ONLY — no stdin or
+  prompt-file transport exists, so an oversized request is refused before invocation, never
+  truncated. `-m` takes the CLI's provider alias (cli_aliases required), `--output-format
+  stream-json` emits one JSON object per line and the final assistant message is the last
+  {"role":"assistant"} line. No CLI-enforced schema: verdict JSON is prompt-requested and
+  parsed with the same fail-closed discipline as codex. (kimi probe evidence, 2026-07-16,
+  .orchestrator/evidence/kimi-probes.md)
 """
 
 import json
 
 
+def _strict_json_object(raw):
+    """The fail-closed parse for prompt-requested structured output, shared by every vendor
+    without CLI schema enforcement: a bare JSON object, or EXACTLY one ```/```json fence pair.
+    Anything else is None and the gate fails closed upstream."""
+    raw = (raw or "").strip()
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        obj = None
+    if obj is None:
+        # Compatibility fallback (R73 round-1 review: the loose strip was fail-open — it
+        # accepted a missing closing fence, arbitrary fence labels, and dropped prose after
+        # the last fence, so a PASS object followed by contradictory prose still extracted).
+        # Accept EXACTLY one ```/```json fence pair: opener is the first line, the closer is
+        # the LAST line, the body alone must parse. Anything else — no closer, another
+        # label, trailing content — stays None and the gate fails closed upstream.
+        lines = raw.splitlines()
+        if (len(lines) >= 3 and lines[0].strip() in ("```", "```json")
+                and lines[-1].strip() == "```"):
+            try:
+                obj = json.loads("\n".join(lines[1:-1]))
+            except Exception:
+                obj = None
+    return obj if isinstance(obj, dict) else None
+
+
 class ClaudeReviewer:
     """Today's shipped claude mechanics, verbatim — flags per B16 hardening."""
 
-    def build_argv(self, model_id, effort, schema_obj, cli_aliases, schema_path):
+    def build_argv(self, model_id, effort, schema_obj, cli_aliases, schema_path, request=None):
+        # request is accepted for signature uniformity (kimi carries the prompt in argv) and
+        # ignored: the claude prompt rides on stdin.
         return [
             "claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema_obj),
             "--model", cli_aliases.get(model_id, model_id),
@@ -49,7 +84,9 @@ class ClaudeReviewer:
 class CodexReviewer:
     """codex exec with structural output via --output-schema (probe-proven bare JSON)."""
 
-    def build_argv(self, model_id, effort, schema_obj, cli_aliases, schema_path):
+    def build_argv(self, model_id, effort, schema_obj, cli_aliases, schema_path, request=None):
+        # request is accepted for signature uniformity (kimi carries the prompt in argv) and
+        # ignored: the codex prompt rides on stdin ("-").
         return [
             "codex", "exec", "-m", cli_aliases.get(model_id, model_id),
             "-c", f"model_reasoning_effort={effort}",
@@ -64,26 +101,74 @@ class CodexReviewer:
                 + json.dumps(schema_obj, indent=2))
 
     def extract_verdict(self, stdout):
-        raw = (stdout or "").strip()
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            obj = None
-        if obj is None:
-            # Compatibility fallback (R73 round-1 review: the loose strip was fail-open — it
-            # accepted a missing closing fence, arbitrary fence labels, and dropped prose after
-            # the last fence, so a PASS object followed by contradictory prose still extracted).
-            # Accept EXACTLY one ```/```json fence pair: opener is the first line, the closer is
-            # the LAST line, the body alone must parse. Anything else — no closer, another
-            # label, trailing content — stays None and the gate fails closed upstream.
-            lines = raw.splitlines()
-            if (len(lines) >= 3 and lines[0].strip() in ("```", "```json")
-                    and lines[-1].strip() == "```"):
-                try:
-                    obj = json.loads("\n".join(lines[1:-1]))
-                except Exception:
-                    obj = None
-        return obj if isinstance(obj, dict) else None
+        return _strict_json_object(stdout)
+
+
+KIMI_ARGV_PROMPT_LIMIT = 120_000   # UTF-8 bytes: conservative headroom under Linux's ~128KiB
+                                   # single-argument wall (MAX_ARG_STRLEN), the probe-D E2BIG line
+
+
+class KimiReviewer:
+    """kimi-code one-shot review (probe evidence, .orchestrator/evidence/kimi-probes.md). The
+    CLI has no stdin transport, so the SHAPED request itself must ride in argv: build_argv
+    takes it as `request`, passed by dispatch.py's review() (kimi slice 3); a missing request
+    refuses rather than invoking a promptless CLI.
+    A request over the argv wall is refused before invocation, never truncated (owner decision
+    2026-07-16). No effort flag: K3 carries kimi's own effort model (only "max"), never
+    codex's model_reasoning_effort. No auto-approval flag either: without -y kimi cannot write
+    or exec (probe F), which is exactly the confinement a one-shot reviewer in the
+    dispatcher's neutral cwd should keep."""
+
+    def build_argv(self, model_id, effort, schema_obj, cli_aliases, schema_path, request=None):
+        if request is None:
+            raise ValueError("kimi reviewer requires the shaped request in argv (request=): "
+                             "the CLI has no stdin or prompt-file transport; fail closed")
+        size = len(request.encode("utf-8"))
+        if size > KIMI_ARGV_PROMPT_LIMIT:
+            raise ValueError(f"kimi reviewer request is {size} UTF-8 bytes, over the "
+                             f"{KIMI_ARGV_PROMPT_LIMIT}-byte argv guard (probe D E2BIG wall): "
+                             f"refused before invocation, never truncated")
+        model = cli_aliases.get(model_id) if isinstance(cli_aliases, dict) else None
+        # Round-2 review: truthiness alone accepted an identity alias (the raw relay id
+        # laundered through the map) and non-string values straight into argv — the alias
+        # must be a non-empty STRING distinct from the relay model id.
+        if not isinstance(model, str) or not model.strip() or model == model_id:
+            raise ValueError(f"kimi reviewer requires a distinct CLI provider alias for "
+                             f"{model_id!r} (probe A: the kimi CLI accepts its own aliases, "
+                             f"never relay model ids); the frozen cli_aliases carries "
+                             f"{model!r}; fail closed")
+        return ["kimi", "-p", request, "-m", model, "--output-format", "stream-json"]
+
+    def reviewer_prompt(self, req, schema_obj):
+        return (req + "\n\nOutput ONLY one JSON object conforming exactly to this schema — no "
+                "markdown, no code fences, no prose before or after:\n"
+                + json.dumps(schema_obj, indent=2))
+
+    def extract_verdict(self, stdout):
+        # Round-1 review (major): taking the last WELL-FORMED assistant string let an earlier
+        # PASS survive trailing malformed JSON, non-string content, or raw prose — a stale
+        # verdict extracted from a stream that no longer ends in one. The verdict source is the
+        # content of the LAST assistant event only while the stream stays valid behind it: any
+        # malformed line, non-object line, or assistant event with non-string content
+        # invalidates what came before; only a subsequent VALID assistant event supersedes the
+        # damage. Whitespace-only lines are neutral; other non-assistant JSON objects are
+        # ordinary stream events and leave the verdict source untouched.
+        content = None
+        for line in (stdout or "").splitlines():
+            if not line.strip():
+                continue
+            try:
+                e = json.loads(line)
+            except Exception:
+                content = None
+                continue
+            if not isinstance(e, dict):
+                content = None
+                continue
+            if e.get("role") == "assistant":
+                c = e.get("content")
+                content = c if isinstance(c, str) else None
+        return _strict_json_object(content) if content is not None else None
 
 
 class CodexWorker:
@@ -91,13 +176,14 @@ class CodexWorker:
     behavior-identical refactor). The adapter carries argv construction, the unisolated-path
     environment, output recovery, and error classification ONLY — see the module docstring for
     what stays in dispatch.py. The model id reaches the CLI exactly as frozen in launch.json:
-    the worker path has never alias-translated it and no codex model declares a cli_alias;
-    alias handling joins this surface only when a vendor's worker CLI needs it."""
+    the worker path has never alias-translated it and no codex model declares a cli_alias.
+    cli_aliases is accepted for signature uniformity with vendors whose worker CLI needs the
+    alias (kimi) and deliberately IGNORED here — the verbatim contract stands."""
 
     mode = "external-cli"   # detached CLI process under the worker role envelope (D5)
 
     def build_argv(self, model_id, effort, worktree, prompt, isolated,
-                   argv_prefix=None, last_message_path=None):
+                   argv_prefix=None, last_message_path=None, cli_aliases=None):
         args = ["exec", "--cd", str(worktree), "-m", model_id,
                 "-c", f"model_reasoning_effort={effort}",
                 "--skip-git-repo-check", "--json"]
@@ -209,8 +295,104 @@ class ClaudeSubagentWorker:
         return None
 
 
-_REVIEWERS = {"claude": ClaudeReviewer, "codex": CodexReviewer}
-_WORKERS = {"claude": ClaudeSubagentWorker, "codex": CodexWorker}
+class KimiWorker:
+    """kimi-code worker CLI mechanics (probe evidence, .orchestrator/evidence/kimi-probes.md):
+    top-level -p prompt (no exec subcommand), -m takes the CLI's provider alias — the one
+    worker whose CLI does NOT accept the relay model id verbatim, so build_argv consumes the
+    frozen cli_aliases (dispatch.py passes them in the owner-gated slice 3) — stream-json
+    output, and -y auto-approval (kimi has no inner sandbox and its permission model otherwise
+    blocks on interactive approval, probe F; the hardened systemd service is the sole
+    confinement). No effort flag: K3 supports only kimi's own "max". State home is fixed at
+    $HOME/.kimi-code (no KIMI_HOME-style override exists, probe A), so the isolated service
+    needs only that path writable and no extra environment. UNISOLATED runs are refused, fail
+    closed: the CLI cannot set its own working directory (no --cd — the worker would run in
+    the dispatcher's cwd, not the worktree) and has no inner sandbox to fall back on (codex's
+    unisolated fallback keeps bwrap ON; kimi would run with no confinement at all)."""
+
+    mode = "external-cli"   # detached CLI process under the worker role envelope (D5)
+
+    def build_argv(self, model_id, effort, worktree, prompt, isolated,
+                   argv_prefix=None, last_message_path=None, cli_aliases=None):
+        if not isolated:
+            raise ValueError("kimi worker has no unisolated mode: the CLI cannot set its own "
+                             "working directory (no --cd) and has no inner sandbox (probes "
+                             "B/F); the hardened service is the only confinement — fail closed")
+        model = cli_aliases.get(model_id) if isinstance(cli_aliases, dict) else None
+        # Round-2 review: truthiness alone accepted an identity alias (the raw relay id
+        # laundered through the map) and non-string values straight into argv — the alias
+        # must be a non-empty STRING distinct from the relay model id.
+        if not isinstance(model, str) or not model.strip() or model == model_id:
+            raise ValueError(f"kimi worker requires a distinct CLI provider alias for "
+                             f"{model_id!r} (probe A: the kimi CLI accepts its own aliases, "
+                             f"never relay model ids); the frozen cli_aliases carries "
+                             f"{model!r}; fail closed")
+        return [*(argv_prefix or []), "-p", prompt,
+                "-m", model, "--output-format", "stream-json", "-y"]
+
+    def worker_env(self, operator_home, operator_user):
+        """Scrubbed environment for the UNISOLATED path, kept total because dispatch.py builds
+        the env before argv — build_argv then refuses the unisolated run itself. No CODEX_HOME
+        analog exists: kimi's state home is fixed at $HOME/.kimi-code."""
+        return {"HOME": str(operator_home), "USER": operator_user, "LOGNAME": operator_user,
+                "PATH": f"{operator_home}/.local/bin:/usr/bin:/bin",
+                "TERM": "dumb", "LANG": "C.UTF-8"}
+
+    def iso_rw_paths(self, worker_home):
+        """kimi needs its fixed state home writable inside the hardened service (session state
+        and logs live beside the worker's copied credential)."""
+        return [str(worker_home / ".kimi-code")]
+
+    def iso_env_extra(self, worker_home):
+        """No vendor environment at all: kimi has no KIMI_HOME-style override (probe A) — the
+        fixed $HOME/.kimi-code resolves from the service's HOME=worker_home."""
+        return {}
+
+    def runtime(self, resolve_runtime):
+        """Delegates to the module-level runtime resolver dispatch.py injects (the owner-gated
+        slice 3 adds worker_kimi_runtime and vendor-selects it): runtime resolution and vetting
+        are trust machinery and stay in dispatch.py; the adapter only names the seam."""
+        return resolve_runtime()
+
+    def recover_last_message(self, raw_dir, isolated):
+        """The worker's final message: the last assistant line with string content in the
+        stream-json capture, skipping malformed lines — MESSAGE RECOVERY with the same
+        leniency as codex's event-stream read, not a gate (the reviewer's verdict extraction
+        is the strict one). kimi has no --output-last-message, so BOTH paths read the
+        captured stream (stdout lands in events.jsonl either way)."""
+        msg = ""
+        try:
+            for line in (raw_dir / "events.jsonl").read_text().splitlines():
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if (isinstance(e, dict) and e.get("role") == "assistant"
+                        and isinstance(e.get("content"), str)):
+                    msg = e["content"]
+        except Exception:
+            pass
+        return msg
+
+    def classify_error(self, exit_code, stderr, raw_dir):
+        """A structured error class, or None when the worker ran to completion — the
+        dispatcher's recorded vocabulary verbatim. Probe E signatures: auth/membership errors
+        are explicit; a rate-limit signature was unobserved, so the quota substrings stay
+        best-effort; config.invalid and everything else unmatched is worker_nonzero. kimi has
+        no inner sandbox, so no sandbox_denial mapping exists — a hardened-service denial
+        surfaces as worker_nonzero."""
+        if exit_code == 0:
+            return None
+        low = stderr.lower()
+        if "429" in stderr or "too many requests" in low or "rate limit" in low:
+            return "quota_rate_limit"
+        if ("membership" in low or "not logged in" in low or "unauthorized" in low
+                or "401" in stderr or "403" in stderr):
+            return "auth"
+        return "worker_nonzero"
+
+
+_REVIEWERS = {"claude": ClaudeReviewer, "codex": CodexReviewer, "kimi": KimiReviewer}
+_WORKERS = {"claude": ClaudeSubagentWorker, "codex": CodexWorker, "kimi": KimiWorker}
 
 
 def get_reviewer_adapter(vendor):

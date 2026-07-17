@@ -55,11 +55,17 @@ proves them), **configured assumptions** (set up outside this repo, verified man
 
 ## Known gaps (fixes queued in `.orchestrator/BACKLOG.md`)
 
-1. **The worker holds its own Codex login and has network in the build phase.** Setup copies Codex
-   auth into the worker's home so the worker can run Codex at all, and the build-phase service is
-   not network-blocked (the test phase is). Model-produced commands therefore share an environment
-   with readable Codex login files and a network path out. The owner's own credentials remain
-   unreachable — but "workers get no network / no credentials" is not yet true and is not claimed.
+1. **The worker holds a readable COPY of a vendor login and has network in the build phase.** Setup
+   copies the operator-staged Codex auth — and, where the operator has kimi state, a byte-for-byte
+   copy of the kimi-code OAuth credential into `~codex-worker/.kimi-code` (root-staged, 700/600) —
+   so the worker can run that vendor's CLI, and the build-phase service is not network-blocked (the
+   test phase is). Model-produced commands thus run beside a worker-readable copy of these bearer
+   credentials with a network path out, and can exfiltrate that copy. Only the operator's ORIGINAL
+   credential paths (including its own `~/.kimi-code`) stay unreachable. Setup is a manual
+   prerequisite: before a kimi role is activated the operator runs it and must get a successful
+   owner-run `scripts/kimi-isolation-check.sh` (dispatch stopped — a bounded misconfiguration
+   check, not an automated or adversary-proof gate); dispatch does not itself enforce or record it.
+   "Workers get no network / no credentials" is not yet true and is not claimed.
 2. **Approvals record intent; they do not prove a human.** An approval is a JSON file; the
    isolation override is an environment variable. Software running as the owner could create
    either — a test can prove the file or variable must be present, never who set it. They are an

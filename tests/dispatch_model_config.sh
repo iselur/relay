@@ -40,6 +40,14 @@ check("live vendor_map covers every model named anywhere in the config",
       >= ({r["model"] for r in live["roles"].values()}
           | {live["reviewer_failover"]["trigger_model"],
              live["reviewer_failover"]["fallback_model"]}))
+# Kimi vendor, slice 1: K3 is DECLARED (vendor + required CLI provider alias) while no role
+# selects it — the future role swap stays a one-line config edit, and nothing resolves to kimi
+# until its worker adapter (slice 2) and dispatcher wiring (slice 3) exist.
+check("live config declares kimi-k3 as vendor kimi with its required CLI alias",
+      live["vendor_map"].get("kimi-k3") == "kimi"
+      and live["cli_aliases"].get("kimi-k3") == "kimi-code/k3")
+check("no live role selects kimi-k3 (declaration is inert)",
+      all(r["model"] != "kimi-k3" for r in live["roles"].values()))
 
 # All remaining cases run against a scratch copy; the live file must come out untouched.
 tmp = pathlib.Path(tempfile.mkdtemp())
@@ -75,7 +83,7 @@ scratch.write_text(json.dumps(bad))
 check("empty role model refuses launch (exit 2)", load_result() == "exit2")
 bad = copy.deepcopy(good); bad["vendor_map"]["some-model"] = "other-vendor"
 scratch.write_text(json.dumps(bad))
-check("vendor outside claude|codex refuses launch (exit 2)", load_result() == "exit2")
+check("vendor outside the closed vendor set refuses launch (exit 2)", load_result() == "exit2")
 # Round-1 review, finding 3: a config that is not valid UTF-8 must refuse with exit 2, not an
 # uncaught decode traceback.
 scratch.write_bytes(b'\xff\xfe{ not utf-8 }')
@@ -89,6 +97,22 @@ check("gpt model declared as claude vendor refuses launch (exit 2)", load_result
 bad = copy.deepcopy(good); bad["vendor_map"]["claude-opus-4-8"] = "codex"
 scratch.write_text(json.dumps(bad))
 check("claude model declared as codex vendor refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["vendor_map"]["kimi-k3"] = "codex"
+scratch.write_text(json.dumps(bad))
+check("kimi model declared as codex vendor refuses launch (exit 2)", load_result() == "exit2")
+bad = copy.deepcopy(good); bad["vendor_map"]["claude-opus-4-8"] = "kimi"
+scratch.write_text(json.dumps(bad))
+check("claude model declared as kimi vendor refuses launch (exit 2)", load_result() == "exit2")
+# Kimi slice 3 (round-1 review): a kimi-vendor model MUST carry its CLI provider alias — the
+# kimi CLI never accepts relay model ids, so an alias-less declaration is invalid config.
+bad = copy.deepcopy(good); del bad["cli_aliases"]["kimi-k3"]
+scratch.write_text(json.dumps(bad))
+check("kimi-vendor model without its CLI alias refuses launch (exit 2)", load_result() == "exit2")
+# Round-2 review: an IDENTITY alias would launder the raw relay id through the translation —
+# the kimi alias must be DISTINCT from the model id.
+bad = copy.deepcopy(good); bad["cli_aliases"]["kimi-k3"] = "kimi-k3"
+scratch.write_text(json.dumps(bad))
+check("kimi identity alias (raw id laundering) refuses launch (exit 2)", load_result() == "exit2")
 bad = copy.deepcopy(good); del bad["vendor_map"][bad["roles"]["worker"]["model"]]
 scratch.write_text(json.dumps(bad))
 check("role model missing from vendor_map refuses launch (exit 2)", load_result() == "exit2")
@@ -179,6 +203,13 @@ check("pinning an unmapped worker model refuses launch (exit 2)",
       resolve_result({"worker_model": "mystery-model-9"}) == "exit2")
 check("pinning an unmapped reviewer model refuses launch (exit 2)",
       resolve_result({"reviewer_model": "mystery-model-9"}) == "exit2")
+# Kimi slice 2: KimiWorker is registered, so a kimi worker pin RESOLVES and freezes truthful
+# vendor+mode (deliberately flipping the slice-1 refusal). Slice 3 wired the dispatcher
+# (KNOWN_VENDORS, runtime resolver, argv plumbing); launch still requires the isolation gate
+# (tests/kimi_worker_isolation.sh, slice 4) before any kimi worker actually runs.
+r_kimi = d.resolve_launch_models({"worker_model": "kimi-k3"}, cfg)
+check("kimi worker pin resolves and freezes worker_vendor=kimi, worker_mode=external-cli",
+      r_kimi["worker_vendor"] == "kimi" and r_kimi["worker_mode"] == "external-cli")
 check("armed failover keeps the config fallback in the resolved fields",
       d.resolve_launch_models({"worker_model": "gpt-5.6-sol"}, cfg)
       ["reviewer_fallback_model"] == cfg["reviewer_failover"]["fallback_model"])
@@ -218,6 +249,8 @@ check("alias-resolved effective self-review refuses launch (exit 2)",
 aliases = cfg["cli_aliases"]
 check("listed model id translates to its CLI alias",
       aliases.get("claude-fable-5", "claude-fable-5") == "fable")
+check("kimi-k3 translates to the CLI's provider alias (probe A: the id the kimi CLI accepts)",
+      aliases.get("kimi-k3", "kimi-k3") == "kimi-code/k3")
 check("unlisted model id passes through unchanged",
       aliases.get("some-new-model", "some-new-model") == "some-new-model")
 

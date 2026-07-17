@@ -87,6 +87,104 @@ except ValueError:
     unknown_raises = True
 check("unknown vendor raises (caller fails closed)", unknown_raises)
 
+# ---- kimi reviewer units (kimi vendor, slice 2) --------------------------------------------
+# Mechanics per .orchestrator/evidence/kimi-probes.md: argv-only prompt (no stdin transport),
+# provider alias via cli_aliases, stream-json output, prompt-requested JSON with the shared
+# fail-closed parse, and a byte guard at the probe-D E2BIG wall.
+km = va.get_reviewer_adapter("kimi")
+KAL = {"kimi-k3": "kimi-code/k3"}
+argv = km.build_argv("kimi-k3", "max", SCHEMA, KAL, "/x/schema.json", request="REQ")
+check("kimi argv: -p one-shot with the request in argv, provider alias, stream-json",
+      argv == ["kimi", "-p", "REQ", "-m", "kimi-code/k3", "--output-format", "stream-json"])
+check("kimi argv carries no codex exec/effort/sandbox flags and no auto-approval",
+      "exec" not in argv and "--sandbox" not in argv and "-y" not in argv
+      and not any("model_reasoning_effort" in a for a in argv))
+try:
+    km.build_argv("kimi-k3", "max", SCHEMA, KAL, "/x/schema.json"); no_req_raises = False
+except ValueError:
+    no_req_raises = True
+check("kimi build_argv without the request refuses (no stdin transport; fail closed)",
+      no_req_raises)
+# The guard counts UTF-8 BYTES (the E2BIG wall is a byte limit): 2-byte characters at half the
+# limit sit exactly ON the boundary and build; one more byte refuses. A character-counting
+# guard would not trip until twice as much text — multibyte input discriminates.
+at_limit = "é" * (va.KIMI_ARGV_PROMPT_LIMIT // 2)
+check("kimi request exactly at the byte guard builds",
+      km.build_argv("kimi-k3", "max", SCHEMA, KAL, "/x", request=at_limit)[2] == at_limit)
+try:
+    km.build_argv("kimi-k3", "max", SCHEMA, KAL, "/x", request=at_limit + "!")
+    over_raises = False
+except ValueError:
+    over_raises = True
+check("kimi request one byte over the guard refuses before invocation (never truncated)",
+      over_raises)
+# Round-1 review of slice 3 (medium 4): an alias map without the required kimi entry refuses
+# — the raw relay id must never reach the CLI (probe A: it only accepts provider aliases).
+try:
+    km.build_argv("kimi-k3", "max", SCHEMA, {}, "/x/schema.json", request="REQ")
+    km_noalias_raises = False
+except ValueError:
+    km_noalias_raises = True
+check("kimi reviewer without its required alias entry refuses (fail closed)",
+      km_noalias_raises)
+# Round-2 review: identity and malformed alias values refuse too — never the raw relay id.
+for bad_aliases in ({"kimi-k3": "kimi-k3"}, {"kimi-k3": 7}, {"kimi-k3": "  "}, None):
+    try:
+        km.build_argv("kimi-k3", "max", SCHEMA, bad_aliases, "/x/s.json", request="REQ")
+        check(f"kimi reviewer refuses corrupt alias mapping {bad_aliases!r}", False)
+    except ValueError:
+        check(f"kimi reviewer refuses corrupt alias mapping {bad_aliases!r}", True)
+shaped = km.reviewer_prompt("REQ", SCHEMA)
+check("kimi prompt shaping appends the schema and the JSON-only instruction (codex discipline)",
+      shaped.startswith("REQ") and "rv1" in shaped and "ONLY one JSON object" in shaped)
+kstream = (json.dumps({"role": "user", "content": "ignored"}) + "\n"
+           + "not json at all\n"
+           + json.dumps({"role": "assistant", "content": "working notes"}) + "\n"
+           + json.dumps({"role": "assistant", "content": probe}) + "\n")
+check("kimi verdict: bare JSON in the LAST assistant stream line parses",
+      km.extract_verdict(kstream) == json.loads(probe))
+check("kimi verdict: fenced JSON in the last assistant line falls back to the exact fence pair",
+      km.extract_verdict(json.dumps({"role": "assistant",
+                                     "content": "```json\n" + probe + "\n```"}))
+      == json.loads(probe))
+check("kimi verdict: prose-wrapped content is refused",
+      km.extract_verdict(json.dumps({"role": "assistant",
+                                     "content": "LGTM: " + probe})) is None)
+check("kimi verdict: prose after the closing fence is refused",
+      km.extract_verdict(json.dumps({"role": "assistant",
+                                     "content": "```json\n" + probe + "\n```\nBLOCKING"}))
+      is None)
+check("kimi verdict: a later assistant line beats an earlier verdict (LAST wins, fail closed)",
+      km.extract_verdict(json.dumps({"role": "assistant", "content": probe}) + "\n"
+                         + json.dumps({"role": "assistant", "content": "on reflection, FAIL"}))
+      is None)
+check("kimi verdict: no assistant line at all is refused",
+      km.extract_verdict(json.dumps({"role": "system", "content": probe})) is None)
+check("kimi verdict: truncated/malformed stream is refused",
+      km.extract_verdict('{"role":"assis') is None)
+check("kimi verdict: non-dict verdict JSON is refused",
+      km.extract_verdict(json.dumps({"role": "assistant", "content": '["PASS"]'})) is None)
+check("kimi verdict: non-string assistant content is refused",
+      km.extract_verdict(json.dumps({"role": "assistant",
+                                     "content": {"verdict": "PASS"}})) is None)
+# Round-1 review (major): an earlier PASS must NOT survive trailing damage — the verdict
+# source is the last assistant event only while the stream stays valid behind it. All three
+# demonstrated stale-PASS sequences refuse; a subsequent VALID assistant event supersedes.
+vline = json.dumps({"role": "assistant", "content": probe})
+check("kimi verdict: PASS followed by a non-string-content assistant event is refused",
+      km.extract_verdict(vline + "\n"
+                         + json.dumps({"role": "assistant", "content": None})) is None)
+check("kimi verdict: PASS followed by trailing malformed stream data is refused",
+      km.extract_verdict(vline + '\n{"role":"assis') is None)
+check("kimi verdict: PASS followed by trailing raw prose is refused",
+      km.extract_verdict(vline + "\nBLOCKING: unsafe") is None)
+check("kimi verdict: a valid assistant event AFTER damage supersedes it (parses)",
+      km.extract_verdict('{"broken\n' + vline) == json.loads(probe))
+check("kimi verdict: non-assistant events and blank lines after the verdict stay neutral",
+      km.extract_verdict(vline + "\n\n"
+                         + json.dumps({"role": "tool", "content": "exit 0"}) + "\n")
+      == json.loads(probe))
+
 # ---- frozen vendor fields ----------------------------------------------------------------
 check("both vendor fields present are used verbatim",
       d.lc_frozen_vendor_fields({"worker_vendor": "codex", "reviewer_vendor": "codex"})
@@ -102,6 +200,13 @@ check("unknown worker_vendor in a full record is corrupt (None)",
       d.lc_frozen_vendor_fields({"worker_vendor": "gemini", "reviewer_vendor": "codex"}) is None)
 check("unknown reviewer_vendor in a full record is corrupt (None)",
       d.lc_frozen_vendor_fields({"worker_vendor": "codex", "reviewer_vendor": "gemini"}) is None)
+# Kimi slice 3: KNOWN_VENDORS now classifies kimi — a full record freezing kimi on either
+# side reads back verbatim (deliberately flipping the slice-2 unclassifiable assertion).
+check("kimi frozen vendor classifies on either side (dispatcher slice 3)",
+      d.lc_frozen_vendor_fields({"worker_vendor": "kimi", "reviewer_vendor": "claude"})
+      == {"worker_vendor": "kimi", "reviewer_vendor": "claude"}
+      and d.lc_frozen_vendor_fields({"worker_vendor": "codex", "reviewer_vendor": "kimi"})
+      == {"worker_vendor": "codex", "reviewer_vendor": "kimi"})
 cfg = d.load_model_config()
 r = d.resolve_launch_models({"worker_model": "gpt-5.6-luna",
                              "reviewer_model": "gpt-5.6-sol"}, cfg)
@@ -200,6 +305,48 @@ check("legacy record routes to the claude adapter with the shipped alias",
       verdict is not None and verdict.get("verdict") == "PASS" and len(calls) == 1
       and calls[0][calls[0].index("--model") + 1] == "fable"
       and calls[0][:2][-1] == "-p")
+
+# A frozen kimi reviewer vendor through review() itself, end to end (dispatcher slice 3 —
+# deliberately flipping the slice-2 refusal): the shaped request rides in argv, the model id
+# is alias-translated, and the verdict is recovered from the stream-json envelope.
+calls = []
+def kimi_ok_run(cmd, **kw):
+    calls.append(cmd)
+    return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+        {"role": "assistant", "content": json.dumps(good_verdict)}), stderr="")
+d.run = kimi_ok_run
+lc94 = dict(lc90, reviewer_vendor="kimi", reviewer_model="kimi-k3",
+            cli_aliases={"claude-fable-5": "fable", "kimi-k3": "kimi-code/k3"})
+att94 = tmp / "attempts" / "SPEC-954" / "1"; (att94 / "raw").mkdir(parents=True)
+verdict, raw = d.review(att94, "SPEC-954", lc94, "c" * 40)
+check("kimi-vendor review end to end: request in argv, aliased model, stream verdict accepted",
+      verdict is not None and verdict.get("verdict") == "PASS" and len(calls) == 1
+      and calls[0][0] == "kimi"
+      and calls[0][calls[0].index("-m") + 1] == "kimi-code/k3"
+      and "ONLY one JSON object" in calls[0][calls[0].index("-p") + 1])
+check("kimi-vendor review: the durable review request IS the argv prompt",
+      (att94 / "raw" / "review-request.txt").read_text()
+      == calls[0][calls[0].index("-p") + 1])
+
+# An OVERSIZED kimi request through review(): the adapter's argv byte guard refuses before
+# any invocation and the refusal (never a truncation) is the phase's recorded outcome.
+calls = []
+_saved_snap = d.snapshot_spec_text
+d.snapshot_spec_text = lambda att, digest: "x" * (va.KIMI_ARGV_PROMPT_LIMIT + 1)
+att96 = tmp / "attempts" / "SPEC-956" / "1"; (att96 / "raw").mkdir(parents=True)
+verdict, raw = d.review(att96, "SPEC-956", lc94, "c" * 40)
+d.snapshot_spec_text = _saved_snap
+check("kimi oversized review request refuses before invocation (argv guard, never truncated)",
+      verdict is None and len(calls) == 0
+      and "refused" in raw and "never truncated" in raw)
+
+# claude/codex reviewer build_argv accept the request keyword and ignore it (their prompts
+# ride on stdin) — signature uniformity for the slice-3 call site, zero behavior change.
+check("claude/codex build_argv accept request= and ignore it (argv unchanged)",
+      cl.build_argv("claude-fable-5", "high", SCHEMA, ALIASES, "/x/s.json", request="R")
+      == cl.build_argv("claude-fable-5", "high", SCHEMA, ALIASES, "/x/s.json")
+      and cx.build_argv("gpt-5.6-sol", "high", SCHEMA, ALIASES, "/x/s.json", request="R")
+      == cx.build_argv("gpt-5.6-sol", "high", SCHEMA, ALIASES, "/x/s.json"))
 
 sys.exit(1 if fails else 0)
 PY
