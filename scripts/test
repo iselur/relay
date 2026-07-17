@@ -4,6 +4,14 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# scripts/review resolves its pinned interpreter from ORCH_TEST_PY first (see its header comment).
+# Candidate-isolated tests copy that script into a sandbox with no .venv of its own, so without
+# this export they fall through to the host's bare python3 — on hosted CI that python has no
+# PyYAML and every provenance parse fails closed (the round-6 CI failure on PR #153).
+if [ -z "${ORCH_TEST_PY:-}" ] && [ -x .venv/bin/python ]; then
+  export ORCH_TEST_PY="$PWD/.venv/bin/python"
+fi
+
 manifest=tests/execution-policy.tsv
 fail_policy() { echo "execution policy invalid: $*" >&2; exit 2; }
 [ -f "$manifest" ] && [ ! -L "$manifest" ] || fail_policy "$manifest is missing or not a regular non-symlink file"

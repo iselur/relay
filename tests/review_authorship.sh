@@ -57,15 +57,18 @@ printf 'diff --git a/x b/x\n+codex wrote this\n' > .orchestrator/attempts/SPEC-9
 mkdir -p .worktrees/SPEC-902-1
 printf 'codex worktree file, not tied to any attempt directory\n' > .worktrees/SPEC-902-1/notes.txt
 
-# codex-plan's own output naming convention (case 2): only scripts/codex-plan writes this path.
+# codex-plan's own output naming convention (case 2): only scripts/codex-plan writes this path,
+# and it always writes frontmatter with author_model — the field authorship is derived from.
 mkdir -p .orchestrator/plans
-printf '# codex-drafted plan\n' > .orchestrator/plans/PLAN-001.md
+printf -- '---\nid: PLAN-001\nauthor_model: gpt-5.6-sol\nstatus: draft\n---\n# codex-drafted plan\n' \
+  > .orchestrator/plans/PLAN-001.md
 
 # A GENUINE codex-plan artifact written via `--out DIR` OUTSIDE .orchestrator/plans. scripts/codex-plan
 # takes --out and writes the same reserved PLAN-NNN naming anywhere; keying authorship on the
 # directory would let this real Codex artifact derive 'claude' and be laundered through --author.
 mkdir -p custom-out/nested
-printf '# codex-drafted plan written elsewhere via --out\n' > custom-out/nested/PLAN-042.md
+printf -- '---\nid: PLAN-042\nauthor_model: gpt-5.6-sol\nstatus: draft\n---\n# codex plan via --out\n' \
+  > custom-out/nested/PLAN-042.md
 printf 'raw stdout\n' > custom-out/nested/PLAN-042.stdout
 
 # 1a. FORGED --author: a Codex-attempt-linked artifact (real provenance says codex) labeled
