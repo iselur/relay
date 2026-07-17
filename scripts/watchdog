@@ -522,7 +522,9 @@ count_usage_retry() {
   # Bounds blind retrying: a window longer than the cadence would otherwise retry in silence
   # forever. Count consecutive retries (reset by a heartbeat — genuine progress means the retry
   # worked) and raise ONE alert past the cap; supervision is never stopped, only surfaced.
-  local n; n=$(get "$WD/usage-retries"); n=$(( ${n:-0} + 1 ))
+  local n; n=$(get "$WD/usage-retries")
+  [[ "$n" =~ ^[0-9]+$ ]] || { note "usage-retries non-numeric ('${n:-}'); treating as 0"; n=0; }
+  n=$(( 10#$n + 1 ))   # normalize: leading-zero strings (e.g. "08") are invalid octal under set -u
   put "$WD/usage-retries" "$n"
   [ "$n" -gt "$USAGE_RETRY_CAP" ] && alert_raise usage-stuck \
     "usage limit has persisted across $n retries (~$(( n * USAGE_RETRY_INTERVAL / 60 ))min at ${USAGE_RETRY_INTERVAL}s cadence); the window may be longer than expected or the account is out of quota"

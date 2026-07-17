@@ -483,6 +483,24 @@ run_wd
   bad "respawn deferred: scan_usage may have pushed the expired wait to a future epoch"
 [ ! -e "$WDIR/usage-wait" ] && ok "expired wait consumed by respawn, not re-armed by new limit bytes" || bad "wait survived or was pushed forward"
 
+echo "== W8d: leading-zero usage-retries file is normalized before arithmetic — counter reaches 9, tick completes"
+# count_usage_retry reads usage-retries and evaluates $(( n + 1 )). A stored value of '08' passes no
+# validation and is invalid octal under set -u, aborting the tick after the send but before
+# record_run. With base-10 normalization, '08' is treated as 8 and the counter reaches 9.
+# This test fails without the fix: the counter stays '08' (arithmetic abort, no write).
+reset; open_row
+run_wd                                              # launch, gen=1
+gen=$(cat "$WDIR/generation")
+printf 'USAGE_RETRY_MODE=active\n' > "$WDIR/env"; chmod 600 "$WDIR/env"
+echo "08" > "$WDIR/usage-retries"                  # leading-zero octal trap in the counter file
+echo "$(( $(date +%s) - 60 )) $gen" > "$WDIR/usage-wait"  # expired wait triggers retry_usage_wait_alive
+n_before=$(keys | wc -l)
+run_wd
+[ "$(keys | wc -l)" = "$((n_before + 1))" ] && ok "active retry send fired (alive pane, expired wait)" || bad "retry send did not fire"
+[ "$(cat "$WDIR/usage-retries" 2>/dev/null)" = "9" ] && \
+  ok "usage-retries '08' normalized to 8 then incremented to 9 (tick did not abort)" || \
+  bad "counter wrong (expected 9; without fix the tick aborts at the arithmetic and the file stays '08'): $(cat "$WDIR/usage-retries" 2>/dev/null)"
+
 echo "== W9: replay resistance — consumed bytes and external truncation never re-arm a wait"
 reset; open_row
 run_wd                                              # launch, gen=1
