@@ -82,21 +82,40 @@ echo "worker CODEX_HOME set (700 codex-worker; the operator cannot read it, nor 
 
 say "4b. worker kimi state with the kimi-code OAuth credential (same residual class as codex: the worker's own token, never the operator's)"
 WKIMI="$WORKER_HOME/.kimi-code"
-if [ -d "$OPERATOR_HOME/.kimi-code" ]; then
-  sudo mkdir -p "$WKIMI/credentials"
+OP_KIMI="$OPERATOR_HOME/.kimi-code"
+if [ -d "$OP_KIMI" ] && [ ! -L "$OP_KIMI" ]; then
+  src_cfg="$OP_KIMI/config.toml"
+  src_cred="$OP_KIMI/credentials/kimi-code.json"
+  # Copy only genuine regular files, never a symlink or special file the source might carry.
+  for s in "$src_cfg" "$src_cred"; do
+    if [ -L "$s" ] || { [ -e "$s" ] && [ ! -f "$s" ]; }; then
+      echo "refuse: operator kimi source $s is not a regular file (symlink/special)" >&2; exit 1
+    fi
+  done
   # Minimum required state only (kimi brief, slice 4): the managed-provider config and the
-  # OAuth credential. Everything else (device_id, logs, session state) the CLI recreates
-  # inside the worker's own writable .kimi-code.
-  [ -f "$OPERATOR_HOME/.kimi-code/config.toml" ] && \
-    sudo cp "$OPERATOR_HOME/.kimi-code/config.toml" "$WKIMI/config.toml"
-  [ -f "$OPERATOR_HOME/.kimi-code/credentials/kimi-code.json" ] && \
-    sudo cp "$OPERATOR_HOME/.kimi-code/credentials/kimi-code.json" "$WKIMI/credentials/kimi-code.json"
-  sudo chown -R "$WORKER":"$WORKER" "$WKIMI"
-  sudo find "$WKIMI" -type d -exec chmod 700 {} +
-  sudo find "$WKIMI" -type f -exec chmod 600 {} +
-  echo "worker kimi state set (700/600 codex-worker; operator's ~/.kimi-code stays unreachable)"
+  # OAuth credential. Both are REQUIRED — a partial copy that still "succeeded" would let an
+  # incomplete worker login masquerade as provisioned (round-1 review, high 3).
+  if [ ! -f "$src_cfg" ] || [ ! -f "$src_cred" ]; then
+    echo "refuse: operator kimi state incomplete (need config.toml + credentials/kimi-code.json); run 'kimi login' first" >&2
+    exit 1
+  fi
+  # Round-1 review (CRITICAL): after the first provisioning codex-worker OWNS ~/.kimi-code, so a
+  # privileged re-run must NEVER mkdir/cp THROUGH that worker-owned tree — the worker could swap
+  # any component for a symlink and redirect a root write onto an arbitrary host file. Build the
+  # whole tree as root in a staging dir the worker cannot touch (a root-owned mktemp under the
+  # worker-home PARENT, same filesystem for an atomic swap), then replace atomically with mv -T:
+  # rename(2) over a worker-planted symlink replaces the symlink itself; over a real directory it
+  # fails and the script aborts (fail closed) — neither can capture a root write.
+  stage="$(sudo mktemp -d -p "$(dirname "$WORKER_HOME")" .kimi-code.stage.XXXXXX)"
+  sudo install -o "$WORKER" -g "$WORKER" -d -m 700 "$stage/credentials"
+  sudo install -o "$WORKER" -g "$WORKER" -m 600 "$src_cfg"  "$stage/config.toml"
+  sudo install -o "$WORKER" -g "$WORKER" -m 600 "$src_cred" "$stage/credentials/kimi-code.json"
+  sudo chmod 700 "$stage"
+  sudo rm -rf "$WKIMI"
+  sudo mv -T "$stage" "$WKIMI"
+  echo "worker kimi state provisioned atomically (700/600 codex-worker; operator's ~/.kimi-code stays unreachable)"
 else
-  echo "operator has no ~/.kimi-code — skipped (kimi not installed for the operator; re-run after kimi login)"
+  echo "operator has no regular ~/.kimi-code — skipped (kimi not installed for the operator; re-run after 'kimi login')"
 fi
 
 say "5. root-owned read-only Python runtime for isolated installed tests"

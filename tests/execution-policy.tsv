@@ -1,7 +1,6 @@
 # path	mode	rationale
 tests/worker_isolation.sh	box-precondition	requires operator sudo and codex-worker
 tests/worker_userns.sh	box-precondition	requires operator sudo and host AppArmor state
-tests/kimi_worker_isolation.sh	box-precondition	requires operator sudo, provisioned codex-worker kimi state, and the kimi binary; exit 0 gates kimi activation
 tests/plain_language.sh	candidate-read	reads candidate prose; executes no candidate code
 tests/prose_cap.sh	candidate-read	reads candidate prose; executes no candidate code
 tests/codex_runtime.sh	box-precondition	runtime-vetting acceptance cases need operator-owned fixtures + trusted ancestry; infrastructure proof, not candidate logic
