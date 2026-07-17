@@ -90,7 +90,7 @@ echo "== K2: the worker's provisioned state has the required ownership and modes
 # The four expected entries, checked individually, plus an exact entry count so a stray file is
 # caught. (An adversary planting a symlink or an odd-named file is the out-of-scope live-worker
 # scenario; this catches provisioning/permission MISconfiguration.)
-chk(){ local rel="$1" wmode="$2" p="$WKIMI${rel:+/$rel}" got
+chk(){ local rel="$1" wmode="$2" got; local p="$WKIMI${rel:+/$rel}"
   got="$(sudo stat -c '%a %U:%G' -- "$p" 2>/dev/null)"
   [ "$got" = "$wmode $WORKER:$WORKER" ] || bad "K2 ${rel:-.kimi-code}: '$got' (want '$wmode $WORKER:$WORKER')"; }
 chk ""                             700
