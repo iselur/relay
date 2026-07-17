@@ -31,18 +31,20 @@ on one page.
 
 Most agent frameworks coordinate AI agents and trust what the agents say. Relay is built like
 CI/CD with a trust boundary: the load-bearing claims are backed by gates a machine checks, and
-the ones that are not are written down as known gaps.
+the ones that are not are written down as configured assumptions or known gaps.
 
 - **Evidence, not prose.** A worker saying "tests passed" counts for nothing — the tests are
   restored from the orchestrator's own copy and rerun. A test that did not run did not pass.
 - **Nothing grades its own work.** Same-model self-review is refused, and today's pairing puts
-  the other vendor in judgment. The reviewer sees only spec, diff, and evidence, sandboxed —
-  Claude with all tools denied, Codex read-only — and its verdict binds only to the exact code
-  it saw; moved code means a fresh review.
+  the other vendor in judgment. The reviewer is given only spec, diff, and evidence, sandboxed —
+  Claude with all tools denied, Codex read-only (its filesystem-read residual is accepted in
+  SECURITY.md) — and its verdict binds only to the exact code it saw; moved code means a fresh
+  review.
 - **Isolation or no launch.** External-CLI workers run as a separate machine user that cannot
-  reach your home directory or credentials, and their test runs have no network; without that
-  sandbox they do not launch. Subagent workers run inside the orchestrator's own session, and a
-  recorded owner-ordered exception exists — SECURITY.md maps both boundaries.
+  reach your home directory or your original credentials (they hold their own copied vendor
+  login), and their test runs have no network; without that sandbox they do not launch — the
+  only exception is the recorded owner-ordered `ORCH_ALLOW_UNISOLATED` override. Subagent
+  workers run inside the orchestrator's own session; SECURITY.md maps both boundaries.
 - **A rulebook that shrinks.** The operating rules are capped by CI at 70 lines, and the
   standing policy is that a new rule requires a real failure in shipped work and replaces a
   line, never stacks.

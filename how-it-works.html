@@ -59,14 +59,14 @@ eyes from the other vendor judges it — and nothing lands on <code>main</code> 
 <h2>Why this exists</h2>
 <p>Most agent frameworks coordinate AI agents and trust what the agents say. Relay is built the
 other way around — like CI/CD with a trust boundary. External workers build as a separate user
-that cannot reach your credentials, with network-off test runs; their test results are rerun
-rather than believed; and nothing grades its own work — today's pairing puts the other vendor's
-model in judgment, sandboxed, seeing only spec, diff, and evidence, its verdict bound to the
-exact diff it saw. The operating rulebook is capped by CI at 70 lines, and its standing policy
+that cannot reach your home directory or your original credentials, with network-off test runs;
+their test results are rerun rather than believed; and nothing grades its own work — today's
+pairing puts the other vendor's model in judgment, sandboxed, given only spec, diff, and
+evidence, its verdict bound to the exact diff it saw. The operating rulebook is capped by CI at 70 lines, and its standing policy
 is that every new rule must come from a real failure in shipped work — the process shrinks
 instead of growing. Claude and Codex hold the active roles today; Kimi is wired in as a third
 vendor, one line in <code>models.json</code> away from a role. <code>SECURITY.md</code> maps the
-boundaries and the known gaps.</p>
+boundaries, the configured assumptions, and the known gaps.</p>
 
 <h2>The cast</h2>
 <div class="roles">
