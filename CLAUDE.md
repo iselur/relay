@@ -64,7 +64,7 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
   the owner's home. Known gaps are in SECURITY.md. Never claim more protection than tests prove.
 - Stop a job with `dispatch cancel`, never by killing a process number — that once killed the
   wrong thing. Interrupted work restarts as a fresh attempt; never finish it by hand.
-- Under an autonomy grant the orchestrator finishes the job itself, asking the owner only on
-  HALT or work still failing at the cap: it answers findings under rule 3 and, `ci` green,
-  merges to `ready-for-main` through the gated `./scripts/dispatch merge` or `dispatch integrate`
-  — never `main`, never a bare `gh pr merge`. No grant file — untracked `AUTONOMY.local.json`, or the tracked `AUTONOMY.json` that ships disabled — means no autonomy.
+- Under an autonomy grant the orchestrator finishes the job itself instead of pausing for owner
+  input: it answers findings under rule 3 and, `ci` green, merges to `ready-for-main` through the
+  gated `./scripts/dispatch merge` or `dispatch integrate` — never `main`, never a bare `gh pr merge` — and stops wherever a gate stops it (HALT, a spent cap, any human-required approval).
+  No grant file — untracked `AUTONOMY.local.json`, or the tracked `AUTONOMY.json` that ships disabled — means no autonomy.
