@@ -239,8 +239,6 @@ def codex_ok_run(cmd, **kw):
 d.run = codex_ok_run
 lc90 = {"worktree": str(repo), "base_sha": "b" * 40, "spec_digest": "d" * 64,
         "reviewer_model": "gpt-5.6-sol", "reviewer_effort": "high",
-        "reviewer_failover_trigger": "claude-fable-5",
-        "reviewer_fallback_model": "claude-opus-4-8",
         "cli_aliases": {"claude-fable-5": "fable"},
         "worker_vendor": "codex", "reviewer_vendor": "codex"}
 att90 = tmp / "attempts" / "SPEC-950" / "1"; (att90 / "raw").mkdir(parents=True)

@@ -8,10 +8,6 @@
     "bound_reviewer": { "model": "claude-fable-5", "effort": "high" },
     "orchestrator_artifact_reviewer": { "model": "gpt-5.6-sol", "effort": "high" }
   },
-  "reviewer_failover": {
-    "trigger_model": "claude-fable-5",
-    "fallback_model": "claude-opus-4-8"
-  },
   "cli_aliases": {
     "claude-fable-5": "fable",
     "kimi-k3": "kimi-code/k3"

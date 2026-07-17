@@ -171,11 +171,14 @@ check("a copied/foreign approval's instance_id does NOT match (→ rejected in p
 v3_schema = json.loads(pathlib.Path("scripts/verdict.schema.json").read_text())
 v3_validator = d.Draft202012Validator(v3_schema)
 binding = {"spec_digest": "d" * 64, "base_sha": "b" * 40, "worker_commit": "c" * 40}
+# The advisory quality dimensions scripts/verdict.schema.json requires (R94 removed the module
+# constant along with the cmd_metrics scorecard — the schema is the remaining authority).
+QUALITY_DIMENSIONS = ("maintainability", "design_fit", "test_quality")
 vlc = {"spec_digest": binding["spec_digest"], "base_sha": binding["base_sha"]}
 
 def quality(score=3):
     return {dimension: {"score": score, "evidence": f"tests/dispatch_gate4.sh:{dimension}"}
-            for dimension in d.QUALITY_DIMENSIONS}
+            for dimension in QUALITY_DIMENSIONS}
 
 def valid_v3(score=3, verdict="PASS"):
     return {
@@ -197,7 +200,7 @@ check("v3 schema accepts a complete quality block", schema_accepts(valid_v3()))
 for bad_score in (0, 6, "3", None, True, 2.5):
     bad = valid_v3(); bad["quality"]["maintainability"]["score"] = bad_score
     check(f"v3 schema rejects quality score {bad_score!r}", not schema_accepts(bad))
-for dimension in d.QUALITY_DIMENSIONS:
+for dimension in QUALITY_DIMENSIONS:
     bad = valid_v3(); bad["quality"][dimension]["evidence"] = " \t\n"
     check(f"v3 schema rejects whitespace-only {dimension} evidence", not schema_accepts(bad))
 bad = valid_v3(); bad["quality"]["extra"] = {"score": 3, "evidence": "x"}
@@ -278,7 +281,7 @@ d.git, d.run = _prompt_git, _prompt_run
 request = captured.get("request", "")
 check("reviewer prompt requests schema_version 3", 'schema_version is "3"' in request)
 check("reviewer prompt anchors all five levels for each distinct quality dimension",
-      all(dimension in request for dimension in d.QUALITY_DIMENSIONS)
+      all(dimension in request for dimension in QUALITY_DIMENSIONS)
       and all(f"{score}=" in request for score in range(1, 6))
       and "independent of whether it matches repository architecture" in request
       and "independent of local code readability" in request)
@@ -288,51 +291,6 @@ check("reviewer prompt makes quality values advisory and binary-only",
       "MUST be decided ONLY by the binary rubric" in request
       and "MUST have no influence on PASS/FAIL" in request)
 check("reviewer accepts a fully valid prompted v3 response", prompt_verdict is not None)
-
-# --- assurance metrics (read-only scorecard) -------------------------------------------------
-import io, contextlib
-mtmp = pathlib.Path(tempfile.mkdtemp())
-d.ATTEMPTS = mtmp / "attempts"; d.STATE = mtmp / "state"; d.ESCALATIONS = mtmp / "escalations"
-d.SPECS = mtmp / "specs"
-for p in (d.ATTEMPTS, d.STATE, d.ESCALATIONS, d.SPECS): p.mkdir(parents=True, exist_ok=True)
-# one clean straight-through spec, one that needed a remediation then passed
-(d.SPECS/"SPEC-M1.yaml").write_text("id: SPEC-M1\nrisk_class: low\n")
-(d.SPECS/"SPEC-M2.yaml").write_text("id: SPEC-M2\nrisk_class: low\n")
-a1=d.ATTEMPTS/"SPEC-M1"/"1"; a1.mkdir(parents=True)
-(a1/"result.json").write_text(json.dumps({"status":"passed_pr_opened","error_class":None,"merged":True}))
-qpass = valid_v3(1, "PASS")
-qpass["quality"]["design_fit"]["score"] = 2
-qpass["quality"]["test_quality"]["score"] = 3
-(a1/"review.json").write_text(json.dumps(qpass))
-b1=d.ATTEMPTS/"SPEC-M2"/"1"; b1.mkdir(parents=True); (b1/"result.json").write_text(json.dumps({"status":"failed_test","error_class":"test"}))
-b2=d.ATTEMPTS/"SPEC-M2"/"2"; b2.mkdir(parents=True); (b2/"result.json").write_text(json.dumps({"status":"passed_pr_opened","error_class":None,"merged":False}))
-# A second, valid scored attempt plus five skipped review files: partial v3, corrupt JSON,
-# poisoned v2 with a stray quality key, wrong score type, and out-of-range score.
-b3=d.ATTEMPTS/"SPEC-M2"/"3"; b3.mkdir()
-qfail = valid_v3(5, "FAIL"); qfail["quality"]["design_fit"]["score"] = 4; qfail["quality"]["test_quality"]["score"] = 3
-(b3/"review.json").write_text(json.dumps(qfail))
-b4=d.ATTEMPTS/"SPEC-M2"/"4"; b4.mkdir(); partial=valid_v3(); del partial["quality"]["design_fit"]; (b4/"review.json").write_text(json.dumps(partial))
-b5=d.ATTEMPTS/"SPEC-M2"/"5"; b5.mkdir(); (b5/"review.json").write_text("{not json")
-b6=d.ATTEMPTS/"SPEC-M2"/"6"; b6.mkdir(); poisoned=valid_v3(); poisoned["schema_version"]="2"; (b6/"review.json").write_text(json.dumps(poisoned))
-b7=d.ATTEMPTS/"SPEC-M2"/"7"; b7.mkdir(); wrong=valid_v3(); wrong["quality"]["test_quality"]["score"]="3"; (b7/"review.json").write_text(json.dumps(wrong))
-b8=d.ATTEMPTS/"SPEC-M2"/"8"; b8.mkdir(); ranged=valid_v3(); ranged["quality"]["maintainability"]["score"]=6; (b8/"review.json").write_text(json.dumps(ranged))
-buf=io.StringIO()
-with contextlib.redirect_stdout(buf): d.cmd_metrics()
-m=json.loads(buf.getvalue())
-check("metrics: 2 specs, 3 attempts", m["specs_with_attempts"]==2 and m["total_attempts"]==3)
-check("metrics: straight-through 50% (M1 only)", m["straight_through_rate_pct"]==50.0)
-check("metrics: needed_remediation 50% (M2)", m["needed_remediation_pct"]==50.0)
-check("metrics: merged 50% (M1)", m["merged_pct"]==50.0)
-check("metrics: counts a test failure", m["failure_error_classes"].get("test")==1)
-check("metrics: quality section is explicitly advisory", m["quality_advisory"] is True and "ADVISORY" in m["quality_advisory_note"])
-check("metrics: counts only attempts with all three valid dimensions",
-      m["quality_scored_attempts"] == 2 and m["quality_skipped"] == 5)
-check("metrics: quality distributions include zero-count score buckets",
-      m["quality_score_distribution"]["maintainability"] == {"1":1,"2":0,"3":0,"4":0,"5":1}
-      and m["quality_score_distribution"]["design_fit"] == {"1":0,"2":1,"3":0,"4":1,"5":0}
-      and m["quality_score_distribution"]["test_quality"] == {"1":0,"2":0,"3":2,"4":0,"5":0})
-check("metrics: averages are per dimension with one decimal",
-      m["quality_avg_by_dimension"] == {"maintainability":3.0,"design_fit":3.0,"test_quality":3.0})
 
 # --- regression-proof gate (holistic-review #1) ----------------------------------------------
 # Real run_regression_gate against a temp repo: base has a buggy add(), candidate fixes it; the

@@ -16,7 +16,7 @@ import sys
 ROLES = ("orchestrator", "spec_author", "utility_subagent", "worker",
          "bound_reviewer", "orchestrator_artifact_reviewer")
 VENDORS = ("claude", "codex", "kimi")
-SECTIONS = ("schema_version", "roles", "reviewer_failover", "cli_aliases", "vendor_map")
+SECTIONS = ("schema_version", "roles", "cli_aliases", "vendor_map")
 # Contradiction TRIPWIRE, not a classifier (round-1 review, finding 1): a name carrying a known
 # vendor prefix may not be declared as the other vendor — that misdeclaration is exactly what
 # would let same-vendor review pass. A name with no known prefix still needs its explicit
@@ -65,19 +65,6 @@ def validate(cfg) -> list:
     for r in sorted(set(roles) - set(ROLES)):
         errs.append(f"unknown role: {r}")
 
-    fo = cfg.get("reviewer_failover")
-    if fo is not None:
-        if not isinstance(fo, dict):
-            errs.append("reviewer_failover must be an object")
-        else:
-            for k in sorted(set(fo) - {"trigger_model", "fallback_model"}):
-                errs.append(f"reviewer_failover has unknown key: {k}")
-            for k in ("trigger_model", "fallback_model"):
-                if not _nonempty_str(fo.get(k)):
-                    errs.append(f"reviewer_failover.{k} must be a non-empty string")
-                else:
-                    named_models.add(fo[k])
-
     aliases = cfg.get("cli_aliases")
     if aliases is not None:
         if not isinstance(aliases, dict):
@@ -125,20 +112,9 @@ def validate(cfg) -> list:
                             f"never relay model ids)")
 
     # Owner decision 2026-07-16: vendor PAIRING is the owner's call, made by editing this
-    # config — nothing here polices same- vs cross-vendor. Two mechanical rules remain:
-    # the failover pair must share one vendor (the frozen reviewer vendor must stay correct
-    # across the Fable→Opus retry — a cross-vendor fallback would be driven by the wrong CLI),
-    # and same-MODEL self-review is refused at resolution in dispatch.py ("nothing reviews its
+    # config — nothing here polices same- vs cross-vendor. The one mechanical rule that remains:
+    # same-MODEL self-review is refused at resolution in dispatch.py ("nothing reviews its
     # own work" — the one hard limit the rulebook keeps).
-    def vendor(model):
-        v = vm.get(model) if isinstance(model, str) else None
-        return v if v in VENDORS else None
-
-    if isinstance(fo, dict):
-        tv, fv = vendor(fo.get("trigger_model")), vendor(fo.get("fallback_model"))
-        if tv is not None and fv is not None and tv != fv:
-            errs.append(f"reviewer_failover pair spans vendors ({tv} → {fv}): the retry would "
-                        f"switch CLIs mid-attempt; trigger and fallback must share a vendor")
     return errs
 
 

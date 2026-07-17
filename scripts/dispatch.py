@@ -53,19 +53,18 @@ WORKTREES = ROOT / ".worktrees"
 HALT = ORCH / "HALT"
 SPEC_SCHEMA = SPECS / "spec.schema.json"
 VERDICT_SCHEMA = ROOT / "scripts" / "verdict.schema.json"
-# R71: the machine source of truth for role→model mapping (rev-4 taxonomy), including the R69
-# bound-reviewer failover pair. Loaded ONCE per launch by load_model_config() and frozen into
-# launch.json (lc), so a mid-run edit never changes a running attempt. Any read or validation
-# error refuses the launch — there is no silent hard-coded fallback.
+# R71: the machine source of truth for role→model mapping (rev-4 taxonomy). Loaded ONCE per
+# launch by load_model_config() and frozen into launch.json (lc), so a mid-run edit never
+# changes a running attempt. Any read or validation error refuses the launch — there is no
+# silent hard-coded fallback.
 MODEL_CONFIG = ROOT / "scripts" / "models.json"
 # Pre-R71 launch records carry none of the frozen config fields. An attempt in flight across the
-# upgrade keeps EXACTLY the behavior it was launched under (round-2 review, finding 2): the
-# shipped Fable CLI alias and the shipped Fable→Opus retirement retry. These constants describe
-# those historical records — they are compatibility, not a fallback for config errors, and no
-# NEW launch ever reads them (cmd_launch always freezes the config's values).
+# upgrade keeps the behavior it was launched under (round-2 review, finding 2): the shipped
+# Fable CLI alias. This constant describes those historical records — it is compatibility, not a
+# fallback for config errors, and no NEW launch ever reads it (cmd_launch always freezes the
+# config's values). R94 removed the R69 reviewer failover pair (owner closed R69: a retired
+# reviewer model is handled by a manual models.json flip, not automation).
 LEGACY_LAUNCH_DEFAULTS = {
-    "reviewer_failover_trigger": "claude-fable-5",
-    "reviewer_fallback_model": "claude-opus-4-8",
     "cli_aliases": {"claude-fable-5": "fable"},
 }
 # R73 Job 1: launch records that predate vendor freezing were all codex-worker/claude-reviewer.
@@ -112,17 +111,13 @@ def lc_frozen_vendor_fields(lc: dict) -> "dict | None":
     return None
 
 
-def lc_frozen_model_fields(lc: dict) -> "dict | None":
-    """The three frozen model fields from a launch record: the record's own when ALL are present,
-    the shipped pre-config defaults when NONE are (a genuine pre-R71 record), and None — refuse,
-    fail closed — for a PARTIAL set (owner-extension round 1: per-key fallback would silently mix
-    a damaged new record with legacy values instead of surfacing the corruption)."""
-    present = [k for k in LEGACY_LAUNCH_DEFAULTS if k in lc]
-    if len(present) == len(LEGACY_LAUNCH_DEFAULTS):
+def lc_frozen_model_fields(lc: dict) -> dict:
+    """The frozen model fields from a launch record: the record's own when present, the shipped
+    pre-config defaults for a genuine pre-R71 record (since R94 the group is the alias map
+    alone, so present-or-legacy is exhaustive — no partial set exists to refuse)."""
+    if all(k in lc for k in LEGACY_LAUNCH_DEFAULTS):
         return {k: lc[k] for k in LEGACY_LAUNCH_DEFAULTS}
-    if not present:
-        return dict(LEGACY_LAUNCH_DEFAULTS)
-    return None
+    return dict(LEGACY_LAUNCH_DEFAULTS)
 # Approval artifact shapes (B1). Approvals were trusted by digest+instance equality only, and the
 # per-attempt high-risk approval by mere file EXISTENCE — an empty or garbage file authorized a
 # high-risk dispatch. Both are now schema-validated AND bound to this spec/instance (and attempt).
@@ -198,7 +193,7 @@ def load_model_config() -> dict:
 def resolve_launch_models(approval: dict, cfg: dict) -> dict:
     """The launch-frozen model fields (R71), as ONE tested resolver: an approval's non-empty pin
     wins, otherwise the config default (`or`, not .get(default) — an empty-string pin falls back
-    instead of being trusted). The failover pair and alias map are always frozen from config.
+    instead of being trusted). The alias map is always frozen from config.
     cmd_launch persists exactly this dict into launch.json, so a test asserts the precedence and
     freeze directly rather than inferring it from a full launch.
 
@@ -216,26 +211,20 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
                            or cfg["roles"]["bound_reviewer"]["model"]),
         "reviewer_effort": (approval.get("reviewer_effort")
                             or cfg["roles"]["bound_reviewer"]["effort"]),
-        "reviewer_failover_trigger": cfg["reviewer_failover"]["trigger_model"],
-        "reviewer_fallback_model": cfg["reviewer_failover"]["fallback_model"],
         "cli_aliases": cfg["cli_aliases"],
     }
     vm = cfg["vendor_map"]
-    armed = resolved["reviewer_model"] == resolved["reviewer_failover_trigger"]
     # R73 round-1 review (blocking): compare EFFECTIVE (alias-resolved) models, not config ids —
     # an alias pointing one model id at another would otherwise pass the distinct-id check while
     # the CLI invokes the worker's own weights. models_check refuses model-targeting aliases at
     # validation; this is the resolution-time backstop and also covers plain id equality.
     _eff = lambda m: resolved["cli_aliases"].get(m, m)
-    if _eff(resolved["reviewer_model"]) == _eff(resolved["worker_model"]) or (
-            armed and _eff(resolved["reviewer_fallback_model"]) == _eff(resolved["worker_model"])):
+    if _eff(resolved["reviewer_model"]) == _eff(resolved["worker_model"]):
         die(f"launch refused: {resolved['worker_model']!r} would review its own work "
-            f"(reviewer or armed fallback equals worker_model after alias resolution; nothing "
+            f"(reviewer equals worker_model after alias resolution; nothing "
             f"reviews its own work, CLAUDE.md rule 7)")
     checked = [("worker_model", resolved["worker_model"]),
                ("reviewer_model", resolved["reviewer_model"])]
-    if armed:
-        checked.append(("reviewer_fallback_model", resolved["reviewer_fallback_model"]))
     for key, model in checked:
         if vm.get(model) is None:
             die(f"launch refused: {key} {model!r} is not declared in vendor_map "
@@ -269,7 +258,6 @@ EXECUTION_POLICY = ROOT / "tests" / "execution-policy.tsv"
 TEST_RUNTIME_ROOT = Path("/opt/orchestrator-test-runtime")
 TEST_RUNTIME_PY = TEST_RUNTIME_ROOT / "bin" / "python"
 EXECUTION_MODES = {"box-precondition", "candidate-isolated", "candidate-read"}
-QUALITY_DIMENSIONS = ("maintainability", "design_fit", "test_quality")
 
 # Concurrency bound (Gate 3 part 3 mechanism: atomic slot claim + stale-base guard, unchanged).
 # Configurable via ORCH_MAX_PARALLEL; default 3 (the operator, 2026-07-13). NOTE the real limiter is not the
@@ -2187,7 +2175,7 @@ def cmd_launch(spec_id: str) -> None:
         "base_sha": base_sha, "branch": branch,
         "base_branch": approval.get("base_branch", AUTOMATION_BASE),
         # R71: model fields from the ONE tested resolver (run pre-side-effects above) — config
-        # defaults, approval pin wins, failover pair + alias map frozen here; review() reads
+        # defaults, approval pin wins, alias map frozen here; review() reads
         # only lc, never the live config.
         "worktree": str(wt),
         **launch_models,
@@ -3388,8 +3376,8 @@ def evaluate_binary_review(verdict: str, criteria: list[dict], scope_finding: st
 
 
 def write_review_record(att: Path, verdict: "dict | None", effective_reviewer_model: str) -> None:
-    """Persist the canonical review.json, binding the EFFECTIVE reviewer model (the one that actually
-    produced the verdict, after any Fable→Opus failover) onto the record. This is the SINGLE writer
+    """Persist the canonical review.json, binding the EFFECTIVE reviewer model (the one that
+    actually produced the verdict) onto the record. This is the SINGLE writer
     of review.json's provenance (round-3 review, finding 2): keeping it here lets a test assert the
     attribution directly, instead of it being an untested side effect of the dispatch pipeline. The
     verdict object is copied, never mutated, so the reviewer's own fields are left untouched; the
@@ -3399,57 +3387,6 @@ def write_review_record(att: Path, verdict: "dict | None", effective_reviewer_mo
     if record:
         record["effective_reviewer_model"] = effective_reviewer_model
     atomic_write(att / "review.json", json.dumps(record, indent=2) if record else "{}")
-
-
-# Round-2 review, finding 1: a bare `type=result + is_error + api_error_status 404` is NOT
-# specific enough — a missing/null/arbitrary-string `result` alongside those generic fields (any
-# unrelated 404 the CLI ever surfaces that way) would buy the diff a second reviewer roll. The
-# failover must fire ONLY on the model-not-found condition, so we also require the CLI's rendered
-# model-unavailable message. Verified against the installed CLI (2.1.210): `claude -p --json-schema
-# ... --model <bogus>` exits nonzero with exactly this envelope, `result` reading e.g. "There's an
-# issue with the selected model (<name>). It may not exist or you may not have access to it. Run
-# --model to pick a different model." We anchor on the model-name-INDEPENDENT phrasing; if the API
-# ever rewords it, the match fails CLOSED (no spurious failover — the reviewer simply fails and the
-# attempt escalates), which is the safe direction for a trust gate.
-_MODEL_UNAVAILABLE_PHRASES = (
-    "issue with the selected model",
-    "it may not exist or you may not have access",
-)
-
-
-def reviewer_model_unavailable(stdout: str) -> bool:
-    """True ONLY for the CLI's structured model-not-found envelope — the one condition that may
-    trigger the reviewer-model failover. Anything else (auth, rate limit, timeout, garbage output,
-    an unrelated 404) returns False and stays fail-closed with no retry. Round-1 review: the full
-    discriminator is required (type=result + is_error + api_error_status 404), and a verdict-bearing
-    envelope — a `result` that parses as a JSON object — is never "model not found", whatever its
-    status fields claim: structured output proves a model ran. Round-2 review: `result` must be a
-    PRESENT non-empty string carrying the CLI's rendered model-unavailable message (a missing/null
-    `result`, or any unrelated 404 string, is refused)."""
-    try:
-        env = json.loads(stdout or "")
-    except Exception:
-        return False
-    if not (isinstance(env, dict) and env.get("type") == "result"
-            and env.get("is_error") is True and env.get("api_error_status") == 404):
-        return False
-    res = env.get("result")
-    if not isinstance(res, str) or not res.strip():
-        return False
-    # The genuine message is human prose that does NOT parse as JSON. Anything that decodes as
-    # valid JSON — an object, an array, or a scalar — is structured output or a malformed envelope,
-    # never the model-not-found text, and must never buy a retry (round-3 review: the object-only
-    # check let a JSON-array body like ["issue with the selected model"] slip through).
-    try:
-        json.loads(res)
-    except Exception:
-        pass          # not JSON — a plain string, as the real message is
-    else:
-        return False  # decoded as JSON → not the human message
-    low = res.lower()
-    # Require the COMPLETE captured signature — EVERY phrase, not just one fragment (round-3 review:
-    # `any()` let an unrelated 404 carrying only one phrase trigger the failover).
-    return all(phrase in low for phrase in _MODEL_UNAVAILABLE_PHRASES)
 
 
 def validate_review_verdict(verdict: dict, schema_obj: dict, lc: dict, wc: str) -> bool:
@@ -3474,13 +3411,9 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     # policy-note item 2: mandatory structured rubric. The worker's plan/checklist is NEVER
     # included here (confirmation-bias contamination) — only spec, diff, and orchestrator evidence.
     wt = Path(lc["worktree"])
-    # The frozen model fields are resolved ONCE, up front: all three from the record, or the
-    # shipped legacy trio for a genuine pre-R71 record; a partial set is a corrupt record and
-    # yields no verdict at all (fail closed, before any reviewer invocation).
+    # The frozen model fields are resolved ONCE, up front: the record's own, or the shipped
+    # legacy alias map for a genuine pre-R71 record.
     frozen = lc_frozen_model_fields(lc)
-    if frozen is None:
-        return None, ("launch record carries a partial set of frozen model fields "
-                      "(corrupt launch.json); fail closed — no reviewer was invoked")
     # R73 Job 1: the CLI adapter is selected by the FROZEN reviewer vendor (all-or-none group of
     # its own; pre-freezing records are legally codex-worker/claude-reviewer). Adapter loading
     # failures, unknown vendors, and partial vendor records all yield no verdict — fail closed.
@@ -3627,53 +3560,9 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
     cp = invoke_reviewer(lc["reviewer_model"])
     if isinstance(cp, str):
         return None, cp
-    # Reviewer-retirement failover (owner decision 2026-07-15; R71: the trigger/fallback pair now
-    # comes frozen from scripts/models.json via lc — launch records that predate the config keep
-    # the shipped pair via LEGACY_LAUNCH_DEFAULTS, unchanged behavior for in-flight attempts).
-    # The bound reviewer stays the pinned primary while the model exists; when the API retires
-    # it, this ONE deterministic signature — nonzero exit plus
-    # the CLI's structured model-not-found envelope, from the pinned primary only — triggers a
-    # single rerun on the fallback model. Nothing else retries: an auth failure, rate limit,
-    # timeout, or malformed envelope must never buy the diff a second reviewer roll. The retry
-    # cannot weaken the gate — it fires only when the primary produced no verdict at all (nonzero
-    # exit, verdict-bearing envelopes rejected by the trigger). Both envelopes, both exit codes,
-    # and an escalation record are kept, and lc["reviewer_model"] is updated IN PLACE so
-    # review.json's sibling records, result.json, and the PR body all attribute the verdict to the
-    # model that actually produced it (round-1 review: misattribution was blocking).
-    # R73 Job 1: the failover is CLAUDE-specific by design — its discriminator parses the claude
-    # CLI's envelope. Gating on the frozen reviewer vendor means a codex reviewer error can never
-    # buy a retry, even if its output happens to mimic the claude 404 envelope.
-    if (cp.returncode != 0
-            and vendors["reviewer_vendor"] == "claude"
-            and lc["reviewer_model"] == frozen["reviewer_failover_trigger"]
-            and reviewer_model_unavailable(cp.stdout)):
-        fallback_model = frozen["reviewer_fallback_model"]
-        primary = cp
-        from_model = lc["reviewer_model"]
-        (att / "raw" / "review-envelope-primary.json").write_text(primary.stdout or "")
-        escalate(spec_id, "reviewer model retired; failed over to fallback for this attempt",
-                 {"attempt": str(att), "from_model": from_model,
-                  "to_model": fallback_model})
-        lc["reviewer_model"] = fallback_model
-        cp = invoke_reviewer(fallback_model)
-        # Round-2 review, finding 2: the audit record is written AFTER the fallback runs so the
-        # fallback's own outcome is preserved too — not just the primary's. A fallback that refuses
-        # to start (deadline exhausted → a refusal string) or exits nonzero must leave a durable
-        # trace; the earlier version recorded only the primary and silently lost a failed fallback.
-        record = {
-            "from_model": from_model, "to_model": fallback_model,
-            "trigger": "type=result is_error api_error_status=404 model-not-found",
-            "primary_returncode": primary.returncode,
-            "primary_stderr_tail": (primary.stderr or "")[-2000:], "created": now(),
-        }
-        if isinstance(cp, str):
-            record["fallback_refused"] = cp
-        else:
-            record["fallback_returncode"] = cp.returncode
-            record["fallback_stderr_tail"] = (cp.stderr or "")[-2000:]
-        (att / "raw" / "reviewer-failover.json").write_text(json.dumps(record, indent=2))
-        if isinstance(cp, str):
-            return None, cp
+    # R94 removed the R69 reviewer-retirement failover (owner closed R69): a retired reviewer
+    # model now simply fails the review fail-closed, and the owner flips scripts/models.json.
+    # Nothing retries — no error may buy the diff a second reviewer roll.
     (att / "raw" / "review-envelope.json").write_text(cp.stdout or "")
     if cp.returncode != 0:
         return None, cp.stdout
@@ -4237,128 +4126,6 @@ def _list_codex_units() -> tuple[list[str], bool]:
     return units, query_ok
 
 
-# =============================================================== metrics ======
-# ASSURANCE scorecard (holistic-review takeaway #2, SOL/Fable 2026-07-13): derive a trust/assurance
-# picture from the provenance we already keep — NOT a vanity "autonomy %". Read-only; no side effects.
-# The point is straight-through vs remediation vs escaped-defect signal, stratified by risk class, so
-# the numbers can't be Goodharted into "look how autonomous we are".
-def cmd_metrics() -> None:
-    from collections import Counter
-
-    per_spec = {}   # spec_id -> {risk, attempts:[(n,status,error_class,merged)], reviewer:[...], escalated:bool}
-    quality_distribution = {dimension: Counter({score: 0 for score in range(1, 6)})
-                            for dimension in QUALITY_DIMENSIONS}
-    quality_scored_attempts = quality_skipped = 0
-    quality_schema = json.loads(VERDICT_SCHEMA.read_text())["properties"]["quality"]
-    quality_validator = Draft202012Validator(quality_schema)
-    if ATTEMPTS.exists():
-        for sd in sorted(ATTEMPTS.iterdir()):
-            if not sd.is_dir():
-                continue
-            spec_id = sd.name
-            try:
-                risk = load_spec(spec_id).get("risk_class", "default") if spec_path(spec_id).exists() else "unknown"
-            except SystemExit:
-                risk = "unknown"
-            rec = per_spec.setdefault(spec_id, {"risk": risk, "attempts": [], "reviewer": [], "escalated": False})
-            for ad in sorted((q for q in sd.iterdir() if q.name.isdigit()), key=lambda q: int(q.name)):
-                rp = ad / "result.json"
-                if rp.exists():
-                    try:
-                        r = json.loads(rp.read_text())
-                        rec["attempts"].append((int(ad.name), r.get("status"), r.get("error_class"),
-                                                bool(r.get("merged"))))
-                    except Exception:
-                        pass
-                rv = ad / "review.json"
-                if rv.exists():
-                    try:
-                        v = json.loads(rv.read_text())
-                        if v.get("verdict"):
-                            rec["reviewer"].append(v["verdict"])
-                        if v.get("schema_version") != "3" or not isinstance(v.get("quality"), dict):
-                            quality_skipped += 1
-                        elif list(quality_validator.iter_errors(v["quality"])):
-                            quality_skipped += 1
-                        else:
-                            scores = {dimension: v["quality"][dimension]["score"]
-                                      for dimension in QUALITY_DIMENSIONS}
-                            for dimension, score in scores.items():
-                                quality_distribution[dimension][score] += 1
-                            quality_scored_attempts += 1
-                    except Exception:
-                        quality_skipped += 1
-    if ESCALATIONS.exists():
-        for p in ESCALATIONS.glob("*.json"):
-            sid = p.name.split("-2")[0]  # SPEC-XXX-<ts>
-            if sid in per_spec:
-                per_spec[sid]["escalated"] = True
-
-    err = Counter(); rev = Counter(); by_risk = {}
-    specs_total = passed = merged = straight_through = needed_remediation = escalated = 0
-    total_attempts = 0
-    for sid, rec in per_spec.items():
-        atts = rec["attempts"]
-        if not atts:
-            continue
-        specs_total += 1
-        total_attempts += len(atts)
-        for _, st, ec, mg in atts:
-            if ec:
-                err[ec] += 1
-        for v in rec["reviewer"]:
-            rev[v] += 1
-        merit = [a for a in atts if a[1] in MERIT_FAILURES]
-        got_pass = any(a[1] == "passed_pr_opened" for a in atts)
-        got_merge = any(a[3] for a in atts)
-        passed += 1 if got_pass else 0
-        merged += 1 if got_merge else 0
-        # straight-through = passed on attempt 1 with no prior merit failure
-        st_ok = got_pass and not merit and atts[0][1] == "passed_pr_opened"
-        straight_through += 1 if st_ok else 0
-        needed_remediation += 1 if len(merit) >= 1 and got_pass else 0
-        escalated += 1 if rec["escalated"] else 0
-        b = by_risk.setdefault(rec["risk"], {"specs": 0, "straight_through": 0, "merged": 0})
-        b["specs"] += 1; b["straight_through"] += 1 if st_ok else 0; b["merged"] += 1 if got_merge else 0
-
-    def pct(a, b): return round(100 * a / b, 1) if b else None
-    out = {
-        "generated": now(),
-        "specs_with_attempts": specs_total,
-        "total_attempts": total_attempts,
-        "attempts_per_spec": round(total_attempts / specs_total, 2) if specs_total else None,
-        "straight_through_rate_pct": pct(straight_through, specs_total),
-        "needed_remediation_pct": pct(needed_remediation, specs_total),
-        "escalation_rate_pct": pct(escalated, specs_total),
-        "eventually_passed_pct": pct(passed, specs_total),
-        "merged_pct": pct(merged, specs_total),
-        "by_risk_class": {k: {**v, "straight_through_pct": pct(v["straight_through"], v["specs"]),
-                              "merged_pct": pct(v["merged"], v["specs"])} for k, v in sorted(by_risk.items())},
-        "failure_error_classes": dict(err.most_common()),
-        "reviewer_verdicts": dict(rev.most_common()),
-        "quality_advisory": True,
-        "quality_advisory_note": "ADVISORY operator trend signal only; never used by any gate or merge decision.",
-        "quality_score_distribution": {
-            dimension: {str(score): quality_distribution[dimension][score]
-                        for score in range(1, 6)}
-            for dimension in QUALITY_DIMENSIONS
-        },
-        "quality_avg_by_dimension": {
-            dimension: (round(sum(score * count for score, count in
-                                  quality_distribution[dimension].items()) /
-                              quality_scored_attempts, 1)
-                        if quality_scored_attempts else None)
-            for dimension in QUALITY_DIMENSIONS
-        },
-        "quality_scored_attempts": quality_scored_attempts,
-        "quality_skipped": quality_skipped,
-        "note": "Assurance signal, NOT a published autonomy KPI. Straight-through = passed on attempt 1 "
-                "with no prior merit failure. Escaped-defect / reversion tracking requires post-merge "
-                "data not yet collected (see holistic-review decision).",
-    }
-    print(json.dumps(out, indent=2))
-
-
 # ================================================================= merge =======
 # Plan-scoped autonomy (Level 1.5, ratified by the operator 2026-07-13). The orchestrator may merge an
 # attempt's PR to `ready-for-main` WITHOUT a per-PR human click — but ONLY through this fail-closed
@@ -4822,7 +4589,6 @@ def main() -> None:
     ph.add_argument("--minutes", type=int, default=HEALTH_INACTIVITY_MIN,
                     help="inactivity threshold before an alert (default 10)")
     sub.add_parser("reconcile")
-    sub.add_parser("metrics")
     pi = sub.add_parser("integrate")
     pi.add_argument("attempt_ids", nargs="+")
     args = ap.parse_args()
@@ -4843,8 +4609,6 @@ def main() -> None:
         cmd_health(args.attempt_id, args.minutes)
     elif args.cmd == "reconcile":
         cmd_reconcile()
-    elif args.cmd == "metrics":
-        cmd_metrics()
     elif args.cmd == "integrate":
         cmd_integrate(args.attempt_ids)
     elif args.cmd == "continue":

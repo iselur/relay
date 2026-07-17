@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# R71: scripts/models.json is the machine source of truth for role→model defaults, the reviewer
-# failover pair, the CLI alias map, and the closed-world vendor map. This proves the dispatcher
-# side fails CLOSED on any config problem, that an approval pin beats the config default (but
-# never a cross-vendor violation), and that a role-model swap is a one-line config edit.
+# R71: scripts/models.json is the machine source of truth for role→model defaults, the CLI
+# alias map, and the closed-world vendor map. This proves the dispatcher side fails CLOSED on
+# any config problem, that an approval pin beats the config default, and that a role-model
+# swap is a one-line config edit.
 # DELIBERATELY not in tests/execution-policy.tsv (round-3 review, finding 1): a box-precondition
 # entry would run at every launch from the sanitized grader tree, which has no venv — the skip
 # below would then block ALL launches. Same default mode + skip contract as
@@ -36,10 +36,7 @@ check("live config carries all six rev-4 roles",
       set(live["roles"]) == {"orchestrator", "spec_author", "utility_subagent", "worker",
                              "bound_reviewer", "orchestrator_artifact_reviewer"})
 check("live vendor_map covers every model named anywhere in the config",
-      set(live["vendor_map"])
-      >= ({r["model"] for r in live["roles"].values()}
-          | {live["reviewer_failover"]["trigger_model"],
-             live["reviewer_failover"]["fallback_model"]}))
+      set(live["vendor_map"]) >= {r["model"] for r in live["roles"].values()})
 # Kimi vendor, slice 1: K3 is DECLARED (vendor + required CLI provider alias) while no role
 # selects it — the future role swap stays a one-line config edit, and nothing resolves to kimi
 # until its worker adapter (slice 2) and dispatcher wiring (slice 3) exist.
@@ -70,7 +67,7 @@ check("malformed JSON refuses launch (exit 2)", load_result() == "exit2")
 bad = copy.deepcopy(good); bad["schema_version"] = "2"
 scratch.write_text(json.dumps(bad))
 check("unsupported schema_version refuses launch (exit 2)", load_result() == "exit2")
-for section in ("roles", "reviewer_failover", "cli_aliases", "vendor_map"):
+for section in ("roles", "cli_aliases", "vendor_map"):
     bad = copy.deepcopy(good); del bad[section]
     scratch.write_text(json.dumps(bad))
     check(f"config without {section} refuses launch (exit 2)", load_result() == "exit2")
@@ -116,24 +113,16 @@ check("kimi identity alias (raw id laundering) refuses launch (exit 2)", load_re
 bad = copy.deepcopy(good); del bad["vendor_map"][bad["roles"]["worker"]["model"]]
 scratch.write_text(json.dumps(bad))
 check("role model missing from vendor_map refuses launch (exit 2)", load_result() == "exit2")
-bad = copy.deepcopy(good); del bad["vendor_map"][bad["reviewer_failover"]["fallback_model"]]
-scratch.write_text(json.dumps(bad))
-check("failover model missing from vendor_map refuses launch (exit 2)", load_result() == "exit2")
 bad = copy.deepcopy(good); bad["cli_aliases"]["claude-fable-5"] = 7
 scratch.write_text(json.dumps(bad))
 check("non-string CLI alias refuses launch (exit 2)", load_result() == "exit2")
 # Owner decision 2026-07-16: vendor pairing is config-authored, never policed — a same-vendor
-# config VALIDATES. The mechanical rule that remains: the failover pair may not span vendors
-# (the retry would switch CLIs mid-attempt).
+# config VALIDATES.
 sv = copy.deepcopy(good)
 sv["roles"]["worker"]["model"] = "claude-sonnet-4-6"    # same vendor as the bound reviewer
 scratch.write_text(json.dumps(sv))
 check("same-vendor worker/bound-reviewer config VALIDATES (owner authority)",
       load_result() == "ok")
-bad = copy.deepcopy(good)
-bad["reviewer_failover"]["fallback_model"] = "gpt-5.6-sol"   # claude trigger, codex fallback
-scratch.write_text(json.dumps(bad))
-check("cross-vendor failover pair refuses launch (exit 2)", load_result() == "exit2")
 # Round-2 review, finding 3: the models_check CLI itself (the shell consumers' path) must refuse
 # non-UTF-8 bytes with exit 2, not a decode traceback.
 import subprocess
@@ -154,17 +143,15 @@ check("valid config loads cleanly", load_result() == "ok")
 cfg = d.load_model_config()
 
 # Precedence through the ONE resolver cmd_launch persists: config default when the approval
-# omits (or empties) a field; a non-empty approval pin wins; failover pair + aliases always frozen.
+# omits (or empties) a field; a non-empty approval pin wins; aliases always frozen.
 r = d.resolve_launch_models({}, cfg)
 check("approval omitting models gets config defaults",
       r["worker_model"] == cfg["roles"]["worker"]["model"]
       and r["worker_effort"] == cfg["roles"]["worker"]["effort"]
       and r["reviewer_model"] == cfg["roles"]["bound_reviewer"]["model"]
       and r["reviewer_effort"] == cfg["roles"]["bound_reviewer"]["effort"])
-check("resolver freezes failover pair and alias map from config",
-      r["reviewer_failover_trigger"] == cfg["reviewer_failover"]["trigger_model"]
-      and r["reviewer_fallback_model"] == cfg["reviewer_failover"]["fallback_model"]
-      and r["cli_aliases"] == cfg["cli_aliases"])
+check("resolver freezes the alias map from config",
+      r["cli_aliases"] == cfg["cli_aliases"])
 # Pins must be DECLARED models (authorship classification) and never the worker itself
 # (self-review); vendor pairing is not policed (owner decision 2026-07-16).
 pinned = d.resolve_launch_models(
@@ -177,9 +164,6 @@ empty = d.resolve_launch_models({"worker_model": "", "reviewer_model": ""}, cfg)
 check("empty-string pins fall back to config defaults (not trusted)",
       empty["worker_model"] == cfg["roles"]["worker"]["model"]
       and empty["reviewer_model"] == cfg["roles"]["bound_reviewer"]["model"])
-check("even a pinned approval still freezes the config failover pair",
-      pinned["reviewer_failover_trigger"] == cfg["reviewer_failover"]["trigger_model"]
-      and pinned["reviewer_fallback_model"] == cfg["reviewer_failover"]["fallback_model"])
 
 def resolve_result(approval):
     try:
@@ -210,18 +194,13 @@ check("pinning an unmapped reviewer model refuses launch (exit 2)",
 r_kimi = d.resolve_launch_models({"worker_model": "kimi-k3"}, cfg)
 check("kimi worker pin resolves and freezes worker_vendor=kimi, worker_mode=external-cli",
       r_kimi["worker_vendor"] == "kimi" and r_kimi["worker_mode"] == "external-cli")
-check("armed failover keeps the config fallback in the resolved fields",
-      d.resolve_launch_models({"worker_model": "gpt-5.6-sol"}, cfg)
-      ["reviewer_fallback_model"] == cfg["reviewer_failover"]["fallback_model"])
 # "Nothing reviews its own work" — the one hard limit (CLAUDE.md rule 7): the resolved
-# reviewer, or an ARMED fallback, equal to the worker model refuses unconditionally.
+# reviewer equal to the worker model refuses unconditionally.
 check("same-model reviewer==worker refuses launch (exit 2)",
       resolve_result({"worker_model": "claude-fable-5"}) == "exit2")
 check("same-model pinned both ways refuses launch (exit 2)",
       resolve_result({"worker_model": "gpt-5.6-sol",
                       "reviewer_model": "gpt-5.6-sol"}) == "exit2")
-check("armed fallback equal to the worker refuses launch (exit 2)",
-      resolve_result({"worker_model": "claude-opus-4-8"}) == "exit2")
 check("same-vendor different-model pairing resolves (the falsifier shape)",
       d.resolve_launch_models({"worker_model": "gpt-5.6-luna",
                                "reviewer_model": "gpt-5.6-sol"}, cfg)
