@@ -37,8 +37,8 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
 - Worker isolation: external-CLI workers and the gate tests run as the `codex-worker` user in hardened
   systemd services; worktrees under `/srv/codexwork/worktrees`. Setup: `scripts/setup-worker-user.sh`.
   Proof: `tests/worker_isolation.sh`, `tests/worker_userns.sh`. Subagent workers: SECURITY.md.
-- Evidence: per-attempt under `.orchestrator/attempts/<id>/<n>/`; raw logs untracked, hashes
-  tracked. It is an audit record (see SECURITY.md), not immutable.
+- Evidence: per-attempt under `.orchestrator/attempts/<id>/<n>/`, untracked (gitignored). It is
+  an on-box audit record (see SECURITY.md), not immutable and not repo content.
 
 ## Codex on this box
 

@@ -4395,12 +4395,10 @@ def _topo_specs(spec_ids: list[str]) -> list[str]:
 
 
 def _provenance_paths(spec_id: str, digest: str) -> list[str]:
-    """Repo-relative provenance paths for one spec (git add skips gitignored raw files)."""
+    """Repo-relative provenance paths for one spec. Attempt state is gitignored — an on-box
+    audit record, not repo content — so only spec, approvals, and escalations are staged."""
     paths = [f"specs/{spec_id}.yaml"]
     paths += [str(p.relative_to(ROOT)) for p in APPROVALS.glob(f"{digest}*.json")]
-    d = ATTEMPTS / spec_id
-    if d.exists():
-        paths.append(str(d.relative_to(ROOT)))
     paths += [str(p.relative_to(ROOT)) for p in ESCALATIONS.glob(f"{spec_id}-*.json")]
     return paths
 
@@ -4423,14 +4421,14 @@ def _commit_provenance(spec_ids: list[str]) -> str | None:
         ids = ", ".join(spec_ids)
         git("commit", "-q", "-m",
             f"provenance: {ids}\n\nAuto-committed by dispatch integrate (Gate 4): spec, "
-            f"approval(s), attempt evidence, and any escalations. Raw logs stay gitignored; "
-            f"integrity provable via tracked raw-sha256.txt.")
+            f"approval(s), and any escalations. Attempt evidence stays gitignored — an "
+            f"on-box audit record (see SECURITY.md).")
         git("push", "-u", "origin", branch)
         pr = run(["gh", "pr", "create", "--base", "ready-for-main", "--head", branch,
                   "--title", f"provenance: {ids}",
                   "--body", "Auto-committed provenance (dispatch integrate, Gate 4 / "
-                            "Level 1.5 grant). Spec + approvals + attempt evidence + "
-                            "escalations; raw logs stay gitignored."], cwd=str(ROOT))
+                            "Level 1.5 grant). Spec + approvals + escalations; attempt "
+                            "evidence stays gitignored (on-box audit record)."], cwd=str(ROOT))
         if pr.returncode != 0:
             die(f"provenance PR create failed: {pr.stderr.strip()}", 20)
         pr_url = (pr.stdout or "").strip().splitlines()[-1]
