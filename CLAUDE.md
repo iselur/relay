@@ -34,8 +34,9 @@ Prefer a fresh session per workstream.
    checkpoints. Reference the brief, never copy it; what we learn later is added with a date and
    reopens the checkpoints it touches. Briefs are working files: delete them once the work ships,
    git keeps them.
-6. **Cross-checking earns its cost** on ideas and briefs; deterministic checks and tests outrank
-   model agreement everywhere else — agreement is not evidence.
+6. **Cross-checking earns its cost** on ideas, briefs, and plans — a plan leaves plan mode only
+   after `scripts/review --author claude` completes and its findings are answered under rule 3;
+   deterministic checks and tests outrank model agreement elsewhere — agreement is not evidence.
 7. **Maximal delegation:** the orchestrator delegates every delegable task to the worker, and works
    directly only when no worker is available or the task is its own (dispatch, review, the trust
    boundary). Nothing reviews its own work; the owner sets role models and vendors in scripts/models.json.
