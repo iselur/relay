@@ -3222,8 +3222,8 @@ def _warn_scope_overlaps(spec_id: str, in_scope: list[str], depends_on: list[str
     so the operator serializes with depends_on BEFORE both are in flight (the binding scope gate
     stays in scope_check). Conservative — false positives are acceptable for advice: identical
     globs, a `dir/**` prefix covering the other glob, or a wildcard-free glob the other side
-    matches. Never dies and never changes the launch path: a broken candidate spec or state file
-    skips that candidate, and legacy 'merged' completions are skipped because depends_on accepts
+    matches. Never dies and never changes the launch path: a broken candidate spec, state file,
+    or stderr write skips that candidate, and legacy 'merged' completions are skipped because depends_on accepts
     only passed_pr_opened — advising them would turn a working launch into an exit-7 refusal."""
     def covers(a: str, b: str) -> bool:
         if a == b:
@@ -3247,12 +3247,13 @@ def _warn_scope_overlaps(spec_id: str, in_scope: list[str], depends_on: list[str
             hits = [f"'{a}'" if a == b else f"'{a}' ∩ '{b}'"
                     for a in in_scope for b in other.get("in_scope", [])
                     if covers(a, b) or covers(b, a)]
+            if hits:
+                # print stays inside the try: a closed/broken stderr must not break the launch
+                print(f"dispatch: WARNING scope overlap: {spec_id} ∩ {other_id} "
+                      f"({', '.join(hits[:5])}). Add depends_on: [{other_id}] to serialize.",
+                      file=sys.stderr)
         except Exception:
             continue
-        if hits:
-            print(f"dispatch: WARNING scope overlap: {spec_id} ∩ {other_id} "
-                  f"({', '.join(hits[:5])}). Add depends_on: [{other_id}] to serialize.",
-                  file=sys.stderr)
 
 
 def scope_check(wt: Path, base: str, wc: str, globs: list[str]) -> dict:

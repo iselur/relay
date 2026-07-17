@@ -50,6 +50,10 @@ check("identical glob warns and names the spec", "SPEC-901" in w and "depends_on
 write_spec("SPEC-903", ["scripts/**"])
 check("dir/** covering a literal warns", "SPEC-903" in warnings("SPEC-902", ["scripts/dispatch.py"]))
 check("literal covered by other's wildcard warns", "SPEC-903" in warnings("SPEC-902", ["scripts/new_module.py"]))
+write_spec("SPEC-906", ["scripts/*.py"])   # segment wildcard: neither identical nor dir/** — the _match_glob fallback
+check("segment wildcard vs literal warns (generic fallback)",
+      "SPEC-906" in warnings("SPEC-902", ["scripts/new_module.py"]))
+(d.SPECS / "SPEC-906.yaml").unlink()
 
 # --- no warning -------------------------------------------------------------------------------
 check("disjoint scopes stay silent", warnings("SPEC-902", ["docs/**"]) == "")
@@ -74,6 +78,16 @@ out = io.StringIO()
 with contextlib.redirect_stdout(out):
     w = warnings("SPEC-902", ["scripts/dispatch.py"])
 check("warning goes to stderr only, stdout untouched", out.getvalue() == "" and "SPEC-901" in w)
+
+class BrokenStderr(io.TextIOBase):
+    def write(self, s): raise OSError("stderr closed")
+try:
+    with contextlib.redirect_stderr(BrokenStderr()):
+        d._warn_scope_overlaps("SPEC-902", ["scripts/dispatch.py"], [])
+    broke = False
+except BaseException:
+    broke = True
+check("broken stderr never escapes (advice must not break a launch)", not broke)
 
 print(f"\n{'PASS' if not fails else 'FAIL'}: advisory scope-overlap warning ({len(fails)} failed)")
 sys.exit(1 if fails else 0)
