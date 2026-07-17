@@ -196,6 +196,74 @@ refuse_foreign() { # $1 the refused action — a visible refusal, deduped by ale
   alert_raise foreign-session "session is not verifiably the supervised one (identity mismatch or unreadable record); $1 refused"
 }
 
+# ---- lifecycle rotation (flag-gated) ------------------------------------------------------------
+lifecycle_active() { [ -e "$WD/lifecycle-active" ]; }
+lifecycle_shadow() { # $1 event, $2 reason
+  printf 'ts=%s event=%s reason=%s\n' "$(now)" "$1" "$2" >> "$WD/lifecycle-shadow.log"
+}
+quarantine_rotation_marker() {
+  halted && return 0
+  user_claude_present && return 0
+  halted && return 0
+  local q="$WD/rotation-requested.quarantined.$(now)"
+  mv "$WD/rotation-requested" "$q" 2>/dev/null || return 0
+  alert_raise rotation-quarantine "rotation marker ownership check failed; marker quarantined"
+}
+dead_letter() { # $1 open row ids, $2 reason, [$3 safety flag content]
+  halted && return 0
+  user_claude_present && return 0
+  halted && return 0
+  local rows=${1:-none} reason=${2:-unknown} safety=${3:-}
+  put "$WD/dead-letter" "ts=$(now)
+rows=$rows
+reason=$reason${safety:+
+safety-flagged=$safety}"
+  put "$WD/respawns" 0
+  alert_raise dead-letter "automatic supervision stopped: $reason (open rows: $rows)"
+}
+rotation_respawn() { # $1 open row ids
+  local marker="$WD/rotation-requested"
+  if ! lifecycle_active; then
+    lifecycle_shadow rotation_would_fire "rotation-requested"
+    respawn "$1"
+    return
+  fi
+  halted && return 0
+  user_claude_present && return 0
+  halted && return 0
+  local target
+  if ! target=$(verify_target_session); then
+    quarantine_rotation_marker
+    return 0
+  fi
+  halted && return 0
+  user_claude_present && return 0
+  halted && return 0
+  if ! tmux kill-session -t "${target%% *}" 2>/dev/null && session_exists; then
+    note "rotation: old session could not be retired; marker remains for retry"
+    return 0
+  fi
+  rm -f "$WD/session-id" "$WD/launched" "$WD/pane"
+  halted && return 0
+  launch_new
+  if [ -e "$WD/launched" ] && [ -e "$WD/session-id" ] && ! halted; then
+    rm -f "$marker"
+    note "rotation: retired the old conversation and launched a fresh session"
+  fi
+}
+lifecycle_safety() { # $1 open row ids; returns 0 when the active branch was handled
+  [ -e "$WD/safety-flagged" ] || return 1
+  if ! lifecycle_active; then
+    lifecycle_shadow safety_would_fire "safety-flagged"
+    return 1
+  fi
+  halted && return 0
+  user_claude_present && return 0
+  halted && return 0
+  dead_letter "${1:-none}" "safety-flagged" "$(get "$WD/safety-flagged")"
+  return 0
+}
+
 launch_new() {
   halted && return 0
   local sid; sid=$(uuidgen)
@@ -310,8 +378,15 @@ respawn() {
     # neither the storm counter nor the generation (extra-round review, finding 3). A storm
     # (claude dying instantly every tick) refreshes last-run each time and would otherwise never
     # alert; count consecutive respawns and say so.
-    local n; n=$(get "$WD/respawns"); n=$(( ${n:-0} + 1 ))
+    local n rows=${1:-none}; n=$(get "$WD/respawns"); n=$(( ${n:-0} + 1 ))
     put "$WD/respawns" "$n"
+    if [ "$n" -ge 3 ]; then
+      if lifecycle_active; then
+        dead_letter "$rows" "three fruitless respawns"
+      else
+        lifecycle_shadow deadletter_would_fire "three fruitless respawns"
+      fi
+    fi
     if [ "$n" -gt 6 ]; then
       alert_raise respawn-loop "claude has been relaunched $n consecutive times without recorded activity"
     fi
@@ -548,6 +623,14 @@ check() {
   local pending=0
   [ "$state" = "PENDING" ] && pending=1
   [ -n "$attempt" ] && pending=1
+  if lifecycle_active && [ -e "$WD/dead-letter" ]; then
+    alert_sweep
+    exit 0
+  fi
+  if lifecycle_safety "$ids"; then
+    alert_sweep
+    exit 0
+  fi
   if [ "$pending" -eq 0 ]; then
     # Idle rotation (owner decision 2026-07-14): a conversation whose work is DONE is never
     # resumed — everything needed to start again lives on disk (ledger, state, handoffs). When
@@ -600,7 +683,12 @@ check() {
       launch_new                                                 # (a)
     else
       case "$(pane_probe)" in
-        dead)  respawn ;;                                        # (b)
+        dead)
+          if [ -e "$WD/rotation-requested" ]; then
+            rotation_respawn "$ids"
+          else
+            respawn "$ids"
+          fi ;;                                                 # (b)
         alive) scan_usage; handle_usage_wait ;;                  # (c)
         *)     note "pane liveness indeterminate; taking no session action this tick" ;;
       esac
