@@ -27,6 +27,28 @@ the exact diff).
 The [visual explanation](how-it-works.html) shows the whole process — and who does which job —
 on one page.
 
+## Why Relay is different 🛡️
+
+Most agent frameworks coordinate AI agents and trust what the agents say. Relay is built like
+CI/CD with a trust boundary: every claim is backed by a gate a machine checks.
+
+- **Evidence, not prose.** A worker saying "tests passed" counts for nothing — the tests are
+  restored from the orchestrator's own copy and rerun. A test that did not run did not pass.
+- **Nothing reviews its own work.** Every diff is judged by the other vendor's model, which gets
+  only the spec, the diff, and the evidence — no tools. The verdict binds only to the exact code
+  it saw; moved code means a fresh review.
+- **Isolation or no launch.** Workers run as a separate machine user that cannot reach your home
+  directory or credentials, and their test runs have no network. If the sandbox cannot be set
+  up, nothing runs at all.
+- **A rulebook that shrinks.** The operating rules are capped by CI at 70 lines; a new rule
+  requires a real failure in shipped work and replaces a line, never stacks. The process is
+  engineered like the code.
+- **Multi-vendor by design.** Claude and Codex hold the active roles today; Kimi is wired in as
+  a third vendor — giving it a role is one line in `scripts/models.json`.
+
+Honesty is part of the design: SECURITY.md lists every known gap, and no claim in this repo is
+stronger than the test that proves it.
+
 ## How to make it autonomous 🔄
 
 Autonomy by default is off (as a precaution).

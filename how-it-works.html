@@ -56,6 +56,16 @@
 <p class="lead">You drop an idea on it. One AI manages the work, another builds it, a third pair of
 eyes from the other vendor judges it — and nothing lands on <code>main</code> without you.</p>
 
+<h2>Why this exists</h2>
+<p>Most agent frameworks coordinate AI agents and trust what the agents say. Relay is built the
+other way around — like CI/CD with a trust boundary. Workers are treated as untrusted
+contractors: they build in a sandbox that cannot reach your credentials, their test results are
+rerun rather than believed, and their work is judged by a rival vendor's model that sees only the
+spec, the diff, and the evidence. The operating rulebook itself is capped by CI at 70 lines, and
+every rule in it traces to a real failure in shipped work — the process shrinks instead of
+growing. Claude and Codex hold the active roles today; Kimi is wired in as a third vendor, one
+line in <code>models.json</code> away from a role.</p>
+
 <h2>The cast</h2>
 <div class="roles">
   <div class="role" style="--c: var(--you)"><b>You — the owner</b>
@@ -63,7 +73,7 @@ eyes from the other vendor judges it — and nothing lands on <code>main</code> 
   <div class="role" style="--c: var(--orch)"><b>Orchestrator — the manager</b>
     <p>Grills ideas, writes specs, launches workers, holds the trust boundary. Today: Claude.</p></div>
   <div class="role" style="--c: var(--worker)"><b>Worker — the builder</b>
-    <p>Implements the spec in a locked-down sandbox. Today: Codex.</p></div>
+    <p>Implements the spec in a locked-down sandbox. Today: Codex; Kimi wired as a third vendor.</p></div>
   <div class="role" style="--c: var(--review)"><b>Reviewer — the judge</b>
     <p>Always the other vendor from the author. Sees only spec, diff, evidence. No tools.</p></div>
 </div>
@@ -132,8 +142,8 @@ eyes from the other vendor judges it — and nothing lands on <code>main</code> 
 
   <rect class="node" x="650" y="348" width="180" height="66" fill="var(--you-bg)" stroke="var(--you)"/>
   <text class="label" x="740" y="370" text-anchor="middle">8 · You merge</text>
-  <text class="sub"   x="740" y="388" text-anchor="middle">main changes by your</text>
-  <text class="sub"   x="740" y="404" text-anchor="middle">hand only, always</text>
+  <text class="sub"   x="740" y="388" text-anchor="middle">yours — or under your recorded</text>
+  <text class="sub"   x="740" y="404" text-anchor="middle">grant: CI green + review PASS</text>
 
   <!-- failure loop -->
   <path class="edge" d="M330,257 C 230,300 260,160 322,155" stroke-dasharray="5 4"/>
