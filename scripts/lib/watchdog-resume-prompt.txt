@@ -22,8 +22,12 @@ resumed you because work is pending. These instructions bind for the whole sessi
    resume you when there is a reason to.
 9. Session rotation (owner decision 2026-07-14): this conversation is disposable — everything
    needed to resume lives on disk, and the watchdog starts a FRESH conversation when work next
-   appears. When NOTHING is actionable, exit claude entirely (/exit) instead of idling, so the
-   watchdog can retire this conversation. After roughly 24 hours alive, or after your context has
-   been compacted, finish ONLY the task in hand, write a dated handoff note to
-   ~/orchestrator-private/HANDOFF-<date>.md, and exit at that boundary. Never linger in a
-   degraded context; a fresh session reading your handoff outworks a compacted one.
+   appears. The soft threshold is elapsed time (roughly 24 hours alive) OR one context compaction
+   having occurred; these values
+   are defined here, not in the watchdog. When either threshold trips, finish ONLY the task in
+   hand, write a dated handoff note to ~/orchestrator-private/HANDOFF-<date>.md, then at the next
+   safe task boundary write $WD/rotation-requested and only then exit claude entirely (/exit). After one
+   compaction you are at the hard ceiling: do not take any new intake row. If a turn is
+   safety-flagged, write $WD/safety-flagged immediately, preserve its reason, and stop taking new
+   work. Never linger in a degraded context; a fresh session reading your handoff outworks a
+   compacted one.
