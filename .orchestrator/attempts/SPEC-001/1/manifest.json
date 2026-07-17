@@ -1,8 +1,0 @@
-{
-  "spec_id": "SPEC-001",
-  "attempt": 1,
-  "created": "2026-07-13",
-  "tracked": ["manifest.json","result.json","review.json","integrity.json","scope.json","raw-sha256.txt"],
-  "gitignored_raw": ["raw/events.jsonl","raw/worker-last-message.txt","raw/review.diff","raw/review-envelope.json","test.log"],
-  "provenance_chain": "spec -> approvals/3fdfa70eb3be07747e8bf13ff915ca5d6c8982f601edda259939e380ffdcec88.json -> base_sha 24181372f65e48fbb77fd9dacd8a1a33b42006f1 -> worker_commit f7fadddc0303ecccef6dd8b905dcb3f4b86caab7 -> integrity PASS -> scope PASS -> test 0 -> review PASS (claude-fable-5)"
-}
