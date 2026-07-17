@@ -6,8 +6,7 @@ work and REPLACES a line, never stacks. Roles, not model names: **owner** (the h
 
 ## Session start
 
-Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner to reconstruct.
-Prefer a fresh session per workstream.
+Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner to reconstruct. Prefer a fresh session per workstream.
 
 ## Working rules
 
@@ -16,9 +15,10 @@ Prefer a fresh session per workstream.
    session end — open rows raised to the owner, never dropped. Ledger private, not in this repo.
 2. **One workstream:** one active execution stream. New ideas go to `.orchestrator/BACKLOG.md`,
    never beside current work. Business ideas stay private.
-3. **Review cap:** up to five adversarial review rounds, each answered by one revision.
-   Trust-critical work with an unresolved critical finding stays BLOCKED: escalate, never ship on
-   a spent cap.
+3. **Review cap:** up to five adversarial review rounds, each answered by one revision. After round two, judge the
+   findings: rounds continue only while they are shallow defects. A finding against the approach itself ends the
+   loop — return to the owner's underlying goal and restart with a simpler way to achieve it, as a fresh brief and
+   intake row, telling the owner. Trust-critical work with an unresolved critical finding stays BLOCKED: escalate, never ship on a spent cap.
 4. **Communication:** bottom line first, stay brief. Past one step, keep a live to-do list, never
    back-filled. Coin a term only for code that exists in this repo.
 5. **Every program gets ONE brief, capped at 400 lines** (`scripts/codex-plan` enforces the cap and
