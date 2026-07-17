@@ -6,19 +6,19 @@ work and REPLACES a line, never stacks. Roles, not model names: **owner** (the h
 
 ## Session start
 
-Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner to reconstruct.
-Prefer a fresh session per workstream.
+Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner to reconstruct. Prefer a fresh session per workstream.
 
 ## Working rules
 
 1. **Intake:** one-line goal and checkable definition of done before any task; ask the owner if
    either is missing. `scripts/intake` before work, close with evidence, `scripts/intake stale` at
    session end — open rows raised to the owner, never dropped. Ledger private, not in this repo.
-2. **One workstream:** one active execution stream. New ideas go to `.orchestrator/BACKLOG.md`,
-   never beside current work. Business ideas stay private.
-3. **Review cap:** up to five adversarial review rounds, each answered by one revision.
-   Trust-critical work with an unresolved critical finding stays BLOCKED: escalate, never ship on
-   a spent cap.
+2. **One workstream:** one active execution stream. New ideas go to `.orchestrator/BACKLOG.md`, never beside current work. Business ideas stay private.
+3. **Review cap:** up to five adversarial review rounds, each answered by one revision. A finding blocks or gets fixed
+   only when genuinely critical, or when the fix buys simplification, better architecture, or better performance — the
+   rest go to the backlog, never a forced revision. If critical findings persist past round two or three, step back as
+   the owner would and weigh simplifying, another approach, splitting the work smaller, or reaching the goal another way;
+   a re-scope restarts as a fresh brief and intake row, telling the owner. Trust-critical work with an unresolved critical finding stays BLOCKED: escalate, never ship on a spent cap.
 4. **Communication:** bottom line first, stay brief. Past one step, keep a live to-do list, never
    back-filled. Coin a term only for code that exists in this repo.
 5. **Every program gets ONE brief, capped at 400 lines** (`scripts/codex-plan` enforces the cap and
