@@ -4,13 +4,13 @@
 #
 # Drives the REAL decision function (_provenance_merge / _ci_conclusion / _await_ci_success) with a
 # scripted fake `d.run`, and asserts whether `gh pr merge` was actually invoked. No network, no gh
-# binary, no quota. Same box-only skip contract as the other dispatcher self-tests.
+# binary, no quota. Same venv-skip contract as the other dispatcher self-tests.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
-  echo "SKIP dispatch_ci_gate.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  echo "SKIP dispatch_ci_gate.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test needs the dispatcher venv; CI installs it)"
   exit 77   # did NOT run — never a pass (T1/R26)
 fi
 

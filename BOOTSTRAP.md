@@ -57,12 +57,9 @@ instance), then `./scripts/dispatch launch <SPEC-ID>` and `./scripts/dispatch aw
 Confirm it runs the worker in isolation, passes the gates + review, and opens a draft PR. **You**
 merge it.
 
-> **Don't dispatch the shipped sample specs (SPEC-001–017) for this check.** They are fixtures
-> and leftovers from this repo's own history, not a curated first exercise: some ship already
-> implemented in `scripts/lib/` (those no-op with `failed_worker_error: worker produced no
-> changes`), some deliberately probe failure and refusal paths, and the rest are obsolete
-> historical specs. For a dependable end-to-end run, write a fresh spec (a new small helper
-> + test is the fastest way).
+> **Write a fresh spec for this check** (a new small helper + test is the fastest way). The repo
+> ships no sample specs — shipped specs are working files, deleted once the work ships (git keeps
+> them) — so there is nothing pre-made to dispatch.
 
 ## 7. Optional: plan-scoped autonomy
 
@@ -73,6 +70,6 @@ your ratified grant. Autonomy never reaches `main`; its promotion path is the se
 
 ## Notes
 
-- **Never** put a minute-scale timeout on a Codex consultation — run it detached; it can take a while.
+- Codex consultation conventions (detached runs, never a minute-scale timeout): see `AGENTS.md`.
 - `.orchestrator/HALT` is the kill switch: `touch` it to block all launches.
 - The full operating rules are in `CLAUDE.md`; conventions in `AGENTS.md`.

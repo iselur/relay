@@ -12,15 +12,15 @@
 #
 # Exercises the REAL functions in scripts/dispatch.py (execution_policy, grader_drift,
 # required_tests, git_show_bytes, git_ls_tree_sh, run_candidate_test_phases) against a REAL temp
-# git repo — no workers launched, no quota burned. Same box-only skip contract as
-# tests/dispatch_gate4.sh: dispatch.py imports pyyaml + jsonschema from the box venv (.venv),
-# which is not present on the CI runner. SKIP LOUDLY there, run for real here.
+# git repo — no workers launched, no quota burned. Same venv-skip contract as
+# tests/dispatch_gate4.sh: dispatch.py imports pyyaml + jsonschema from the dispatcher venv
+# (.venv — CI installs it too); without a usable venv, SKIP LOUDLY, never a silent pass.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
-  echo "SKIP dispatch_test_provenance.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  echo "SKIP dispatch_test_provenance.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test needs the dispatcher venv; CI installs it)"
   exit 77   # did NOT run — never a pass (T1/R26)
 fi
 

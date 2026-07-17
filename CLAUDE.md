@@ -32,8 +32,8 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
    tell it is done; and the slices — independently shippable increments, several small PRs over one
    big one. Reviewed once, then the program runs end to end — the owner steps in only at the
    checkpoints. Reference the brief, never copy it; what we learn later is added with a date and
-   reopens the checkpoints it touches. Briefs are working files: delete them once the work ships,
-   git keeps them.
+   reopens the checkpoints it touches. Briefs and shipped specs are working files: delete them
+   once the work ships, git keeps them.
 6. **Cross-checking earns its cost** on ideas, briefs, and plans — a plan leaves plan mode only
    after `scripts/review --author claude` completes and its findings are answered under rule 3;
    deterministic checks and tests outrank model agreement elsewhere — agreement is not evidence.

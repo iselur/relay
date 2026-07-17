@@ -4,13 +4,13 @@
 # proves adapter selection follows the FROZEN reviewer vendor, codex verdicts extract from the
 # probe-proven bare-JSON shape (fence fallback included), a codex error can never buy the
 # claude failover retry, and partial vendor records refuse before any invocation.
-# Same box-only skip contract as tests/dispatch_fail_closed.sh (venv-needing self-test).
+# Same venv-skip contract as tests/dispatch_fail_closed.sh (venv-needing self-test).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
-  echo "SKIP dispatch_vendor_adapter.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  echo "SKIP dispatch_vendor_adapter.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test needs the dispatcher venv; CI installs it)"
   exit 77   # did NOT run — never a pass (T1/R26)
 fi
 

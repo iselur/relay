@@ -8,16 +8,15 @@
 #      (a sibling integrated) must be detected so it is refused at push and re-run fresh.
 #
 # This exercises the REAL functions in scripts/dispatch.py against a REAL temp git repo — it does
-# not re-implement the logic. dispatch.py imports pyyaml + jsonschema, which live in the box venv
-# (.venv) and are NOT present on the CI runner. So: run for real on the box; SKIP LOUDLY in CI.
-# The dispatcher is box-only infrastructure and is never executed in CI anyway (CI guards the
-# product tests). A silent skip would be dishonest, hence the explicit SKIP line.
+# not re-implement the logic. dispatch.py imports pyyaml + jsonschema from the dispatcher venv
+# (.venv — CI installs it too). Without a usable venv, SKIP LOUDLY rather than silently pass —
+# a silent skip would be dishonest, hence the explicit SKIP line.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
-  echo "SKIP dispatch_parallel.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  echo "SKIP dispatch_parallel.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test needs the dispatcher venv; CI installs it)"
   exit 77   # did NOT run — never a pass (T1/R26)
 fi
 

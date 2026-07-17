@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
-  echo "SKIP dispatch_scope_warn.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  echo "SKIP dispatch_scope_warn.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test needs the dispatcher venv; CI installs it)"
   exit 77   # did NOT run — never a pass (T1/R26)
 fi
 

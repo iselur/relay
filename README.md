@@ -24,14 +24,8 @@ Passing work becomes a pull request to `ready-for-main`. Promotion to `main` is 
 orchestrator's, only under your recorded grant (green `ci` plus a binding cross-vendor PASS on
 the exact diff).
 
-The [visual explanation](how-it-works.html) shows the whole process on one page.
-
-| Who | Job |
-|---|---|
-| Human (You) | Chooses the work and holds the `main` merge (grantable, conditions apply) |
-| Orchestrator (Claude) | Manages tasks and delegates them |
-| Worker (Codex) | Builds the requested changes |
-| Both agents | Review and challenge the work |
+The [visual explanation](how-it-works.html) shows the whole process — and who does which job —
+on one page.
 
 ## How to make it autonomous 🔄
 

@@ -23,14 +23,14 @@
 # Real systemd side effects are unavailable in CI (and undesirable even on the box for a unit test),
 # so this is hermetic: the `subprocess` name inside dispatch.py's own namespace is replaced with a
 # fake that RECORDS every command and fakes only the systemd/systemctl/sudo family (letting git/bash
-# pass through for real), plus an injectable clock for elapsed time. Same box-only skip contract and
+# pass through for real), plus an injectable clock for elapsed time. Same venv-skip contract and
 # fake style as tests/dispatch_gate4.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
-  echo "SKIP dispatch_cancel_teardown.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  echo "SKIP dispatch_cancel_teardown.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test needs the dispatcher venv; CI installs it)"
   exit 77   # did NOT run — never a pass (T1/R26)
 fi
 

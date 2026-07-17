@@ -1,7 +1,7 @@
 # AGENTS.md — conventions and commands
 
 Referenced by [CLAUDE.md](CLAUDE.md), which holds the operating rules in terms of ROLES. Humans read
-the role table here; machines read `scripts/models.json` (roles, failover, CLI aliases, vendor map).
+the role table here; machines read `scripts/models.json` (roles, CLI aliases, vendor map).
 A model swap is one edit there, never to the rulebook; a new model also adds its vendor_map line.
 
 ## Who plays which role (today)
@@ -9,12 +9,12 @@ A model swap is one edit there, never to the rulebook; a new model also adds its
 | Role | Today | Note |
 |---|---|---|
 | owner | the human | approves specs, merges `main` |
-| orchestrator | Claude Code on this box (Opus 4.8 high; Fable 5 default retired at owner direction 2026-07-15) | dispatches, reviews worker diffs, reports |
+| orchestrator | Claude Code on this box (Fable 5 high; the owner flips settings.json to Opus 4.8 at Fable retirement) | dispatches, reviews worker diffs, reports |
 | worker | per `scripts/models.json`: Codex CLI (`gpt-5.6-luna`) detached, or a Claude subagent in-session | BUILD phase; a subagent BUILD is graded by `dispatch continue` |
-| reviewer | per `scripts/models.json` (bound reviewer + failover) | never reviews its own work |
+| reviewer | per `scripts/models.json` (bound reviewer) | never reviews its own work |
 
-Bound reviewer and its retirement failover: see `scripts/models.json` (owner 2026-07-15: Fable
-while it lasts; on the model-not-found signature the dispatcher retries once, durably recorded).
+Bound reviewer retirement: a retired reviewer model fails its review fail-closed; the owner flips
+`scripts/models.json` by hand (owner decision 2026-07-17 — no automated failover).
 
 ## What this repo is
 
@@ -57,4 +57,4 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
   is reviewed by Claude — worker diffs by the bound reviewer in the dispatcher, plans in-session —
   under the same five-round cap.
 - Plans go through `scripts/codex-plan --brief` (cap 400; refuses a brief missing any required
-  section); `--small` and the no-flag standard tier remain usable. Trigger: CLAUDE.md rule 5.
+  section); the no-flag standard tier remains usable. Trigger: CLAUDE.md rule 5.

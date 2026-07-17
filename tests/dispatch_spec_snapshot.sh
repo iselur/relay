@@ -15,14 +15,14 @@
 #       bytes — never hash one read and trust a second (TOCTOU).
 #
 # Drives the REAL functions (write_spec_snapshot, snapshot_spec_text, verify_spec_bytes, review,
-# cmd_merge) with a stubbed gh/autonomy/git seam — no network, no systemd, no quota. Same box-only
-# skip contract as the other dispatcher self-tests.
+# cmd_merge) with a stubbed gh/autonomy/git seam — no network, no systemd, no quota. Same venv-skip
+# contract as the other dispatcher self-tests.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
-  echo "SKIP dispatch_spec_snapshot.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  echo "SKIP dispatch_spec_snapshot.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test needs the dispatcher venv; CI installs it)"
   exit 77   # did NOT run — never a pass (T1/R26)
 fi
 

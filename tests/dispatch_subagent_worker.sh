@@ -8,13 +8,13 @@
 # BUILD; _grade's never-overwrite state guard; the shared grading half from SPEC_BLOCKED through
 # no-changes to a synthetic passed_pr_opened; await/health treating awaiting_build as
 # pending-by-design; and the codex worker prompt surviving the factoring byte-identically.
-# Same box-only skip contract as tests/dispatch_fail_closed.sh (venv-needing self-test).
+# Same venv-skip contract as tests/dispatch_fail_closed.sh (venv-needing self-test).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${ORCH_TEST_PY:-.venv/bin/python}"
 if [ ! -x "$PY" ] || ! "$PY" -c 'import yaml, jsonschema' 2>/dev/null; then
-  echo "SKIP dispatch_subagent_worker.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test runs on the box only, not CI)"
+  echo "SKIP dispatch_subagent_worker.sh: .venv/pyyaml/jsonschema absent (dispatcher self-test needs the dispatcher venv; CI installs it)"
   exit 77   # did NOT run — never a pass (T1/R26)
 fi
 
