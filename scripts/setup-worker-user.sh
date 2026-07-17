@@ -80,6 +80,52 @@ sudo chmod 700 "$WCODEX"; sudo find "$WCODEX" -type f -exec chmod 600 {} +
 sudo chmod 750 "$WORKER_HOME"
 echo "worker CODEX_HOME set (700 codex-worker; the operator cannot read it, nor can the worker read the operator)"
 
+say "4b. worker kimi state with the kimi-code OAuth credential (same residual class as codex: the worker's own token, never the operator's)"
+WKIMI="$WORKER_HOME/.kimi-code"
+OP_KIMI="$OPERATOR_HOME/.kimi-code"
+if [ -d "$OP_KIMI" ] && [ ! -L "$OP_KIMI" ]; then
+  src_cfg="$OP_KIMI/config.toml"
+  src_cred="$OP_KIMI/credentials/kimi-code.json"
+  # Copy only genuine regular files, never a symlink or special file the source might carry.
+  for s in "$src_cfg" "$src_cred"; do
+    if [ -L "$s" ] || { [ -e "$s" ] && [ ! -f "$s" ]; }; then
+      echo "refuse: operator kimi source $s is not a regular file (symlink/special)" >&2; exit 1
+    fi
+  done
+  # Minimum required state (kimi brief, slice 4): managed-provider config + OAuth credential.
+  # Both are REQUIRED — a partial copy would let an incomplete worker login look provisioned.
+  if [ ! -f "$src_cfg" ] || [ ! -f "$src_cred" ]; then
+    echo "refuse: operator kimi state incomplete (need config.toml + credentials/kimi-code.json); run 'kimi login' first" >&2
+    exit 1
+  fi
+  # After the first run codex-worker OWNS ~/.kimi-code, so a privileged re-run must NEVER
+  # mkdir/cp THROUGH that worker-owned tree (the worker could swap a component for a symlink and
+  # redirect a root write). Build the whole tree as root in a root-owned staging dir on the same
+  # filesystem, then publish it with a single `mv -T`: rename over a planted symlink/empty dir
+  # replaces it, over a non-empty dir it aborts — neither captures a root write. The staging
+  # parent must itself be root-owned and non-writable by others, else the worker could pre-plant it.
+  stage_parent="$(dirname "$WORKER_HOME")"
+  parent_owner="$(stat -c '%U' "$stage_parent")"
+  parent_mode="$(stat -c '%a' "$stage_parent")"
+  if [ "$parent_owner" != root ] || [ $(( 8#$parent_mode & 022 )) -ne 0 ]; then
+    echo "refuse: staging parent $stage_parent must be root-owned and not group/world-writable (is $parent_owner $parent_mode)" >&2
+    exit 1
+  fi
+  stage="$(sudo mktemp -d -p "$stage_parent" .kimi-code.stage.XXXXXX)"
+  # Populate as root; flip ownership of the WHOLE tree (mktemp's root dir is root:root) in one -R
+  # pass as the LAST step before the rename, so no root write ever passes through a worker path.
+  sudo install -d -m 700 "$stage/credentials"
+  sudo install -m 600 "$src_cfg"  "$stage/config.toml"
+  sudo install -m 600 "$src_cred" "$stage/credentials/kimi-code.json"
+  sudo chmod 700 "$stage"
+  sudo chown -R "$WORKER":"$WORKER" "$stage"
+  sudo rm -rf "$WKIMI"
+  sudo mv -T "$stage" "$WKIMI"
+  echo "worker kimi state provisioned atomically (700/600 codex-worker; operator's ~/.kimi-code stays unreachable)"
+else
+  echo "operator has no regular ~/.kimi-code — skipped (kimi not installed for the operator; re-run after 'kimi login')"
+fi
+
 say "5. root-owned read-only Python runtime for isolated installed tests"
 req_hash=$(sha256sum scripts/requirements.txt | awk '{print $1}')
 installed_hash=$(sudo sh -c "cat '$TEST_RUNTIME/.requirements-sha256' 2>/dev/null || true")
@@ -101,7 +147,7 @@ echo "test runtime: $(sudo stat -c '%a %U:%G' "$TEST_RUNTIME") $TEST_RUNTIME ($r
 
 say "6. sanity: worker is denied every operator credential (the whole point of D5)"
 ok=1
-for f in "$OPERATOR_HOME/.config/gh/hosts.yml" "$OPERATOR_HOME/.codex/auth.json" "$OPERATOR_HOME/.claude.json" "$OPERATOR_HOME/.ssh/id_ed25519"; do
+for f in "$OPERATOR_HOME/.config/gh/hosts.yml" "$OPERATOR_HOME/.codex/auth.json" "$OPERATOR_HOME/.claude.json" "$OPERATOR_HOME/.ssh/id_ed25519" "$OPERATOR_HOME/.kimi-code/credentials/kimi-code.json"; do
   if sudo -u "$WORKER" cat "$f" >/dev/null 2>&1; then echo "  !!! $WORKER CAN READ $f"; ok=0; else echo "  denied: $f"; fi
 done
 [ "$ok" = 1 ] && echo "ALL operator credentials denied to $WORKER ✓" || { echo "SETUP FAILED — credential readable"; exit 1; }
