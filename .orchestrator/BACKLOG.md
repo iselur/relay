@@ -28,9 +28,10 @@ tracked in the private ledger. In-flight work lives in the ledger, not here.)
   recovery. If revived, rebuild in Python; the hardened scenario matrix is preserved on the
   lifecycle-falsifier branch.
 - Approvals rework (SECURITY.md gap 2): the autonomy grant covers low risk, owner confirms `main` only.
-- Move the test grade fully outside candidate/operator influence (SECURITY.md gap 3 residual): the
-  worker-reach fix already shipped — grader bytes are materialized from the pinned git tree and run
-  from a fresh checkout outside the worktree; only a same-uid operator race on that checkout remains.
+- Move the test grade fully outside candidate/operator influence (SECURITY.md gap 3 residuals): the
+  grader tree is now materialized from the pinned git tree and run from a fresh checkout, closing
+  worker replacement of the runner or tests; malicious candidate code the test executes can still
+  forge a misleading success, and a same-uid operator could race that temp checkout.
 - Measure whether review catches bugs: plant three known defects, count catches, size review scope from the result.
 - 2026-07-15 audit remainder: re-verified 2026-07-16 — seven of eight highs already fixed on main,
   the last a low-risk merge-window race (owner enables GitHub's up-to-date-branch rule); four
