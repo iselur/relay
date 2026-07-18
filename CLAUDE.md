@@ -26,7 +26,8 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
    gate; everything else is written to the brief. It says: the owner's request, verbatim; what exists at the end that does not now;
    what is deliberately not being done; the decisions you already made and what would justify
    reopening one (a technical guess is never one of those — it goes in the assumptions, with its
-   evidence); the smallest end-to-end run that would prove the whole approach wrong, done FIRST; each
+   evidence, and any assumption about an external tool cites a dated probe of the tool's real
+   behavior); the smallest end-to-end run that would prove the whole approach wrong, done FIRST; each
    checkpoint with the command that proves it passed, who decides, and what happens when it fails;
    how the work is verified; how it is undone; what is left for later; and how anyone outside can
    tell it is done; and the slices — independently shippable increments, several small PRs over one
