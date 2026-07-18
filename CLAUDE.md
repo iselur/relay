@@ -14,11 +14,11 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
    either is missing. `scripts/intake` before work, close with evidence, `scripts/intake stale` at
    session end — open rows raised to the owner, never dropped. Ledger private, not in this repo.
 2. **One workstream:** one active execution stream. New ideas go to `.orchestrator/BACKLOG.md`, never beside current work. Business ideas stay private.
-3. **Review cap:** up to five adversarial review rounds, each answered by one revision. A finding blocks or gets fixed
-   only when genuinely critical, or when the fix buys simplification, better architecture, or better performance — the
-   rest go to the backlog, never a forced revision. If critical findings persist past round two or three, step back as
-   the owner would and weigh simplifying, another approach, splitting the work smaller, or reaching the goal another way;
-   a re-scope restarts as a fresh brief and intake row, telling the owner. Trust-critical work with an unresolved critical finding stays BLOCKED: escalate, never ship on a spent cap.
+3. **Review cap:** a holistic senior-engineer review — correctness, security, simplicity, maintainability — framed by `.orchestrator/REVIEW-FRAMING.md`; comprehensive
+   round one, and good code passes round one; up to five rounds, each answered by one revision. A finding blocks only when material and acceptance-relevant — a real
+   defect, a significant gap against the brief, or over-engineering answered with a concretely sketched simpler version — the rest go to the backlog, never a forced
+   revision. If material findings persist past round two or three, step back as the owner would and weigh simplifying, another approach, splitting smaller, or another
+   route to the goal; a re-scope restarts as a fresh brief and intake row, telling the owner. Trust-critical work with an unresolved material finding stays BLOCKED: escalate, never ship on a spent cap.
 4. **Communication:** bottom line first, stay brief. Past one step, keep a live to-do list, never
    back-filled. Coin a term only for code that exists in this repo.
 5. **Every program gets ONE brief, capped at 400 lines** (`scripts/codex-plan` enforces the cap and
@@ -36,9 +36,9 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
 6. **Cross-checking earns its cost** on ideas, briefs, and plans — a plan leaves plan mode only
    after `scripts/review --author claude` completes and its findings are answered under rule 3;
    deterministic checks and tests outrank model agreement elsewhere — agreement is not evidence.
-7. **Maximal delegation:** the orchestrator delegates every delegable task to the worker, and works
-   directly only when no worker is available or the task is its own (dispatch, review, the trust
-   boundary). Nothing reviews its own work; the owner sets role models and vendors in scripts/models.json.
+7. **Maximal delegation:** the orchestrator delegates every delegable task to a worker or to parallel subagents — cheap subagents in isolated worktrees are the
+   default, several at once when the pieces are independent — and works directly only when none fits or the task is its own (dispatch, review, the trust boundary).
+   Nothing reviews its own work; the owner sets role models and vendors in scripts/models.json.
 8. **Code discipline:** the simplest, cleanest solution that works, held to a deletion test at brief and
    diff review: anything the approved outcome, existing external contracts, and named safety invariants
    can be met at least as simply without is omitted — tests, symmetry, or hypothetical future consumers

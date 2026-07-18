@@ -70,6 +70,7 @@ declare -A cap=(
   [BOOTSTRAP.md]=80
   [SECURITY.md]=110
   [.orchestrator/BACKLOG.md]=45
+  [.orchestrator/REVIEW-FRAMING.md]=45  # added 2026-07-18, owner-approved: binding review framing (CLAUDE.md rule 3)
 )
 total_lines=0
 total_bytes=0
