@@ -1673,14 +1673,11 @@ def deadline_timeout_prefix(deadline_ts: float) -> "list[str] | None":
 #    operator, are not worker-controlled, and have their own narrower guards.
 
 
-def isolated_run(unit, argv, cwd, rw_paths, private_network, ceiling_s, stdout, stderr,
+def isolated_cmd(unit, argv, cwd, rw_paths, private_network, ceiling_s,
                  binds=None, env_extra=None, slice_name=None):
-    """Run argv as codex-worker in a hardened transient SYSTEM service; block for completion.
-    Writes are confined to rw_paths; the operator's home is inaccessible; the gate test passes
-    private_network=True (untrusted code, no API needed). The service is a system unit (own cgroup,
-    own RuntimeMaxSec) — store `unit` so cancel/health can stop it independently of the outer unit.
-    slice_name (B6) places this unit in the attempt's shared slice (attempt_slice()) so cancel/health/
-    reconcile can tear down every unit family for the attempt with one `systemctl stop <slice>`."""
+    """Build the exact hardened systemd-run command isolated_run executes. Exposed so the kimi
+    ACP transport (scripts/kimi_acp.py) can drive the IDENTICAL envelope with its own stdio
+    pipes instead of isolated_run's devnull/file handles — a change here changes both paths."""
     # NOTE: no ProtectHome — it would tmpfs-hide the worker's OWN CODEX_HOME (auth). the operator's home is
     # blocked explicitly by InaccessiblePaths + DAC; the worker's own home stays accessible.
     props = ["--property=ProtectSystem=strict",
@@ -1713,9 +1710,21 @@ def isolated_run(unit, argv, cwd, rw_paths, private_network, ceiling_s, stdout, 
             "CODEX_HOME": str(WORKER_HOME / ".codex"), "TERM": "dumb", "LANG": "C.UTF-8",
             "GIT_NO_REPLACE_OBJECTS": "1", **(env_extra or {})}
     setenvs = [f"--setenv={k}={v}" for k, v in envs.items()]
-    cmd = ["sudo", "-n", "systemd-run", f"--uid={WORKER_USER}", f"--gid={WORKER_USER}",
-           "--pipe", "--wait", "--quiet", "--collect", f"--unit={unit}", *props, *setenvs,
-           "--", *argv]
+    return ["sudo", "-n", "systemd-run", f"--uid={WORKER_USER}", f"--gid={WORKER_USER}",
+            "--pipe", "--wait", "--quiet", "--collect", f"--unit={unit}", *props, *setenvs,
+            "--", *argv]
+
+
+def isolated_run(unit, argv, cwd, rw_paths, private_network, ceiling_s, stdout, stderr,
+                 binds=None, env_extra=None, slice_name=None):
+    """Run argv as codex-worker in a hardened transient SYSTEM service; block for completion.
+    Writes are confined to rw_paths; the operator's home is inaccessible; the gate test passes
+    private_network=True (untrusted code, no API needed). The service is a system unit (own cgroup,
+    own RuntimeMaxSec) — store `unit` so cancel/health can stop it independently of the outer unit.
+    slice_name (B6) places this unit in the attempt's shared slice (attempt_slice()) so cancel/health/
+    reconcile can tear down every unit family for the attempt with one `systemctl stop <slice>`."""
+    cmd = isolated_cmd(unit, argv, cwd, rw_paths, private_network, ceiling_s,
+                       binds=binds, env_extra=env_extra, slice_name=slice_name)
     with open(os.devnull) as devnull:
         return subprocess.run(cmd, stdin=devnull, stdout=stdout, stderr=stderr)
 
