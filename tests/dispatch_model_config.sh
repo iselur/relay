@@ -35,15 +35,16 @@ check("live scripts/models.json loads and schema-validates", isinstance(live, di
 check("live config carries all six rev-4 roles",
       set(live["roles"]) == {"orchestrator", "spec_author", "utility_subagent", "worker",
                              "bound_reviewer", "orchestrator_artifact_reviewer"})
-check("live vendor_map covers every model named anywhere in the config",
-      set(live["vendor_map"]) >= {r["model"] for r in live["roles"].values()})
-# Kimi vendor, slice 1: K3 is DECLARED (vendor + required CLI provider alias) while no role
-# selects it — the future role swap stays a one-line config edit, and nothing resolves to kimi
-# until its worker adapter (slice 2) and dispatcher wiring (slice 3) exist.
-check("live config declares kimi-k3 as vendor kimi with its required CLI alias",
-      live["vendor_map"].get("kimi-k3") == "kimi"
+check("live vendor_patterns classifies every named role model to a known vendor without ambiguity",
+      all(d.load_models_check().classify(r["model"], live) in ("claude", "codex", "kimi")
+          for r in live["roles"].values()))
+# Kimi vendor: kimi-k3 classifies as kimi by name pattern and carries its required CLI alias
+# while no role selects it — the future role swap stays a one-line config edit, and nothing
+# resolves to kimi until the owner assigns a kimi role model.
+check("live vendor_patterns classifies kimi-k3 as kimi and its CLI alias is declared",
+      d.load_models_check().classify("kimi-k3", live) == "kimi"
       and live["cli_aliases"].get("kimi-k3") == "kimi-code/k3")
-check("no live role selects kimi-k3 (declaration is inert)",
+check("no live role selects kimi-k3 (vendor_patterns-era: kimi model available but inert)",
       all(r["model"] != "kimi-k3" for r in live["roles"].values()))
 
 # All remaining cases run against a scratch copy; the live file must come out untouched.
@@ -67,7 +68,7 @@ check("malformed JSON refuses launch (exit 2)", load_result() == "exit2")
 bad = copy.deepcopy(good); bad["schema_version"] = "2"
 scratch.write_text(json.dumps(bad))
 check("unsupported schema_version refuses launch (exit 2)", load_result() == "exit2")
-for section in ("roles", "cli_aliases", "vendor_map"):
+for section in ("roles", "cli_aliases", "vendor_patterns"):
     bad = copy.deepcopy(good); del bad[section]
     scratch.write_text(json.dumps(bad))
     check(f"config without {section} refuses launch (exit 2)", load_result() == "exit2")
@@ -78,41 +79,41 @@ for role in good["roles"]:
 bad = copy.deepcopy(good); bad["roles"]["worker"]["model"] = ""
 scratch.write_text(json.dumps(bad))
 check("empty role model refuses launch (exit 2)", load_result() == "exit2")
-bad = copy.deepcopy(good); bad["vendor_map"]["some-model"] = "other-vendor"
+bad = copy.deepcopy(good); bad["vendor_patterns"]["other-vendor"] = ["oth"]
 scratch.write_text(json.dumps(bad))
-check("vendor outside the closed vendor set refuses launch (exit 2)", load_result() == "exit2")
+check("vendor_patterns key outside the closed vendor set refuses launch (exit 2)", load_result() == "exit2")
 # Round-1 review, finding 3: a config that is not valid UTF-8 must refuse with exit 2, not an
 # uncaught decode traceback.
 scratch.write_bytes(b'\xff\xfe{ not utf-8 }')
 check("non-UTF-8 config refuses launch (exit 2)", load_result() == "exit2")
-# Round-1 review, finding 1: vendor RELATIONSHIPS are validated, not just vendor values. A known
-# vendor prefix declared as the other vendor is the misdeclaration that would allow same-vendor
-# review to pass — refused. And every model the config names must be declared in vendor_map.
-bad = copy.deepcopy(good); bad["vendor_map"]["gpt-5.6-sol"] = "claude"
+# Owner decision 2026-07-18: vendor PATTERNS replace the per-model registry. PREFIX_RULES are
+# gone; the remaining relationship guard is ambiguity: a role model id matching two vendors'
+# patterns simultaneously fails closed, preventing any model from being silently mis-routed.
+bad = copy.deepcopy(good); bad["vendor_patterns"]["kimi"] = ["kimi", "opus"]
+# "claude-opus-4-8" is a named role model; it contains "claude" (matches vendor "claude") AND
+# "opus" (now matches vendor "kimi") — two distinct vendor hits, so classify() raises ValueError
+# and validate() records the error.
 scratch.write_text(json.dumps(bad))
-check("gpt model declared as claude vendor refuses launch (exit 2)", load_result() == "exit2")
-bad = copy.deepcopy(good); bad["vendor_map"]["claude-opus-4-8"] = "codex"
+check("model id matching two vendor patterns is ambiguous, refuses launch (exit 2)", load_result() == "exit2")
+# Kimi slice 3 (round-1 review): a kimi-vendor ROLE MODEL must carry its CLI provider alias —
+# the kimi CLI never accepts relay model ids. The alias requirement triggers for named_models
+# (role models), so test with a config that assigns the kimi model to a role.
+kimi_cfg = copy.deepcopy(good); kimi_cfg["roles"]["spec_author"]["model"] = "kimi-k3"
+bad = copy.deepcopy(kimi_cfg); del bad["cli_aliases"]["kimi-k3"]
 scratch.write_text(json.dumps(bad))
-check("claude model declared as codex vendor refuses launch (exit 2)", load_result() == "exit2")
-bad = copy.deepcopy(good); bad["vendor_map"]["kimi-k3"] = "codex"
-scratch.write_text(json.dumps(bad))
-check("kimi model declared as codex vendor refuses launch (exit 2)", load_result() == "exit2")
-bad = copy.deepcopy(good); bad["vendor_map"]["claude-opus-4-8"] = "kimi"
-scratch.write_text(json.dumps(bad))
-check("claude model declared as kimi vendor refuses launch (exit 2)", load_result() == "exit2")
-# Kimi slice 3 (round-1 review): a kimi-vendor model MUST carry its CLI provider alias — the
-# kimi CLI never accepts relay model ids, so an alias-less declaration is invalid config.
-bad = copy.deepcopy(good); del bad["cli_aliases"]["kimi-k3"]
-scratch.write_text(json.dumps(bad))
-check("kimi-vendor model without its CLI alias refuses launch (exit 2)", load_result() == "exit2")
+check("kimi-vendor role model without its CLI alias refuses launch (exit 2)", load_result() == "exit2")
 # Round-2 review: an IDENTITY alias would launder the raw relay id through the translation —
 # the kimi alias must be DISTINCT from the model id.
-bad = copy.deepcopy(good); bad["cli_aliases"]["kimi-k3"] = "kimi-k3"
+bad = copy.deepcopy(kimi_cfg); bad["cli_aliases"]["kimi-k3"] = "kimi-k3"
 scratch.write_text(json.dumps(bad))
 check("kimi identity alias (raw id laundering) refuses launch (exit 2)", load_result() == "exit2")
-bad = copy.deepcopy(good); del bad["vendor_map"][bad["roles"]["worker"]["model"]]
-scratch.write_text(json.dumps(bad))
-check("role model missing from vendor_map refuses launch (exit 2)", load_result() == "exit2")
+# Owner decision 2026-07-18: unrecognized role models fall through to the sandboxed default
+# (codex), never refused — adding a new model costs no config edit.
+swapped_unknown = copy.deepcopy(good)
+swapped_unknown["roles"]["worker"]["model"] = "some-unknown-model"
+scratch.write_text(json.dumps(swapped_unknown))
+check("role model absent from vendor_patterns defaults to codex (sandboxed, config VALIDATES)",
+      load_result() == "ok")
 bad = copy.deepcopy(good); bad["cli_aliases"]["claude-fable-5"] = 7
 scratch.write_text(json.dumps(bad))
 check("non-string CLI alias refuses launch (exit 2)", load_result() == "exit2")
@@ -171,22 +172,25 @@ def resolve_result(approval):
     except SystemExit as e:
         return f"exit{e.code}"
 
-# Codex worker pins resolve; non-codex workers refuse until the worker adapter (R73 Job 2);
-# unmapped pins refuse; same-MODEL refuses always.
+# Codex worker pins resolve; adapterless vendors still refuse at resolution; unrecognized models
+# default to the sandboxed vendor (codex) rather than being refused (owner decision 2026-07-18).
 check("codex worker pin resolves (config/approval authority)",
       d.resolve_launch_models({"worker_model": "gpt-5.6-sol",
                                "reviewer_model": "claude-fable-5"}, cfg)
       ["worker_model"] == "gpt-5.6-sol")
 # R73 Job 3: the claude worker adapter exists (subagent mode) — a claude pin resolves and
-# freezes the mode with the vendor; the fail-closed refusal for adapterless vendors is kept by
-# the unmapped-model cases below (vendor_map is the closed world).
+# freezes the mode with the vendor; the fail-closed refusal for adapterless vendors is preserved
+# (worker_mode raises for unknown vendors, adapter gate runs at resolution).
 r_claude = d.resolve_launch_models({"worker_model": "claude-sonnet-4-6"}, cfg)
 check("claude worker pin resolves and freezes worker_mode=subagent (R73 Job 3)",
       r_claude["worker_vendor"] == "claude" and r_claude["worker_mode"] == "subagent")
-check("pinning an unmapped worker model refuses launch (exit 2)",
-      resolve_result({"worker_model": "mystery-model-9"}) == "exit2")
-check("pinning an unmapped reviewer model refuses launch (exit 2)",
-      resolve_result({"reviewer_model": "mystery-model-9"}) == "exit2")
+# Owner decision 2026-07-18: unrecognized models default to codex (sandboxed) rather than refused.
+r_mystery = d.resolve_launch_models({"worker_model": "mystery-model-9"}, cfg)
+check("unrecognized worker model defaults to codex vendor (sandboxed, not refused)",
+      r_mystery["worker_vendor"] == "codex" and r_mystery["worker_model"] == "mystery-model-9")
+r_mystery_rev = d.resolve_launch_models({"reviewer_model": "mystery-model-9"}, cfg)
+check("unrecognized reviewer model defaults to codex vendor (no closed-world refusal)",
+      r_mystery_rev["reviewer_vendor"] == "codex" and r_mystery_rev["reviewer_model"] == "mystery-model-9")
 # Kimi slice 2: KimiWorker is registered, so a kimi worker pin RESOLVES and freezes truthful
 # vendor+mode (deliberately flipping the slice-1 refusal). Slice 3 wired the dispatcher
 # (KNOWN_VENDORS, runtime resolver, argv plumbing); launch still requires the isolation gate
@@ -223,19 +227,21 @@ check("kimi-k3 translates to the CLI's provider alias (probe A: the id the kimi 
 check("unlisted model id passes through unchanged",
       aliases.get("some-new-model", "some-new-model") == "some-new-model")
 
-# Closed-world vendor map: known ids map exactly; an absent id is absent, never guessed.
-vm = cfg["vendor_map"]
-check("vendor_map classifies known ids exactly",
-      vm.get("gpt-5.6-luna") == "codex" and vm.get("gpt-5.6-sol") == "codex"
-      and vm.get("claude-fable-5") == "claude" and vm.get("claude-opus-4-8") == "claude"
-      and vm.get("claude-sonnet-4-6") == "claude")
-check("unknown model is absent from vendor_map (not guessed)",
-      vm.get("some-hypothetical-model") is None)
+# vendor_patterns: classify() by name substring; an unknown model defaults to the sandboxed vendor.
+mc_for_vp = d.load_models_check()
+check("vendor_patterns classifies known models by substring match",
+      mc_for_vp.classify("gpt-5.6-luna", cfg) == "codex"
+      and mc_for_vp.classify("gpt-5.6-sol", cfg) == "codex"
+      and mc_for_vp.classify("claude-fable-5", cfg) == "claude"
+      and mc_for_vp.classify("claude-opus-4-8", cfg) == "claude"
+      and mc_for_vp.classify("claude-sonnet-4-6", cfg) == "claude")
+check("unknown model defaults to codex (sandboxed DEFAULT_VENDOR, not refused)",
+      mc_for_vp.classify("some-hypothetical-model", cfg) == "codex")
 
 # The point of R71: a role-model swap is ONE config value edit — no code change anywhere.
+# No vendor_patterns entry needed: gpt-7-hypothetical matches no patterns → DEFAULT_VENDOR (codex).
 swapped = copy.deepcopy(good)
 swapped["roles"]["worker"]["model"] = "gpt-7-hypothetical"
-swapped["vendor_map"]["gpt-7-hypothetical"] = "codex"
 scratch.write_text(json.dumps(swapped))
 r_swapped = d.resolve_launch_models({}, d.load_model_config())
 check("a one-line worker-model swap changes default resolution with no code edit",

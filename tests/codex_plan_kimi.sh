@@ -64,13 +64,9 @@ json.dump({
         "claude-fable-5": "fable",
         "kimi-k3":        "kimi-code/k3",
     },
-    "vendor_map": {
-        "gpt-5.6-luna":      "codex",
-        "gpt-5.6-sol":       "codex",
-        "claude-fable-5":    "claude",
-        "claude-opus-4-8":   "claude",
-        "claude-sonnet-4-6": "claude",
-        "kimi-k3":           "kimi",
+    "vendor_patterns": {
+        "claude": ["claude", "opus", "sonnet", "haiku", "fable"],
+        "kimi":   ["kimi"],
     },
 }, open(sys.argv[1], "w"))
 PY

@@ -366,13 +366,13 @@ mkdir -p "$tmp/gutted/scripts"
 cp -p scripts/codex-plan scripts/models_check.py "$tmp/gutted/scripts/"
 "$PY" - scripts/models.json "$tmp/gutted/scripts/models.json" <<'GUT'
 import json, sys
-cfg = json.load(open(sys.argv[1])); del cfg["vendor_map"]
+cfg = json.load(open(sys.argv[1])); del cfg["vendor_patterns"]
 json.dump(cfg, open(sys.argv[2], "w"))
 GUT
 if PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$tmp/gut-args" CODEX_STUB_PROMPT="$tmp/gut-prompt" \
     "$tmp/gutted/scripts/codex-plan" --out "$tmp/gutted-out" 'should refuse' \
     >"$tmp/gutted.out" 2>&1; then
-  fail "codex-plan drafted with a config missing vendor_map: $(cat "$tmp/gutted.out")"
+  fail "codex-plan drafted with a config missing vendor_patterns: $(cat "$tmp/gutted.out")"
 fi
 grep -qi 'models config' "$tmp/gutted.out" \
   || fail "gutted-config refusal did not name the models config: $(cat "$tmp/gutted.out")"

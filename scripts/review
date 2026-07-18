@@ -16,7 +16,7 @@
 #     codex-plan's reserved PLAN-NNN.{md,stdout,stderr} name. Content, not the filename, is the
 #     signal: `ln PLAN-001.md note.md` (or any rename) no longer strips a Sol plan of its recorded
 #     authorship. Its author VENDOR is the frontmatter author_model mapped through the models.json
-#     vendor_map. A `.stdout`/`.stderr` carries no frontmatter of its own, so it is recognized only
+#     vendor_patterns. A `.stdout`/`.stderr` carries no frontmatter of its own, so it is recognized only
 #     under the reserved name and read from its sibling .md. Duplicate keys, an unbalanced-quoted or
 #     unmapped author_model, a reserved-named file missing that frontmatter, a missing sibling .md,
 #     or any read failure all refuse outright (fail closed) rather than guessing;
@@ -75,7 +75,7 @@ die() { printf 'review: %s\n' "$*" >&2; exit 2; }
 
 # R71: the reviewer-of-orchestrator-artifacts model comes from the machine config, fetched
 # through scripts/models_check.py — which validates the WHOLE config first (round-1 review: a
-# config missing any section, vendor_map included, must refuse the review outright, not just the
+# config missing any section, vendor_patterns included, must refuse the review outright, not just the
 # one value this script reads). Fail closed; there is no hard-coded fallback.
 MODELS_CFG="$ROOT/scripts/models.json"
 MODELS_CHECK="$ROOT/scripts/models_check.py"
@@ -86,8 +86,8 @@ MODEL=$("$PY" "$MODELS_CHECK" "$MODELS_CFG" get roles.orchestrator_artifact_revi
 # self-review guard are vendor-neutral rather than hardcoded to codex.
 REVIEWER_VENDOR=$("$PY" "$MODELS_CHECK" "$MODELS_CFG" vendor "$MODEL") \
   || die "models config invalid when classifying reviewer model $MODEL: $MODELS_CFG"
-[[ "$REVIEWER_VENDOR" != "unknown" ]] \
-  || die "reviewer model $MODEL is not in vendor_map: $MODELS_CFG (fail closed)"
+[[ -n "$REVIEWER_VENDOR" ]] \
+  || die "reviewer model $MODEL could not be vendor-classified: $MODELS_CFG (fail closed)"
 CLI_ALIAS=""
 if [[ "$REVIEWER_VENDOR" == "kimi" ]]; then
   CLI_ALIAS=$("$PY" "$MODELS_CHECK" "$MODELS_CFG" get "cli_aliases.$MODEL") \
@@ -117,11 +117,11 @@ attempts_root="$ROOT/.orchestrator/attempts"
 iso_worktrees="/srv/codexwork/worktrees"
 local_worktrees="$ROOT/.worktrees"
 
-# Classify a recorded model name (e.g. launch.json's worker_model) into a vendor via the explicit
-# vendor_map in scripts/models.json — no substring guessing. models_check validates the whole
-# config (including its vendor-contradiction tripwire) before answering; a model absent from the
-# map, an invalid config, or any read error yields 'unknown' and the caller refuses it: a new
-# model must be declared in the map before anything it authored can be vendor-classified.
+# Classify a recorded model name (e.g. launch.json's worker_model) into a vendor via the
+# vendor_patterns in scripts/models.json. models_check validates the whole config before
+# answering. A name matching NO pattern classifies as the default external-CLI vendor, which this
+# script refuses as non-Claude-authored — so an unrecognized model still cannot pass as Claude.
+# An AMBIGUOUS name (two vendors at once) exits nonzero and yields 'unknown', also refused.
 classify_model() {
   "$PY" "$MODELS_CHECK" "$MODELS_CFG" vendor "$1" 2>/dev/null || echo unknown
 }
@@ -160,7 +160,7 @@ derive_one() {
   #   loader): a regex approximation missed valid-YAML spellings — `author_model :`, `"author_model":`,
   #   `id: PLAN-401 # comment` — that a round-3 review showed could hide a conflicting key or drop a
   #   plan id, laundering provenance. The author VENDOR is the frontmatter author_model via
-  #   models.json's vendor_map — spec_author is a role, not a vendor, so an unconditional 'codex'
+  #   models.json's vendor_patterns — spec_author is a role, not a vendor, so an unconditional 'codex'
   #   would misclassify the instant the owner flips that role. Every failure refuses (fail closed): a
   #   reserved name that lacks or disagrees with its frontmatter, a missing sibling .md, a duplicate
   #   key, a malformed or unmapped author_model, PyYAML absent, a parser exiting nonzero, or an

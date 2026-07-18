@@ -3,8 +3,8 @@
 # codex binary (no network, no real reviewer invoked).
 #
 # (1) Plan authorship derives from the .md frontmatter's author_model via the models.json
-#     vendor_map — spec_author is a ROLE, not a vendor, so the old unconditional-codex namespace
-#     rule would misclassify the moment the owner flips roles.spec_author in models.json. A
+#     vendor_patterns — spec_author is a ROLE, not a vendor, so the old unconditional-codex
+#     namespace rule would misclassify the moment the owner flips roles.spec_author in models.json. A
 #     Claude-authored plan proceeds to Codex review; a Sol-authored plan is still refused as
 #     self-review (exit 4); broken provenance (missing sibling .md, missing frontmatter, an
 #     unmapped model) is refused outright, never guessed.
@@ -142,9 +142,10 @@ rc=$?
 scripts/review --topic plan-003 --author claude --context .orchestrator/plans/PLAN-003.md "review" >/dev/null 2>&1
 rc=$?
 [ "$rc" = 2 ] && ok "plan without frontmatter refused (exit 2)" || bad "frontmatterless plan gave exit $rc, expected 2"
-scripts/review --topic plan-004 --author claude --context .orchestrator/plans/PLAN-004.md "review" >/dev/null 2>&1
+scripts/review --topic plan-004 --author codex --context .orchestrator/plans/PLAN-004.md "review" >/dev/null 2>&1
 rc=$?
-[ "$rc" = 2 ] && ok "plan with unmapped author_model refused (exit 2)" || bad "unmapped author_model gave exit $rc, expected 2"
+[ "$rc" = 4 ] && ok "plan with unrecognized author_model defaults to codex (sandboxed); self-review gate refuses (exit 4)" \
+  || bad "unrecognized author_model gave exit $rc, expected 4 (codex default, self-review)"
 scripts/review --topic plan-106 --author claude --context .orchestrator/plans/PLAN-106.stdout "review" >/dev/null 2>&1
 rc=$?
 [ "$rc" = 2 ] && ok "orphan .stdout without sibling .md refused (exit 2)" || bad "orphan .stdout gave exit $rc, expected 2"

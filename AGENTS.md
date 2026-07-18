@@ -2,7 +2,7 @@
 
 Referenced by [CLAUDE.md](CLAUDE.md), which holds the operating rules in terms of ROLES. Humans read
 the role table here; machines read `scripts/models.json` (roles, CLI aliases, vendor map).
-A model swap is one edit there, never to the rulebook; a new model also adds its vendor_map line.
+A model swap is one edit there, never to the rulebook; vendors match by name pattern, so a new known-vendor model needs no config.
 
 ## Who plays which role (today)
 

@@ -150,32 +150,33 @@ rc=$?
 [ -e .orchestrator/reviews/real-codex-topic ] && bad "self-review refusal still created review state" \
   || ok "self-review refusal writes nothing"
 
-# 4. UNKNOWN MODEL (R71): an attempt whose recorded worker_model is absent from vendor_map must be
-#    refused, never guessed into a vendor — a net-new model requires an explicit vendor_map entry
-#    before anything it authored can be classified.
+# 4. UNRECOGNIZED MODEL (owner decision 2026-07-18): an attempt whose recorded worker_model
+#    matches no vendor_patterns falls through to the sandboxed default (codex), never refused.
+#    With --author codex the derivation agrees, so the codex self-review gate refuses (exit 4) —
+#    proving the model was actually classified as codex, not refused for being unrecognized.
 mkdir -p .orchestrator/attempts/SPEC-903/1
 printf '{"worker_model": "mystery-model-9", "spec_id": "SPEC-903", "attempt": 1}\n' \
   > .orchestrator/attempts/SPEC-903/1/launch.json
 printf 'diff --git a/y b/y\n+mystery model wrote this\n' > .orchestrator/attempts/SPEC-903/1/diff.patch
 scripts/review --topic unknown-model --author codex --context .orchestrator/attempts/SPEC-903/1/diff.patch "please review" >/dev/null 2>&1
 rc=$?
-[ "$rc" != 0 ] && ok "a model absent from vendor_map is refused, not guessed (exit $rc)" \
-  || bad "an unmapped model was silently vendor-classified"
-[ -e .orchestrator/reviews/unknown-model ] && bad "unknown-model refusal still created review state" \
-  || ok "unknown-model refusal writes nothing"
+[ "$rc" = 4 ] && ok "unrecognized worker_model defaults to codex (sandboxed); self-review gate refuses (exit 4)" \
+  || bad "unrecognized worker model gave exit $rc, expected 4 (codex default, self-review)"
+[ -e .orchestrator/reviews/unknown-model ] && bad "self-review refusal still created review state" \
+  || ok "self-review refusal writes nothing"
 
-# 5. WHOLE-CONFIG VALIDATION (round-1 review): a config missing a required section — vendor_map
+# 5. WHOLE-CONFIG VALIDATION (round-1 review): a config missing a required section — vendor_patterns
 #    here — must refuse the review at startup, even for an ordinary claude-authored context that
 #    never needs a vendor lookup. Only the one jq-style value being present is NOT enough.
 python3 - "$tmp/repo/scripts/models.json" <<'GUT'
 import json, sys
-cfg = json.load(open(sys.argv[1])); del cfg["vendor_map"]
+cfg = json.load(open(sys.argv[1])); del cfg["vendor_patterns"]
 json.dump(cfg, open(sys.argv[1], "w"))
 GUT
 scripts/review --topic gutted-config --author claude --context claude-note.md "please review" >/dev/null 2>&1
 rc=$?
-[ "$rc" != 0 ] && ok "config without vendor_map refuses the review outright (exit $rc)" \
-  || bad "a config missing vendor_map still ran a review"
+[ "$rc" != 0 ] && ok "config without vendor_patterns refuses the review outright (exit $rc)" \
+  || bad "a config missing vendor_patterns still ran a review"
 [ -e .orchestrator/reviews/gutted-config ] && bad "gutted-config refusal still created review state" \
   || ok "gutted-config refusal writes nothing"
 # restore for any later cases, still writable ($ROOT may be a write-stripped grader tree)

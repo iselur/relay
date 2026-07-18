@@ -61,9 +61,8 @@ CFG = {"schema_version": "1",
                  "bound_reviewer": {"model": "claude-fable-5", "effort": "high"},
                  "orchestrator_artifact_reviewer": {"model": "gpt-5.6-sol", "effort": "high"}},
        "cli_aliases": {"claude-fable-5": "fable"},
-       "vendor_map": {"gpt-5.6-luna": "codex", "gpt-5.6-sol": "codex",
-                      "claude-fable-5": "claude", "claude-opus-4-8": "claude",
-                      "claude-sonnet-4-6": "claude"}}
+       "vendor_patterns": {"claude": ["claude", "opus", "sonnet", "haiku", "fable"],
+                           "kimi": ["kimi"]}}
 r = d.resolve_launch_models({}, CFG)
 check("claude worker freezes worker_mode=subagent at resolution",
       r["worker_vendor"] == "claude" and r["worker_mode"] == "subagent")

@@ -178,6 +178,20 @@ ATTEMPT_APPROVAL_SCHEMA = {
         "note": {"type": "string"},
     },
 }
+def load_models_check():
+    """The shared validator module, loaded from source (no package on sys.path). Both the config
+    loader and the resolver's vendor classification go through this one import, so they can never
+    disagree about what a model id means."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "models_check", ROOT / "scripts" / "models_check.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception as exc:
+        die(f"models validator missing or broken (scripts/models_check.py): {exc} — fail closed")
+
+
 def load_model_config() -> dict:
     """Load and validate scripts/models.json (R71). Fail closed on ANY error — a missing,
     unreadable, non-UTF-8, malformed, or invalid config refuses the launch with exit 2; nothing
@@ -186,13 +200,7 @@ def load_model_config() -> dict:
     config, not one path — a second schema here would drift from theirs). Called once in
     cmd_launch(); the values are frozen into launch.json, so editing the config mid-run cannot
     change a running attempt (lc freeze semantics)."""
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "models_check", ROOT / "scripts" / "models_check.py")
-        models_check = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(models_check)
-    except Exception as exc:
-        die(f"models validator missing or broken (scripts/models_check.py): {exc} — fail closed")
+    models_check = load_models_check()
     try:
         raw = MODEL_CONFIG.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -215,9 +223,10 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
     freeze directly rather than inferring it from a full launch.
 
     Owner decision 2026-07-16: vendor pairing is the owner's call, made in scripts/models.json —
-    nothing here polices same- vs cross-vendor. One check remains, mechanical: every model in a
-    runnable pairing must be DECLARED in vendor_map (an unmapped pin cannot be vendor-classified
-    for authorship, so it is refused, not guessed).
+    nothing here polices same- vs cross-vendor. Vendors are classified by NAME PATTERN
+    (models_check.classify, owner decision 2026-07-18): an unrecognized model is not refused, it
+    falls through to the sandboxed external-CLI default, so the unknown case is confined rather
+    than blocked. Only an AMBIGUOUS name — matching two vendors at once — refuses.
 
     Owner decision 2026-07-18: worker and reviewer MAY resolve to the same model. "Nothing reviews
     its own work" (CLAUDE.md rule 7) binds the agent, not the weights — the reviewer is invoked as
@@ -233,13 +242,12 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
                             or cfg["roles"]["bound_reviewer"]["effort"]),
         "cli_aliases": cfg["cli_aliases"],
     }
-    vm = cfg["vendor_map"]
-    checked = [("worker_model", resolved["worker_model"]),
-               ("reviewer_model", resolved["reviewer_model"])]
-    for key, model in checked:
-        if vm.get(model) is None:
-            die(f"launch refused: {key} {model!r} is not declared in vendor_map "
-                f"({MODEL_CONFIG}) — an undeclared model cannot be vendor-classified")
+    classify = load_models_check().classify
+    try:
+        vendors = {key: classify(resolved[key], cfg)
+                   for key in ("worker_model", "reviewer_model")}
+    except ValueError as exc:
+        die(f"launch refused: {exc} ({MODEL_CONFIG})")
     # R73 Job 2 (supersedes the round-2 hard-wired codex check): the worker phase executes
     # through the worker-adapter registry pinned at dispatcher import — a vendor with no
     # registered worker adapter would resolve, freeze a truthful vendor, and then have no CLI
@@ -248,14 +256,14 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
     if VENDOR_ADAPTERS is None:
         die(f"launch refused: vendor adapters failed to load at dispatcher start "
             f"({VENDOR_ADAPTERS_ERR}); fail closed")
-    if vm[resolved["worker_model"]] not in VENDOR_ADAPTERS.worker_vendors():
+    if vendors["worker_model"] not in VENDOR_ADAPTERS.worker_vendors():
         die(f"launch refused: worker_model {resolved['worker_model']!r} is "
-            f"{vm[resolved['worker_model']]}-vendor, and no worker adapter exists for that "
+            f"{vendors['worker_model']}-vendor, and no worker adapter exists for that "
             f"vendor (known: {'/'.join(VENDOR_ADAPTERS.worker_vendors())})")
     # R73 Job 1: vendors freeze WITH the models — run-time selects the CLI adapter from these
     # fields and never re-infers from a live config.
-    resolved["worker_vendor"] = vm[resolved["worker_model"]]
-    resolved["reviewer_vendor"] = vm[resolved["reviewer_model"]]
+    resolved["worker_vendor"] = vendors["worker_model"]
+    resolved["reviewer_vendor"] = vendors["reviewer_model"]
     # R73 Job 3: the execution MODE freezes with the vendor (registry-derived, never guessed):
     # external-cli workers run detached under the worker role envelope; subagent workers BUILD
     # inside the orchestrator session and are graded by `dispatch continue`. Frozen here so a

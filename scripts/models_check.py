@@ -16,16 +16,31 @@ import sys
 ROLES = ("orchestrator", "spec_author", "utility_subagent", "worker",
          "bound_reviewer", "orchestrator_artifact_reviewer")
 VENDORS = ("claude", "codex", "kimi")
-SECTIONS = ("schema_version", "roles", "cli_aliases", "vendor_map")
-# Contradiction TRIPWIRE, not a classifier (round-1 review, finding 1): a name carrying a known
-# vendor prefix may not be declared as the other vendor — that misdeclaration is exactly what
-# would let same-vendor review pass. A name with no known prefix still needs its explicit
-# vendor_map entry; nothing here ever infers a vendor for it.
-PREFIX_RULES = (("claude", "claude"), ("gpt-", "codex"), ("codex", "codex"), ("kimi", "kimi"))
+SECTIONS = ("schema_version", "roles", "cli_aliases", "vendor_patterns")
+# Owner decision 2026-07-18: vendors are matched by NAME PATTERN, not a per-model registry.
+# Only the vendors that need a non-default launch path are declared — `claude` runs as an
+# in-session subagent, `kimi` needs its own CLI and has no unisolated mode. Everything else
+# falls through to DEFAULT_VENDOR, the sandboxed external-CLI path, so a model nobody has
+# heard of is confined rather than refused, and adding one costs no config at all.
+DEFAULT_VENDOR = "codex"
 
 
 def _nonempty_str(v) -> bool:
     return isinstance(v, str) and bool(v.strip())
+
+
+def classify(model: str, cfg: dict) -> str:
+    """The ONE vendor classifier: case-insensitive substring match of the model id against each
+    declared vendor's patterns, DEFAULT_VENDOR when nothing matches. A name matching two
+    different vendors is ambiguous and raises — picking one silently would launch the wrong CLI
+    under the wrong isolation, so it fails closed instead."""
+    lowered = (model or "").lower()
+    hits = sorted({v for v, pats in (cfg.get("vendor_patterns") or {}).items()
+                   if any(p.lower() in lowered for p in pats)})
+    if len(hits) > 1:
+        raise ValueError(f"model {model!r} matches patterns for more than one vendor "
+                         f"({'/'.join(hits)}); no vendor can be chosen safely")
+    return hits[0] if hits else DEFAULT_VENDOR
 
 
 def validate(cfg) -> list:
@@ -74,30 +89,34 @@ def validate(cfg) -> list:
                 if not _nonempty_str(v):
                     errs.append(f"cli_aliases.{k} must be a non-empty string")
 
-    vm = cfg.get("vendor_map")
-    if vm is not None and not isinstance(vm, dict):
-        errs.append("vendor_map must be an object")
-        vm = {}
-    vm = vm if isinstance(vm, dict) else {}
-    for m, v in sorted(vm.items()):
+    vp = cfg.get("vendor_patterns")
+    if vp is not None and not isinstance(vp, dict):
+        errs.append("vendor_patterns must be an object")
+        vp = {}
+    vp = vp if isinstance(vp, dict) else {}
+    for v, pats in sorted(vp.items()):
         if v not in VENDORS:
-            errs.append(f"vendor_map.{m} must be one of {'/'.join(VENDORS)}, not {v!r}")
+            errs.append(f"vendor_patterns.{v} must be one of {'/'.join(VENDORS)}")
             continue
-        for prefix, vendor in PREFIX_RULES:
-            if m.lower().startswith(prefix) and v != vendor:
-                errs.append(f"vendor_map contradiction: {m} declared as {v}")
-    if "vendor_map" in cfg:
-        # Completeness: every model the config itself names must carry a vendor declaration,
-        # or dispatch could launch a model that scripts/review can never classify.
-        for m in sorted(named_models - set(vm)):
-            errs.append(f"model named in config but not declared in vendor_map: {m}")
+        if v == DEFAULT_VENDOR:
+            errs.append(f"vendor_patterns.{v} is the default vendor and needs no patterns")
+        if not isinstance(pats, list) or not pats or not all(_nonempty_str(p) for p in pats):
+            errs.append(f"vendor_patterns.{v} must be a non-empty list of non-empty strings")
+    # A pattern that also matches ANOTHER vendor's pattern makes every id hitting both
+    # unclassifiable at launch. Catch it here, in the owner's config, not at dispatch time.
+    if not errs:
+        for m in sorted(named_models):
+            try:
+                classify(m, cfg)
+            except ValueError as exc:
+                errs.append(str(exc))
     if isinstance(aliases, dict):
         # R73 round-1 review (blocking): an alias whose TARGET is itself a declared model would
         # let one model masquerade as another at invocation time — resolution would compare the
         # distinct config ids while the CLI runs the alias target (self-review laundered through
         # cli_aliases). Aliases map a model id to its vendor-CLI name, never to another model.
         for k, v in sorted(aliases.items()):
-            if _nonempty_str(v) and v != k and (v in vm or v in named_models):
+            if _nonempty_str(v) and v != k and v in named_models:
                 errs.append(f"cli_aliases.{k} targets another declared model ({v}): an alias "
                             f"maps a model id to its CLI name, never to a different model")
         # Kimi slice 3 (rounds 1-2 review): the kimi CLI accepts only its provider aliases,
@@ -105,9 +124,10 @@ def validate(cfg) -> list:
         # an alias map its adapter must refuse at every invocation, and an IDENTITY alias
         # (model id mapped to itself) would launder the raw relay id straight through the
         # translation. Required at validation: a non-empty alias DISTINCT from the model id.
-        for m, v in sorted(vm.items()):
-            if v == "kimi" and (not _nonempty_str(aliases.get(m)) or aliases.get(m) == m):
-                errs.append(f"vendor_map.{m} is kimi-vendor but cli_aliases has no distinct "
+        for m in sorted(named_models):
+            if (not errs and classify(m, cfg) == "kimi"
+                    and (not _nonempty_str(aliases.get(m)) or aliases.get(m) == m)):
+                errs.append(f"{m} classifies as kimi-vendor but cli_aliases has no distinct "
                             f"entry for it (the kimi CLI accepts only its provider aliases, "
                             f"never relay model ids)")
 
@@ -159,8 +179,11 @@ def main(argv) -> int:
             return 2
         print(node)
         return 0
-    vendor = cfg["vendor_map"].get(argv[3], "unknown")
-    print(vendor if vendor in VENDORS else "unknown")
+    try:
+        print(classify(argv[3], cfg))
+    except ValueError as exc:
+        print(f"models_check: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 
