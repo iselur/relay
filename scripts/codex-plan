@@ -40,6 +40,16 @@ MODEL=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" get roles.spec_auth
   || die "models config invalid, or roles.spec_author.model unusable: $MODELS_CFG"
 EFFORT=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" get roles.spec_author.effort) \
   || die "models config invalid, or roles.spec_author.effort unusable: $MODELS_CFG"
+VENDOR=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" vendor "$MODEL") \
+  || die "models config invalid, or vendor for $MODEL unusable: $MODELS_CFG"
+case "$VENDOR" in
+  codex|kimi) ;;
+  *) die "spec_author vendor '$VENDOR' is not supported by codex-plan (known: codex, kimi)" ;;
+esac
+if [[ "$VENDOR" == "kimi" ]]; then
+  CLI_ALIAS=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" get "cli_aliases.$MODEL") \
+    || die "kimi spec_author requires a CLI alias for $MODEL in $MODELS_CFG"
+fi
 
 while (($#)); do
   case "$1" in
@@ -191,29 +201,68 @@ Context file: $context
 $context_text"
 done
 
-codex_status=0
-# Prompt on stdin, never argv: a brief-sized prompt with context files blows past the argv limit
-# (AGENTS.md — argv dies over 130KB), and it failed silently as a Codex startup error.
-if printf '%s' "$prompt" | codex exec \
-  -m "$MODEL" \
-  -c model_reasoning_effort="$EFFORT" \
-  --sandbox read-only \
-  --skip-git-repo-check \
-  - >"$stdout_path" 2>"$stderr_path"; then
-  codex_status=0
-else
-  codex_status=$?
-fi
+vendor_status=0
+case "$VENDOR" in
+  codex)
+    # Prompt on stdin, never argv: a brief-sized prompt with context files blows past the argv
+    # limit (AGENTS.md — argv dies over 130KB), and it failed silently as a Codex startup error.
+    if printf '%s' "$prompt" | codex exec \
+      -m "$MODEL" \
+      -c model_reasoning_effort="$EFFORT" \
+      --sandbox read-only \
+      --skip-git-repo-check \
+      - >"$stdout_path" 2>"$stderr_path"; then
+      vendor_status=0
+    else
+      vendor_status=$?
+    fi
+    ;;
+  kimi)
+    # Kimi takes the prompt as -p argv; refuse before invocation if it exceeds the kimi argv
+    # limit (same guard as KimiReviewer: 120000 UTF-8 bytes, proven safe in kimi probe evidence).
+    prompt_bytes=$(printf '%s' "$prompt" | wc -c)
+    if ((prompt_bytes > 120000)); then
+      printf 'codex-plan: kimi spec_author refused — prompt is %d UTF-8 bytes (limit 120000); use fewer context files or a stdin-capable vendor\n' \
+        "$prompt_bytes" >&2
+      exit 1
+    fi
+    if kimi -p "$prompt" -m "$CLI_ALIAS" --output-format stream-json \
+      >"$stdout_path" 2>"$stderr_path"; then
+      vendor_status=0
+    else
+      vendor_status=$?
+    fi
+    # Recover the last assistant message from the stream-json capture, reusing
+    # KimiWorker.recover_last_message from vendor_adapters.py.
+    if ((vendor_status == 0)); then
+      plan_body=$(python3 - "$stdout_path" "$SCRIPTS_DIR" <<'PY'
+import sys, tempfile, shutil
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from vendor_adapters import KimiWorker
+raw_dir = Path(tempfile.mkdtemp())
+try:
+    (raw_dir / "events.jsonl").write_bytes(Path(sys.argv[1]).read_bytes())
+    print(KimiWorker().recover_last_message(raw_dir, isolated=True), end="")
+finally:
+    shutil.rmtree(raw_dir, ignore_errors=True)
+PY
+      ) && printf '%s' "$plan_body" >"$stdout_path" \
+        || { printf 'codex-plan: kimi message extraction failed; raw output retained at %s\n' \
+               "$stdout_path" >&2; exit 1; }
+    fi
+    ;;
+esac
 
-if ((codex_status != 0)); then
-  printf 'codex-plan: Codex exited %d; provenance retained at %s and %s\n' \
-    "$codex_status" "$stdout_path" "$stderr_path" >&2
-  exit "$codex_status"
+if ((vendor_status != 0)); then
+  printf 'codex-plan: %s exited %d; provenance retained at %s and %s\n' \
+    "$VENDOR" "$vendor_status" "$stdout_path" "$stderr_path" >&2
+  exit "$vendor_status"
 fi
 
 if ! grep -q '[^[:space:]]' "$stdout_path"; then
-  printf 'codex-plan: Codex produced empty output; provenance retained at %s and %s\n' \
-    "$stdout_path" "$stderr_path" >&2
+  printf 'codex-plan: %s produced empty output; provenance retained at %s and %s\n' \
+    "$VENDOR" "$stdout_path" "$stderr_path" >&2
   exit 1
 fi
 
