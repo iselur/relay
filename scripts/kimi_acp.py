@@ -9,22 +9,22 @@ MAX_ARG_STRLEN ceiling (R97).
 Fail-closed contract (PLAN-009 amendment 2026-07-18): the EFFECTIVE status is nonzero
 whenever the session lacked a validated stopReason:end_turn terminal response — malformed
 frame (anything but a jsonrpc-2.0 object of valid shape), JSON-RPC error, unexpected
-response id, agent-to-client request, unconfirmed model read-back, wrong stop reason, EOF,
-write stall, deadline — regardless of the child's own exit code, so a zero-exit incomplete
-session can never grade as success. A prompt response only counts once the prompt frame
-was fully written — a peer answering a prompt it never read fails closed. The child is
-killed only when still alive. Every raw stdout line reaches the frame sink BEFORE parsing.
+response id, agent-to-client request, wrong stop reason, EOF, write stall, deadline —
+regardless of the child's own exit code, so a zero-exit incomplete session can never grade
+as success. A prompt response only counts once the prompt frame was fully written — a peer
+answering a prompt it never read fails closed. The child is killed only when still alive.
+Every raw stdout line reaches the frame sink BEFORE parsing. Every field this client
+consumes is type-validated; unrecognized update kinds and unconsumed fields are ignored
+for forward compatibility (still raw-recorded).
 
 The model must be selected in-band: a fresh ACP session defaults to K2.7, so drive()
-issues session/set_model with the frozen alias and requires a config_option_update
-read-back echoing it — for that session, RECEIVED after the set_model response frame,
-the transaction fence: the peer emits that response only after fully reading set_model,
-the reader stamps every line with a receive-order seq before any sink I/O, and the fence
-seq is taken in the consuming thread, so no stale, sink-held, or written-while-pending
-update can ever confirm and no fresh one is racily rejected. The CLI emits its read-back
-before that response and again after set_mode, so the wait sits after set_mode — before
-any prompt is sent (amendment 2026-07-18 (2)). Session mode
-is set to yolo — the same self-approval the -p transport had built in; the hardened unit
+issues session/set_model with the frozen alias before any prompt and fails closed on
+anything but a success response. That response is trusted (owner decision, amendment
+2026-07-18 (3)): the CLI rejects unconfigured models with a JSON-RPC error — proven live
+by the negative control — and the protocol carries no transaction id on its
+config_option_update read-back to gate on. The read-back is still recorded (model_value)
+as evidence, and the operator check asserts it equals the frozen alias. Session mode is
+set to yolo — the same self-approval the -p transport had built in; the hardened unit
 remains the sole confinement.
 """
 
@@ -35,9 +35,6 @@ import threading
 import time
 
 PROTOCOL_VERSION = 1
-# How long after set_mode resolves to wait for a post-fence config_option_update
-# read-back (observed with set_mode's update; the window only bounds a misbehaving peer).
-MODEL_CONFIRM_WINDOW_S = 30
 SHUTDOWN_WAIT_S = 30
 
 
@@ -62,18 +59,13 @@ class _Session:
         self.chunks = []
         self.sid = None
         self.model_value = None
-        self.model_watermark = float("inf")  # no read-back confirms before the fence
-        self.rx_seq = 0  # lines received, stamped BEFORE any sink I/O or queueing
-        self.cur_seq = 0
 
         def read():
             try:
                 for line in proc.stdout:
-                    self.rx_seq += 1
-                    seq = self.rx_seq
                     frame_sink.write(line)
                     frame_sink.flush()
-                    self.q.put((seq, line))
+                    self.q.put(line)
             except OSError:
                 pass
             self.q.put(None)
@@ -130,15 +122,14 @@ class _Session:
                     if not isinstance(value, str):
                         raise ProtocolFailure("malformed_frame",
                                               "model currentValue not a string")
-                    if mine and self.cur_seq > self.model_watermark:
+                    if mine:
                         self.model_value = value
 
-    def _handle(self, item):
-        """Parse and validate one queued (seq, raw line) item; notifications are processed
-        for side effects. Agent-to-client requests and every malformed shape fail closed."""
-        if item is None:
+    def _handle(self, line):
+        """Parse and validate one queued raw line; notifications are processed for side
+        effects. Agent-to-client requests and every malformed shape fail closed."""
+        if line is None:
             raise ProtocolFailure("eof")
-        self.cur_seq, line = item
         try:
             msg = json.loads(line)
         except ValueError:
@@ -182,7 +173,7 @@ class _Session:
                 continue
             return self._handle(item)
 
-    def request(self, method, params, until_ts, big=False, arm_model=False):
+    def request(self, method, params, until_ts, big=False):
         self.next_id += 1
         rid = self.next_id
         frame = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
@@ -212,13 +203,6 @@ class _Session:
                     raise ProtocolFailure("write_stall")
                 if self.writer_failure is not None:
                     raise self.writer_failure
-            if arm_model:
-                # this response is the transaction fence: the peer emits it only after
-                # fully reading set_model, so only frames received after it can reflect
-                # the new model — anything earlier (stale, sink-held, or received while
-                # the write was pending) carries a smaller seq and cannot confirm, and
-                # the fence seq is this thread's cur_seq, so no sampling race either way
-                self.model_watermark = self.cur_seq
             return result
 
     def _send_quiet(self, frame):
@@ -232,11 +216,13 @@ def drive(proc, *, prompt_text, cwd, model_alias, frame_sink, deadline_s, mode_i
     """Run one full ACP prompt session against proc. Returns a dict with effective_status
     (0 only for a validated end_turn session AND child exit 0), proc_exit, stop_reason,
     failure (reason string or None), final_message (concatenated agent_message_chunk text),
-    and model_value (last config_option_update read-back)."""
+    model_value (last validated same-session config_option_update read-back — evidence,
+    not a gate), and stage (the request in flight when a failure occurred)."""
     deadline_ts = time.monotonic() + deadline_s
     s = _Session(proc, frame_sink)
     failure = detail = None
     stop_reason = None
+    stage = "initialize"
     try:
         init = s.request("initialize",
                          {"protocolVersion": PROTOCOL_VERSION,
@@ -246,22 +232,18 @@ def drive(proc, *, prompt_text, cwd, model_alias, frame_sink, deadline_s, mode_i
         pv = init.get("protocolVersion")
         if isinstance(pv, bool) or pv != PROTOCOL_VERSION:
             raise ProtocolFailure("protocol_version", repr(pv))
+        stage = "session/new"
         new = s.request("session/new", {"cwd": cwd, "mcpServers": []}, deadline_ts)
         sid = new.get("sessionId")
         if not isinstance(sid, str) or not sid:
             raise ProtocolFailure("no_session_id")
         s.sid = sid
-        # only a read-back for THIS session received after the set_model response frame
-        # confirms it (arm_model); the CLI emits its read-back before that response and
-        # again after set_mode, so the confirmation wait sits after set_mode
+        stage = "session/set_model"
         s.request("session/set_model", {"sessionId": sid, "modelId": model_alias},
-                  deadline_ts, arm_model=True)
+                  deadline_ts)
+        stage = "session/set_mode"
         s.request("session/set_mode", {"sessionId": sid, "modeId": mode_id}, deadline_ts)
-        confirm_ts = min(deadline_ts, time.monotonic() + MODEL_CONFIRM_WINDOW_S)
-        while s.model_value != model_alias:
-            msg = s._recv(confirm_ts, "model_unconfirmed")
-            if "method" not in msg:
-                raise ProtocolFailure("unexpected_response_id", repr(msg.get("id")))
+        stage = "session/prompt"
         result = s.request("session/prompt",
                            {"sessionId": sid,
                             "prompt": [{"type": "text", "text": prompt_text}]},
@@ -301,7 +283,8 @@ def drive(proc, *, prompt_text, cwd, model_alias, frame_sink, deadline_s, mode_i
         effective = 1
     return {"effective_status": effective, "proc_exit": proc_exit,
             "stop_reason": stop_reason, "failure": failure, "detail": detail,
-            "final_message": "".join(s.chunks), "model_value": s.model_value}
+            "final_message": "".join(s.chunks), "model_value": s.model_value,
+            "stage": stage}
 
 
 def _main():
@@ -378,10 +361,10 @@ def _main():
     print(f"final_message: {res['final_message'][:400]}")
 
     if args.case == "negative":
-        # model_value None proves the error predates any confirmed model: the prompt is
-        # only ever sent after confirmation, so this error cannot be a prompt error
+        # the failing stage proves this error IS the set_model rejection — not a later
+        # prompt-stage error masquerading as one
         ok = (res["effective_status"] != 0 and res["failure"] == "jsonrpc_error"
-              and res["model_value"] is None and res["stop_reason"] is None)
+              and res["stage"] == "session/set_model" and res["stop_reason"] is None)
     elif args.case == "big":
         ok = (res["effective_status"] == 0 and f"{tag} OK" in res["final_message"]
               and res["prompt_bytes"] >= args.prompt_bytes
