@@ -1,22 +1,21 @@
 # AGENTS.md — conventions and commands
 
 Referenced by [CLAUDE.md](CLAUDE.md), which holds the operating rules in terms of ROLES. Humans read
-the role table here; machines read the file in each row's "set in" column — never assume one file
-holds them all. A model swap is one edit there, never to the rulebook; a new model in
-`scripts/models.json` also adds its vendor_map line.
+the role table here; machines read the key in each row's "set in" column — `roles.*` live in
+`scripts/models.json`, and a model added there also adds its vendor_map line.
 
 ## Who plays which role
 
 | Role | Set in | Note |
 |---|---|---|
 | owner | — | approves specs, merges `main` |
-| orchestrator | `~/.claude/settings.json` → `model` | Claude Code on this box; dispatches, reviews worker diffs and Codex-authored plans, reports |
-| utility subagent | `~/.claude/settings.json` → `CLAUDE_CODE_SUBAGENT_MODEL` | in-session search and exploration; `dispatch continue` records the pin on a subagent BUILD |
-| spec author | `scripts/models.json` | writes briefs via `scripts/codex-plan`, which only implements codex and kimi invocation — any other vendor is settable but dies at launch |
-| worker | `scripts/models.json` | BUILD phase, Codex CLI detached or a Claude subagent in-session; a subagent BUILD is graded by `dispatch continue` |
-| bound reviewer | `scripts/models.json` | reviews worker diffs, never its own work; a retired model fails fail-closed and the owner flips the file by hand (2026-07-17 — no automated failover) |
-| artifact reviewer | `scripts/models.json` | reviews Claude-authored artifacts via `scripts/review` |
-| — dead keys — | `scripts/models.json` `roles.orchestrator`, `roles.utility_subagent` | validated, never routed; the live values are the `settings.json` rows above. Deleting them fails config validation |
+| orchestrator | `~/.claude/settings.json` → `model` | Claude Code on this box; dispatches, reviews worker diffs and spec-author plans, reports |
+| utility subagent | `~/.claude/settings.json` → `env.CLAUDE_CODE_SUBAGENT_MODEL` | in-session search and exploration; the BUILD receipt records the harness pin and `dispatch continue` requires it |
+| spec author | `roles.spec_author` | writes briefs via `scripts/codex-plan`, which invokes codex and kimi only — a claude spec_author passes validation, then codex-plan refuses it |
+| worker | approval pin → `roles.worker` | BUILD phase: a detached external CLI, or an in-session Claude subagent graded by `dispatch continue` |
+| bound reviewer | approval pin → `roles.bound_reviewer` | reviews worker diffs, never its own work; a retired reviewer fails closed and the owner updates the default by hand (2026-07-17 — no automated failover) |
+| artifact reviewer | `roles.orchestrator_artifact_reviewer` | cross-checks orchestrator-authored artifacts via `scripts/review` |
+| — dead keys — | `roles.orchestrator`, `roles.utility_subagent` | validated, never routed; the live values are the `settings.json` rows above. Deleting them fails config validation |
 
 ## What this repo is
 
@@ -53,8 +52,7 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
   `bwrap: loopback: Failed RTM_NEWADDR`; proof: `tests/worker_userns.sh`). Inlining context is a
   choice now, not a requirement — the bound reviewer still gets spec + diff + evidence only, never
   a live checkout. The final answer is recoverable from the `--json` stream (last `agent_message`).
-- Reviews of **Claude-authored** work go through `scripts/review` (needs `--author`, refuses
-  same-vendor artifacts, counts rounds, refuses a sixth). Codex-authored work is reviewed by Claude
-  per the role table, under the same five-round cap.
+- `scripts/review` requires recorded provenance (`--author` must agree with it), refuses same-vendor
+  review, counts rounds, and refuses a sixth. Who reviews whom follows the role table.
 - Plans go through `scripts/codex-plan --brief` (cap 400; refuses a brief missing any required
   section); the no-flag standard tier remains usable. Trigger: CLAUDE.md rule 5.
