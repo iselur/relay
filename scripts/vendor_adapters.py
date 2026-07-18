@@ -355,24 +355,44 @@ class KimiWorker:
         return resolve_runtime()
 
     def recover_last_message(self, raw_dir, isolated):
-        """The worker's final message: the last assistant line with string content in the
-        stream-json capture, skipping malformed lines — MESSAGE RECOVERY with the same
-        leniency as codex's event-stream read, not a gate (the reviewer's verdict extraction
-        is the strict one). kimi has no --output-last-message, so BOTH paths read the
-        captured stream (stdout lands in events.jsonl either way)."""
-        msg = ""
+        """The worker's final message from events.jsonl — MESSAGE RECOVERY, not a gate.
+        Primary: concatenate ACP session/update agent_message_chunk text frames (isolated
+        worker path via kimi_acp.drive; authoritative value is drive()'s final_message,
+        so this is a fallback kept for slice-3 cleanup).
+        Fallback: last line with role=="assistant" and string content (stream-json from
+        'kimi -p', used by scripts/codex-plan; dies with slice 3 once -p is removed)."""
+        chunks = []
+        last_assistant = None
         try:
             for line in (raw_dir / "events.jsonl").read_text().splitlines():
                 try:
                     e = json.loads(line)
                 except Exception:
                     continue
-                if (isinstance(e, dict) and e.get("role") == "assistant"
-                        and isinstance(e.get("content"), str)):
-                    msg = e["content"]
+                if not isinstance(e, dict):
+                    continue
+                # ACP path: session/update agent_message_chunk
+                if e.get("method") == "session/update":
+                    params = e.get("params")
+                    if not isinstance(params, dict):
+                        continue
+                    update = params.get("update")
+                    if not isinstance(update, dict):
+                        continue
+                    if update.get("sessionUpdate") != "agent_message_chunk":
+                        continue
+                    content = update.get("content")
+                    if not isinstance(content, dict) or content.get("type") != "text":
+                        continue
+                    text = content.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+                # Legacy stream-json path (codex-plan -p transport; dies with slice 3)
+                elif e.get("role") == "assistant" and isinstance(e.get("content"), str):
+                    last_assistant = e["content"]
         except Exception:
             pass
-        return msg
+        return "".join(chunks) if chunks else (last_assistant or "")
 
     def classify_error(self, exit_code, stderr, raw_dir):
         """A structured error class, or None when the worker ran to completion — the

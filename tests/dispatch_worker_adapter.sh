@@ -232,16 +232,27 @@ check("kimi runtime() delegates to the injected module-level resolver",
       kw.runtime(lambda: sentinel) is sentinel)
 kraw = pathlib.Path(tempfile.mkdtemp())
 (kraw / "events.jsonl").write_text(
-    json.dumps({"role": "user", "content": "prompt echo"}) + "\n"
+    json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}}) + "\n"
     + "garbage line\n"
-    + json.dumps({"role": "assistant", "content": "first"}) + "\n"
-    + json.dumps({"role": "assistant", "content": "KIMI-LAST"}) + "\n")
-check("kimi recovery takes the LAST assistant line, isolated and unisolated alike "
-      "(no --output-last-message exists; both paths read the captured stream)",
-      kw.recover_last_message(kraw, True) == "KIMI-LAST"
-      and kw.recover_last_message(kraw, False) == "KIMI-LAST")
+    + json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                  "params": {"sessionId": "s1", "update": {
+                      "sessionUpdate": "agent_message_chunk",
+                      "content": {"type": "text", "text": "first "}}}}) + "\n"
+    + json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                  "params": {"sessionId": "s1", "update": {
+                      "sessionUpdate": "agent_message_chunk",
+                      "content": {"type": "text", "text": "KIMI-LAST"}}}}) + "\n")
+check("kimi recovery concatenates ACP agent_message_chunk text frames, skipping non-chunk lines",
+      kw.recover_last_message(kraw, True) == "first KIMI-LAST"
+      and kw.recover_last_message(kraw, False) == "first KIMI-LAST")
 check("kimi recovery with no capture is empty, not an error",
       kw.recover_last_message(pathlib.Path(tempfile.mkdtemp()), True) == "")
+slraw = pathlib.Path(tempfile.mkdtemp())
+(slraw / "events.jsonl").write_text(
+    json.dumps({"role": "system", "content": "sys"}) + "\n"
+    + json.dumps({"role": "assistant", "content": "legacy-plan"}) + "\n")
+check("kimi recovery falls back to last stream-json assistant line when no ACP chunks (codex-plan -p path)",
+      kw.recover_last_message(slraw, True) == "legacy-plan")
 check("kimi zero exit classifies as completion (None)",
       kw.classify_error(0, "", kraw) is None)
 check("kimi 429/rate-limit classifies as quota (best-effort, probe E unobserved)",

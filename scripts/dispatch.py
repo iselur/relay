@@ -94,6 +94,23 @@ def _load_vendor_adapters():
 VENDOR_ADAPTERS, VENDOR_ADAPTERS_ERR = _load_vendor_adapters()
 
 
+def _load_kimi_acp():
+    """Load scripts/kimi_acp.py ONCE, at dispatcher import — pinned alongside the dispatcher
+    so a mid-attempt file change cannot swap the ACP driver between launch and run (mirrors
+    _load_vendor_adapters). A load failure is recorded; the kimi ACP path fails closed."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "kimi_acp", ROOT / "scripts" / "kimi_acp.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod, None
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+kimi_acp, _KIMI_ACP_ERR = _load_kimi_acp()
+
+
 def lc_frozen_vendor_fields(lc: dict) -> "dict | None":
     """Both frozen vendor fields from a launch record, the pre-freezing defaults when NEITHER
     is present, and None — refuse, fail closed — when exactly one is (corrupt record) or when
@@ -2848,29 +2865,68 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                                   f"no worker-launchable {vendors['worker_vendor']} runtime "
                                   f"(native ELF binary)")
                 argv_prefix, binds, _entry = runtime
-            # Kimi slice 3: the frozen alias map rides to the worker adapter — kimi's CLI takes
-            # the provider alias, not the relay model id; codex ignores the keyword (verbatim
-            # contract, tests/dispatch_worker_adapter.sh). A kimi record whose frozen aliases
-            # lack the required entry is refused by the adapter (ValueError) and recorded
-            # TERMINALLY here — never invoked with a raw relay id (round-1 review, medium 4).
-            try:
-                argv = worker_adapter.build_argv(lc["worker_model"], lc["worker_effort"], wt,
-                                                 prompt, isolated=True, argv_prefix=argv_prefix,
-                                                 cli_aliases=lc.get("cli_aliases") or {})
-            except ValueError as exc:
-                finish("error_launch", ERR_LAUNCH,
-                       detail=f"worker argv refused: {exc}")
-            worker_ceiling_s = remaining_ceiling_s(deadline_ts)
-            if worker_ceiling_s <= 0:
-                finish("error_launch", ERR_TIMEOUT,
-                       detail="attempt deadline already exhausted before the worker phase could "
-                              "start (single absolute ceiling, B6); refusing")
-            wc = isolated_run(
-                lc["worker_unit"], argv, cwd=str(wt),
-                rw_paths=[str(wt), *worker_adapter.iso_rw_paths(WORKER_HOME)],
-                private_network=False, ceiling_s=worker_ceiling_s, stdout=ev, stderr=er,
-                binds=binds, slice_name=attempt_slice(attempt_id),
-                env_extra=worker_adapter.iso_env_extra(WORKER_HOME))
+            # Kimi slice 2: isolated kimi invocations route through the ACP client (PLAN-009):
+            # prompt travels in-band via drive(), never in argv, so it has no MAX_ARG_STRLEN
+            # ceiling. The alias is validated here with the same distinct-alias contract as
+            # build_argv (slice 3 removes the old -p path; build_argv stays until then).
+            # Codex and all other external-CLI vendors keep the existing build_argv path.
+            if vendors["worker_vendor"] == "kimi":
+                if kimi_acp is None:
+                    finish("failed_worker_error", ERR_WORKER,
+                           detail=f"kimi ACP driver failed to load: {_KIMI_ACP_ERR}")
+                cli_aliases = lc.get("cli_aliases") or {}
+                alias = (cli_aliases.get(lc["worker_model"])
+                         if isinstance(cli_aliases, dict) else None)
+                if not isinstance(alias, str) or not alias.strip() or alias == lc["worker_model"]:
+                    finish("error_launch", ERR_LAUNCH,
+                           detail=f"worker argv refused: kimi worker requires a distinct CLI "
+                                  f"provider alias for {lc['worker_model']!r}; the frozen "
+                                  f"cli_aliases carries {alias!r}; fail closed")
+                worker_ceiling_s = remaining_ceiling_s(deadline_ts)
+                if worker_ceiling_s <= 0:
+                    finish("error_launch", ERR_TIMEOUT,
+                           detail="attempt deadline already exhausted before the worker phase "
+                                  "could start (single absolute ceiling, B6); refusing")
+                cmd = isolated_cmd(
+                    lc["worker_unit"], [*argv_prefix, "acp"], cwd=str(wt),
+                    rw_paths=[str(wt), *worker_adapter.iso_rw_paths(WORKER_HOME)],
+                    private_network=False, ceiling_s=worker_ceiling_s,
+                    binds=binds, slice_name=attempt_slice(attempt_id),
+                    env_extra=worker_adapter.iso_env_extra(WORKER_HOME))
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=er)
+                res = kimi_acp.drive(proc, prompt_text=prompt, cwd=str(wt),
+                                     model_alias=alias, frame_sink=ev,
+                                     deadline_s=worker_ceiling_s)
+                worker_exit = res["effective_status"]
+                acp_message = res["final_message"]
+            else:
+                # Kimi slice 3: the frozen alias map rides to the worker adapter — kimi's CLI
+                # takes the provider alias, not the relay model id; codex ignores the keyword
+                # (verbatim contract, tests/dispatch_worker_adapter.sh). A kimi record whose
+                # frozen aliases lack the required entry is refused by the adapter (ValueError)
+                # and recorded TERMINALLY here — never invoked with a raw relay id
+                # (round-1 review, medium 4).
+                try:
+                    argv = worker_adapter.build_argv(lc["worker_model"], lc["worker_effort"], wt,
+                                                     prompt, isolated=True, argv_prefix=argv_prefix,
+                                                     cli_aliases=lc.get("cli_aliases") or {})
+                except ValueError as exc:
+                    finish("error_launch", ERR_LAUNCH,
+                           detail=f"worker argv refused: {exc}")
+                worker_ceiling_s = remaining_ceiling_s(deadline_ts)
+                if worker_ceiling_s <= 0:
+                    finish("error_launch", ERR_TIMEOUT,
+                           detail="attempt deadline already exhausted before the worker phase "
+                                  "could start (single absolute ceiling, B6); refusing")
+                wc = isolated_run(
+                    lc["worker_unit"], argv, cwd=str(wt),
+                    rw_paths=[str(wt), *worker_adapter.iso_rw_paths(WORKER_HOME)],
+                    private_network=False, ceiling_s=worker_ceiling_s, stdout=ev, stderr=er,
+                    binds=binds, slice_name=attempt_slice(attempt_id),
+                    env_extra=worker_adapter.iso_env_extra(WORKER_HOME))
+                worker_exit = wc.returncode
+                acp_message = None
         else:
             # Fallback (fresh box / CI): same-user launch with Codex's bwrap sandbox. No systemd
             # RuntimeMaxSec here, so cap the run itself at the time remaining to the absolute deadline
@@ -2897,12 +2953,15 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             worker_cmd = [*prefix, *built]
             with open(os.devnull) as devnull:
                 wc = subprocess.run(worker_cmd, env=scrubbed, stdin=devnull, stdout=ev, stderr=er)
+            worker_exit = wc.returncode
+            acp_message = None
 
     stderr_txt = (raw / "worker-stderr.txt").read_text()
-    last_message = worker_adapter.recover_last_message(raw, iso)
+    last_message = (acp_message if acp_message is not None
+                    else worker_adapter.recover_last_message(raw, iso))
 
     _grade_phase(attempt_id, spec_id, n, att, lc, wt, raw, finish,
-                 worker_adapter, wc.returncode, stderr_txt, last_message)
+                 worker_adapter, worker_exit, stderr_txt, last_message)
 
 
 def _grade_phase(attempt_id, spec_id, n, att, lc, wt, raw, finish,
