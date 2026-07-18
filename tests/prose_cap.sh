@@ -112,51 +112,9 @@ else
   ok "no tracked files under .orchestrator/{decisions,plans,reviews}"
 fi
 
-# 4. The backlog must ALWAYS carry at least one real product outside this repo. The owner relaxed
-#    the old "item #1 must be the product" rule on 2026-07-14 (self-work may be scheduled first),
-#    but not the guard behind it: the one measured failure of this setup was pointing itself at
-#    itself with no outside finish line. The field must sit INSIDE a numbered backlog item (a
-#    stray line anywhere in the file is not a queued item), and it must name something — a
-#    placeholder or a reference to this repo is not a product. This function is the whole check,
-#    so the negative fixtures below can exercise it directly.
-backlog_product() { # $1 = backlog file; echoes the product name, or nothing if there is none
-  awk '
-    /^[0-9]+\./           { in_item = 1 }                    # a numbered item opens the block
-    /^[^ \t0-9]/          { if (!/^[0-9]+\./) in_item = 0 }  # any other left-margin line closes it
-    in_item && /^[ \t]*product:[ \t]*/ {
-      sub(/^[ \t]*product:[ \t]*/, ""); sub(/[ \t]+$/, "")
-      if ($0 == "") next
-      lower = tolower($0)
-      if (lower ~ /^(this repo|this repository|orchestrator|the orchestrator|tbd|todo|tba|none|n\/a|-+)$/) next
-      print; exit
-    }
-  ' "$1"
-}
-backlog=.orchestrator/BACKLOG.md; [ -z "$SNAP" ] || backlog="$SNAP/.orchestrator/BACKLOG.md"
-product=$(backlog_product "$backlog" 2>/dev/null)
-if [ -z "$product" ]; then
-  bad "no numbered backlog item carries a 'product:' line naming a real product outside this repo — the backlog may never be without one (CLAUDE.md rule 2)"
-else
-  ok "backlog carries a real product: $product"
-fi
-
-# 4b. The guard above must actually discriminate — this repo once shipped a cap test that passed
-#     vacuously. Each fixture is a way the check was evaded before it was tightened.
-fixture="$tmp/fixture"
-for bad_case in "product: TBD" "product: this repository" "product: orchestrator" "product: -"; do
-  printf '1. **Item**\n   %s\n' "$bad_case" > "$fixture"
-  [ -z "$(backlog_product "$fixture")" ] \
-    && ok "rejected placeholder/self-reference: $bad_case" \
-    || bad "accepted a non-product: $bad_case"
-done
-printf 'product: stray line outside every item\n\n1. **Item**\n   no product field\n' > "$fixture"
-[ -z "$(backlog_product "$fixture")" ] \
-  && ok "rejected a 'product:' line outside every numbered item" \
-  || bad "accepted a 'product:' line that is not inside a backlog item"
-printf '1. **Self-work first**\n   product: orchestrator\n2. **Real thing**\n   product: reading-coach app\n' > "$fixture"
-[ "$(backlog_product "$fixture")" = "reading-coach app" ] \
-  && ok "skips a self-reference and finds the real product further down the list" \
-  || bad "a self-referencing item hid the real product below it"
+# 4. (retired 2026-07-17, owner instruction) The public backlog no longer carries the product
+#    item — product work is tracked privately, so the "always a real product on this list" guard
+#    and its fixtures were removed with it.
 
 [ "$fails" -eq 0 ] && echo "PASS prose_cap.sh" || echo "FAIL prose_cap.sh"
 exit "$fails"
