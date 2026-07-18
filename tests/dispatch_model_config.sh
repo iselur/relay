@@ -197,7 +197,7 @@ check("kimi worker pin resolves and freezes worker_vendor=kimi, worker_mode=exte
 # "Nothing reviews its own work" — the one hard limit (CLAUDE.md rule 7): the resolved
 # reviewer equal to the worker model refuses unconditionally.
 check("same-model reviewer==worker refuses launch (exit 2)",
-      resolve_result({"worker_model": "claude-fable-5"}) == "exit2")
+      resolve_result({"worker_model": cfg["roles"]["bound_reviewer"]["model"]}) == "exit2")
 check("same-model pinned both ways refuses launch (exit 2)",
       resolve_result({"worker_model": "gpt-5.6-sol",
                       "reviewer_model": "gpt-5.6-sol"}) == "exit2")
