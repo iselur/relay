@@ -82,6 +82,17 @@ MODELS_CHECK="$ROOT/scripts/models_check.py"
 [ -f "$MODELS_CFG" ] || die "models config missing: $MODELS_CFG (fail closed)"
 MODEL=$("$PY" "$MODELS_CHECK" "$MODELS_CFG" get roles.orchestrator_artifact_reviewer.model) \
   || die "models config invalid, or roles.orchestrator_artifact_reviewer.model unusable: $MODELS_CFG"
+# Slice 5: derive the reviewer vendor and (for kimi) its CLI alias so the invocation and the
+# self-review guard are vendor-neutral rather than hardcoded to codex.
+REVIEWER_VENDOR=$("$PY" "$MODELS_CHECK" "$MODELS_CFG" vendor "$MODEL") \
+  || die "models config invalid when classifying reviewer model $MODEL: $MODELS_CFG"
+[[ "$REVIEWER_VENDOR" != "unknown" ]] \
+  || die "reviewer model $MODEL is not in vendor_map: $MODELS_CFG (fail closed)"
+CLI_ALIAS=""
+if [[ "$REVIEWER_VENDOR" == "kimi" ]]; then
+  CLI_ALIAS=$("$PY" "$MODELS_CHECK" "$MODELS_CFG" get "cli_aliases.$MODEL") \
+    || die "kimi reviewer model $MODEL requires a CLI alias but none found in $MODELS_CFG"
+fi
 
 while (($#)); do
   case "$1" in
@@ -97,8 +108,8 @@ done
 
 [[ "$topic" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "--topic must be a lowercase slug (a-z, 0-9, -)"
 case "$author" in
-  claude|codex) ;;
-  *) die "--author is required and must be 'claude' or 'codex' (checked below against recorded provenance)" ;;
+  claude|codex|kimi) ;;
+  *) die "--author is required and must be 'claude', 'codex', or 'kimi' (checked below against recorded provenance)" ;;
 esac
 
 # ---------------------------------------------------------------- B18: derive authorship --------
@@ -272,7 +283,7 @@ PYEOF
           return 0
         fi
         vendor=$(classify_model "$pmodel")
-        if [[ "$vendor" != "claude" && "$vendor" != "codex" ]]; then
+        if [[ "$vendor" != "claude" && "$vendor" != "codex" && "$vendor" != "kimi" ]]; then
           printf 'error\t-\t%s frontmatter author_model %s does not match a known vendor; refuse rather than guess\n' "$md_file" "$pmodel"
           return 0
         fi
@@ -321,7 +332,7 @@ print(d.get('worker_model') or '')
       return 0
     fi
     vendor=$(classify_model "$wm")
-    if [[ "$vendor" != "claude" && "$vendor" != "codex" ]]; then
+    if [[ "$vendor" != "claude" && "$vendor" != "codex" && "$vendor" != "kimi" ]]; then
       printf 'error\t-\t%s worker_model %s does not match a known vendor; refuse rather than guess\n' "$lc" "$wm"
       return 0
     fi
@@ -429,10 +440,12 @@ if (( ${#plan_ids[@]} == 1 )); then
 fi
 # --------------------------------------------------------------------------------------------------
 
-if [[ "$derived" == "codex" ]]; then
-  echo "review: REFUSED — this script's reviewer is Codex, and recorded provenance shows the artifact is Codex-authored." >&2
+# B18 self-review guard: the reviewer vendor must not match the artifact's vendor. The vendor is
+# now dynamic (REVIEWER_VENDOR, derived from the configured model), not hardcoded to "codex".
+if [[ "$derived" == "$REVIEWER_VENDOR" ]]; then
+  echo "review: REFUSED — recorded provenance shows this is a $REVIEWER_VENDOR-authored artifact, and this review uses the same $REVIEWER_VENDOR vendor." >&2
   for line in "${evidence_lines[@]}"; do echo "        evidence: $line" >&2; done
-  echo "        Never Codex-grades-Codex (CLAUDE.md). Have Claude review this artifact instead." >&2
+  echo "        Same-vendor review is not allowed (CLAUDE.md). Use a reviewer from a different vendor." >&2
   exit 4
 fi
 
@@ -483,16 +496,69 @@ fi
 
 out="$dir/round-$round.md"
 errf="$dir/round-$round.stderr"
-if ! codex exec \
-    -m "$MODEL" \
-    -c model_reasoning_effort=high \
-    --sandbox read-only \
-    --skip-git-repo-check \
-    - <<<"$prompt" >"$out.partial" 2>"$errf"; then
-  printf 'review: Codex failed; stderr at %s\n' "$errf" >&2
-  rm -f "$out.partial"
-  exit 1
-fi
+case "$REVIEWER_VENDOR" in
+  kimi)
+    # Byte-limit refusal: refuse before invocation, never truncate (owner decision 2026-07-16;
+    # the kimi CLI has no stdin transport — the prompt rides in argv, so size is a hard wall).
+    prompt_bytes=$(printf '%s' "$prompt" | wc -c)
+    if (( prompt_bytes > 120000 )); then
+      printf 'review: REFUSED — kimi reviewer prompt is %d UTF-8 bytes, exceeds the 120000-byte argv wall (probe D): refused before invocation, never truncated\n' "$prompt_bytes" >&2
+      exit 1
+    fi
+    if ! kimi -p "$prompt" -m "$CLI_ALIAS" --output-format stream-json >"$out.raw" 2>"$errf"; then
+      printf 'review: kimi failed; stderr at %s\n' "$errf" >&2
+      rm -f "$out.raw" "$out.partial"
+      exit 1
+    fi
+    # Stream recovery: extract the last assistant content from the stream-json output, mirroring
+    # KimiReviewer.extract_verdict in scripts/vendor_adapters.py. Any malformed line or
+    # non-string content invalidates what came before; only a subsequent valid event supersedes.
+    if ! "$PY" - "$out.raw" >"$out.partial" 2>>"$errf" <<'PYEOF'
+import json, sys
+content = None
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        content = None
+        continue
+    if not isinstance(e, dict):
+        content = None
+        continue
+    if e.get("role") == "assistant":
+        c = e.get("content")
+        content = c if isinstance(c, str) else None
+if content is None:
+    sys.exit(1)
+sys.stdout.write(content)
+PYEOF
+    then
+      printf 'review: kimi stream recovery failed; raw output at %s\n' "$out.raw" >&2
+      rm -f "$out.partial"
+      exit 1
+    fi
+    rm -f "$out.raw"
+    ;;
+  codex)
+    if ! codex exec \
+        -m "$MODEL" \
+        -c model_reasoning_effort=high \
+        --sandbox read-only \
+        --skip-git-repo-check \
+        - <<<"$prompt" >"$out.partial" 2>"$errf"; then
+      printf 'review: Codex failed; stderr at %s\n' "$errf" >&2
+      rm -f "$out.partial"
+      exit 1
+    fi
+    ;;
+  *)
+    printf 'review: unsupported reviewer vendor %s (model %s): no dispatch path\n' "$REVIEWER_VENDOR" "$MODEL" >&2
+    exit 1
+    ;;
+esac
 grep -q '[^[:space:]]' "$out.partial" || { printf 'review: empty review output\n' >&2; rm -f "$out.partial"; exit 1; }
 mv "$out.partial" "$out"
 printf 'Review round %d of 5: %s\n' "$round" "$out"
