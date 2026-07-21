@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "roles": {
-    "orchestrator": { "model": "claude-opus-4-8", "effort": "high" },
+    "orchestrator": { "model": "claude-fable-5", "effort": "default" },
     "spec_author": { "model": "gpt-5.6-sol", "effort": "high" },
     "utility_subagent": { "model": "claude-sonnet-4-6", "effort": "default" },
     "worker": { "model": "gpt-5.6-luna", "effort": "high" },
