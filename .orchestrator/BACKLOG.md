@@ -38,7 +38,8 @@ tracked in the private ledger. In-flight work lives in the ledger, not here.)
   state-machine mediums confirmed but low risk. Report: claude-out/audit-reverify-2026-07-16.md.
 - Self-review granularity is inconsistent: `scripts/review` refuses at VENDOR level, the dispatcher
   refuses at MODEL level, and `models_check.py` leaves pairing entirely to the owner. Pick one rule.
-- `scripts/review` classifies every file under a worker worktree as `codex` by path alone, so a Claude
-  or Kimi worker's output derives the wrong vendor. Fails closed (wrong refusal), but read the
-  worktree's own `launch.json` `worker_model` instead, and refuse when no launch record matches.
+- `scripts/review` provenance, two holes: it classifies every file under a worker worktree as `codex` by
+  path alone (with a Claude or Kimi reviewer that fails OPEN — read `launch.json` `worker_model` instead),
+  and an `author_model:` stamp is the author's own word, so an author can understate itself. Closing the
+  second needs a digest-bound receipt written at dispatch time by something other than the author.
 - External benchmark score and cost reporting — after a real product exists.

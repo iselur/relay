@@ -194,6 +194,27 @@ rc=$?
   || bad "unstamped artifact was accepted — provenance is being guessed again"
 [ -e .orchestrator/reviews/unstamped ] && bad "unstamped refusal still created review state" \
   || ok "unstamped refusal writes nothing"
+printf 'still nothing to go on\n' > unstamped-two.md
+scripts/review --topic unstamped-many --author claude --context unstamped-note.md \
+  --context unstamped-two.md "please review" >/dev/null 2>&1
+[ $? != 0 ] && ok "several unstamped files still refuse — payload does not add up to provenance" \
+  || bad "a pile of unstamped payload was accepted as provenance"
+
+# 6b. UNSTAMPED FILES ARE PAYLOAD, NOT A CLAIM (2026-08-02, round-1 finding). A real review carries
+#     the artifact AND its evidence — a diff, a log, a test dump — and those never carry frontmatter.
+#     Refusing per-file broke every diff review, including the one that reviewed this very change.
+#     One stamped context is enough; the unstamped ones ride along without asserting anything.
+printf 'diff --git a/x b/x\n+not a markdown file, no frontmatter possible\n' > payload.diff
+scripts/review --topic mixed-payload --author claude --context claude-note.md --context payload.diff \
+  "please review" >/dev/null 2>&1 \
+  && ok "a stamped artifact reviews fine alongside unstamped payload" \
+  || bad "unstamped payload blocked a properly stamped artifact — diff reviews are broken"
+# and payload can never launder the reviewer's own vendor past the guard
+printf -- '---\nauthor_model: gpt-5.6-sol\n---\ncodex wrote this\n' > codex-note.md
+scripts/review --topic payload-launder --author codex --context codex-note.md --context payload.diff \
+  "please review" >/dev/null 2>&1
+[ $? = 4 ] && ok "payload cannot dilute a same-vendor refusal (exit 4)" \
+  || bad "adding unstamped payload weakened the self-review refusal"
 
 # 7. THE STAMP OUTRANKS THE CONFIG. Flipping roles.orchestrator to Codex must change NOTHING here:
 #    that is what lets the owner switch orchestrator by editing models.json alone (rule: a model swap

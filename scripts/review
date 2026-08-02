@@ -23,14 +23,17 @@
 #   - a --context file inside a recorded worker worktree (launch.json "worktree", or either root
 #     dispatch.py ever hands to a worker) is likewise codex;
 #   - anything else must carry its own top-level `author_model:` frontmatter stamp, the same durable
-#     record codex-plan writes; an artifact with no stamp and no marked path is REFUSED, not guessed.
+#     record codex-plan writes. A file with no stamp and no marked path is PAYLOAD — a diff, a log,
+#     an evidence dump — and asserts nothing either way; it is neither classified nor refused.
 # --author is kept only as a CROSS-CHECK: it must agree with the derived value or the call is
-# refused (exit 6). At least one --context file is REQUIRED so there is always something to derive
-# from; a call with no evidence at all is refused (fail closed) rather than trusted.
+# refused (exit 6). At least ONE --context file must carry provenance, or the call is refused: a
+# review made entirely of unstamped payload has nothing to check the reviewer against.
 # LIMITATION (documented, not solved here): a stamp is a self-declaration, not a signature — this
 # repo has no signing or content-provenance system, so an artifact can understate its own author.
-# That is a strictly smaller hole than the guess it replaced, because it fails CLOSED: the way to
-# get reviewed is to write a stamp, and a missing or unmapped one refuses. Residual (same class): a
+# That is a strictly smaller hole than the guess it replaced (absence used to BE a claim of Claude
+# authorship; now it is silence, and silence alone cannot get anything reviewed), but a determined
+# author can still mislabel its own file. Closing it needs a receipt written by something other than
+# the author — backlogged, not solved here. Residual (same class): a
 # .stdout/.stderr carries no frontmatter of its own, so a raw stream RENAMED off its reserved
 # PLAN-NNN.* name loses the only handle on its sibling and is refused for want of provenance — the
 # plan .md it came from is not.
@@ -404,16 +407,19 @@ print(d.get('worktree') or '')
 
   # 5. Nothing ties this file to a worker- or plan-marked path, so its only possible provenance is
   #    the `author_model:` stamp read in STEP 1 — a durable record written beside the artifact by
-  #    whoever wrote it. Absent that, there is nothing to derive from and the call REFUSES. Guessing
-  #    here is what the earlier versions got wrong in both directions: a fixed 'claude' handed a
-  #    Codex orchestrator's own files to a Codex reviewer with no refusal, and reading the CURRENT
-  #    roles.orchestrator instead just moved the same hole in time — a file Codex wrote is re-derived
-  #    as Claude the moment the owner switches the role back, and then sails past the guard.
+  #    whoever wrote it. Guessing here is what the earlier versions got wrong in both directions: a
+  #    fixed 'claude' handed a Codex orchestrator's own files to a Codex reviewer with no refusal,
+  #    and reading the CURRENT roles.orchestrator instead just moved the same hole in time — a file
+  #    Codex wrote is re-derived as Claude the moment the owner switches the role back.
+  #    With no stamp the answer is 'unknown', NOT an error: a review call carries the artifact AND
+  #    its payload (a diff, a log, an evidence dump), and payload asserts nothing about authorship.
+  #    Refusing per-file would break every real diff review. The caller-level rule below is what
+  #    fails closed: at least one context must carry provenance, and none may be the reviewer's own.
   if [[ -n "$stamp_vendor" ]]; then
     printf '%s\t%s\tfrontmatter author_model=%s\n' "$stamp_vendor" "$plan_id" "$stamp_model"
     return 0
   fi
-  printf 'error\t-\t%s carries no recorded provenance: it is not under a dispatch attempt or worker worktree, and its frontmatter has no top-level `author_model:`. Stamp it with the model that wrote it; refuse rather than guess\n' "$real"
+  printf 'unknown\t-\tno recorded provenance (unstamped payload — asserts no authorship)\n'
 }
 
 ((${#contexts[@]})) || die "REFUSED — no --context evidence supplied; authorship cannot be derived without it (fail closed, B18). Pass --context FILE pointing at the artifact under review."
@@ -427,12 +433,20 @@ for context in "${contexts[@]}"; do
   [[ "$vendor" == "error" ]] && die "REFUSED — $note (fail closed, B18)"
   [[ "$plan_id" != "-" ]] && plan_ids["$plan_id"]=1
   evidence_lines+=("$context: $vendor — $note")
+  # An unstamped file off every marked path is PAYLOAD, not a claim: it neither supplies nor
+  # contradicts authorship. It cannot make a call safe on its own — the check after this loop
+  # requires that something here did carry provenance.
+  [[ "$vendor" == "unknown" ]] && continue
   if [[ -z "$derived" ]]; then
     derived="$vendor"
   elif [[ "$vendor" != "$derived" ]]; then
     die "REFUSED — context files disagree on recorded authorship (mixed provenance): $(printf '%s | ' "${evidence_lines[@]}")"
   fi
 done
+
+# Nothing in this call carried provenance, so there is nothing to check the reviewer against. Refuse
+# rather than guess — this is the fail-closed half of treating unstamped files as payload.
+[[ -n "$derived" ]] || die "REFUSED — no --context file carries recorded provenance: none is under a dispatch attempt or worker worktree, and none has a top-level \`author_model:\` in its frontmatter. Stamp the artifact under review with the model that wrote it (unstamped payload alone is not enough)."
 
 # ------------------------------------------ bind round dirs to artifact identity (PLAN reviews) --
 # The 5-round cap counts round-N.md files under $out_root/<topic>, so a caller who renamed the topic
