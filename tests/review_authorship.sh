@@ -203,6 +203,18 @@ scripts/review --topic plan-905 --author codex --context .orchestrator/attempts/
 rc=$?
 [ "$rc" = 2 ] && ok "plan author_model conflicting with its attempt's worker_model is refused (exit 2)" \
   || bad "same-vendor model conflict gave exit $rc, expected 2 — provenance was laundered"
+
+# 3f. A RECORDED MODEL ID IS ONE BARE TOKEN. launch.json is written by the dispatcher, not by the
+#     config validator, so a worker_model carrying a tab would split the tab-delimited derivation
+#     record and land a bogus value in the model field — past the comparison that refuses.
+mkdir -p .orchestrator/attempts/SPEC-906/1
+printf '{"worker_model": "gpt-5.6-luna\\tgpt-5.6-sol", "spec_id": "SPEC-906", "attempt": 1}\n' \
+  > .orchestrator/attempts/SPEC-906/1/launch.json
+printf 'diff --git a/z b/z\n+split record\n' > .orchestrator/attempts/SPEC-906/1/diff.patch
+scripts/review --topic split-record --author codex --context .orchestrator/attempts/SPEC-906/1/diff.patch "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 2 ] && ok "a worker_model that is not one bare token is refused (exit 2)" \
+  || bad "tab-carrying worker_model gave exit $rc, expected 2 — the record split"
 pin_reviewer gpt-5.6-sol
 
 # 4. UNKNOWN MODEL (R71): an attempt whose recorded worker_model is absent from vendor_map must be

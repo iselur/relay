@@ -28,6 +28,14 @@ def _nonempty_str(v) -> bool:
     return isinstance(v, str) and bool(v.strip())
 
 
+def _is_model_id(v) -> bool:
+    """A model id is one bare token. R102 round-2 review (blocking): the shell consumers pass
+    model ids through tab-delimited records, so an id carrying a tab or newline would split one
+    record into two and slip past the self-review comparison. Refuse them at the source."""
+    return _nonempty_str(v) and v == v.strip() and not any(c.isspace() for c in v) \
+        and not any(ord(c) < 32 or ord(c) == 127 for c in v)
+
+
 def validate(cfg) -> list:
     """Every problem in the config, as a list of messages; [] means valid."""
     if not isinstance(cfg, dict):
@@ -61,6 +69,9 @@ def validate(cfg) -> list:
             if not _nonempty_str(entry.get(k)):
                 errs.append(f"roles.{r}.{k} must be a non-empty string")
         if _nonempty_str(entry.get("model")):
+            if not _is_model_id(entry["model"]):
+                errs.append(f"roles.{r}.model must be a single bare token (no whitespace or "
+                            f"control characters): {entry['model']!r}")
             named_models.add(entry["model"])
     for r in sorted(set(roles) - set(ROLES)):
         errs.append(f"unknown role: {r}")
@@ -80,6 +91,9 @@ def validate(cfg) -> list:
         vm = {}
     vm = vm if isinstance(vm, dict) else {}
     for m, v in sorted(vm.items()):
+        if not _is_model_id(m):
+            errs.append(f"vendor_map key must be a single bare token (no whitespace or control "
+                        f"characters): {m!r}")
         if v not in VENDORS:
             errs.append(f"vendor_map.{m} must be one of {'/'.join(VENDORS)}, not {v!r}")
             continue
@@ -100,6 +114,17 @@ def validate(cfg) -> list:
             if _nonempty_str(v) and v != k and (v in vm or v in named_models):
                 errs.append(f"cli_aliases.{k} targets another declared model ({v}): an alias "
                             f"maps a model id to its CLI name, never to a different model")
+        # R102 round-2 review (blocking): the self-review gates compare CONFIG model ids, so two
+        # distinct ids that resolve to the SAME CLI name are one real model wearing two names —
+        # enough to let a model review its own work. Alias targets must be unique.
+        shared = {}
+        for k, v in sorted(aliases.items()):
+            if _nonempty_str(v):
+                shared.setdefault(v, []).append(k)
+        for v, ks in sorted(shared.items()):
+            if len(ks) > 1:
+                errs.append(f"cli_aliases {', '.join(ks)} all resolve to {v}: distinct model ids "
+                            f"must invoke distinct models, or a model can review itself")
         # Kimi slice 3 (rounds 1-2 review): the kimi CLI accepts only its provider aliases,
         # never relay model ids — a kimi-vendor model without a cli_aliases entry would freeze
         # an alias map its adapter must refuse at every invocation, and an IDENTITY alias

@@ -4,7 +4,8 @@
 # script refuses it. The cap lives in code because a prose cap already lost once to a ten-round
 # loop. Only round-N.md files are rounds: sibling artifacts (dispositions, notes) never count.
 #
-# The reviewer this script invokes is Codex, so it may only review Claude-authored artifacts.
+# The reviewer this script invokes is the orchestrator_artifact_reviewer model in models.json; it
+# may review anything its own model did not author (see the model-level rule below).
 # B18: --author is NOT trusted as an assertion — a caller could mislabel a Codex-authored artifact
 # as --author claude and get it routed to a Codex reviewer, which is exactly self-review. So
 # authorship is DERIVED from provenance this repo's dispatcher (scripts/dispatch.py) and
@@ -125,6 +126,13 @@ local_worktrees="$ROOT/.worktrees"
 # model must be declared in the map before anything it authored can be vendor-classified.
 classify_model() {
   "$PY" "$MODELS_CHECK" "$MODELS_CFG" vendor "$1" 2>/dev/null || echo unknown
+}
+
+# A model id recorded on disk (launch.json worker_model, plan frontmatter author_model) must be one
+# bare token. models_check.py enforces this for the config; these two records are written by the
+# dispatcher and by codex-plan, not by it, so they are checked where they are read.
+is_model_token() {
+  [[ -n "$1" && "$1" != *[[:space:][:cntrl:]]* ]]
 }
 
 # Prints 'VENDOR<TAB>evidence note' on stdout. Never calls die()/exit — it runs inside a command
@@ -283,6 +291,10 @@ PYEOF
           printf 'error\t-\t-\t%s uses codex-plan reserved name PLAN-%s but its frontmatter id is PLAN-%s; provenance mismatch, refuse rather than bind the wrong artifact\n' "$f" "$expect_pid" "$pid"
           return 0
         fi
+        if ! is_model_token "$pmodel"; then
+          printf 'error\t-\t-\t%s frontmatter author_model is not a single bare model token; refuse rather than parse it\n' "$md_file"
+          return 0
+        fi
         vendor=$(classify_model "$pmodel")
         if [[ "$vendor" != "claude" && "$vendor" != "codex" && "$vendor" != "kimi" ]]; then
           printf 'error\t-\t-\t%s frontmatter author_model %s does not match a known vendor; refuse rather than guess\n' "$md_file" "$pmodel"
@@ -330,6 +342,13 @@ print(d.get('worker_model') or '')
 " "$lc")
     if [[ -z "$wm" ]]; then
       printf 'error\t-\t-\t%s has no worker_model recorded; corrupt attempt provenance\n' "$lc"
+      return 0
+    fi
+    # A recorded model id must be ONE bare token before it is compared or emitted: this record is
+    # tab-delimited, so an id carrying a tab or newline would split it and slip past the model
+    # comparison below. models_check.py refuses such ids in the config; launch.json is not config.
+    if ! is_model_token "$wm"; then
+      printf 'error\t-\t-\t%s worker_model is not a single bare model token; refuse rather than parse it\n' "$lc"
       return 0
     fi
     vendor=$(classify_model "$wm")
