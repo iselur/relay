@@ -60,7 +60,8 @@ eyes judges it — and nothing lands on <code>main</code> without you.</p>
 <p>Most agent frameworks coordinate AI agents and trust what the agents say. Relay is built the
 other way around — like CI/CD with a trust boundary. External workers build as a separate user
 that cannot reach your home directory or your original credentials, with network-off test runs;
-their test results are rerun rather than believed; and nothing grades its own work — the dispatcher
+their test results are rerun rather than believed; and self-review is refused on recorded
+provenance — the dispatcher
 refuses the author's own model, and <code>scripts/review</code> refuses the author's own vendor as
 it derives it (derivation has recorded gaps — see <code>SECURITY.md</code>). The reviewer is
 sandboxed, given only spec, diff, and evidence, its verdict bound to the exact diff it saw. The operating rulebook is capped by CI at 80 lines, and its standing policy
@@ -173,7 +174,7 @@ boundaries, the configured assumptions, and the known gaps.</p>
   <li><b>A test that didn't run didn't pass.</b> The tests are restored from the manager's own copy
       before grading; a skipped, missing, or empty result is a failure. The worker saying "it
       passed" counts for nothing.</li>
-  <li><b>Nothing reviews its own work.</b> The dispatcher refuses the author's own model;
+  <li><b>Self-review is refused on recorded provenance.</b> The dispatcher refuses the author's own model;
       <code>scripts/review</code> refuses the author's own vendor as it derives it. A Claude reviewer gets no tools; a Codex one runs read-only (residual in
            <code>SECURITY.md</code>). Its
       verdict holds only for the exact code it saw. Five review rounds maximum, then ship or escalate.</li>
