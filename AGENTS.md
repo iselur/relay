@@ -9,7 +9,7 @@ A model swap is one edit there, never to the rulebook; a new model also adds its
 | Role | Today | Note |
 |---|---|---|
 | owner | the human | approves specs, merges `main` |
-| orchestrator | Claude Code on this box (Fable 5 high; the owner flips settings.json to Opus 4.8 at Fable retirement) | dispatches, reviews worker diffs, reports |
+| orchestrator | Claude Code on this box; its model comes from Claude settings, not `models.json` | dispatches, reviews worker diffs, reports |
 | worker | per `scripts/models.json`: Codex CLI (`gpt-5.6-luna`) detached, or a Claude subagent in-session | BUILD phase; a subagent BUILD is graded by `dispatch continue` |
 | reviewer | per `scripts/models.json` (bound reviewer) | never reviews its own work |
 
@@ -52,9 +52,9 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
   `bwrap: loopback: Failed RTM_NEWADDR`; proof: `tests/worker_userns.sh`). Inlining context is a
   choice now, not a requirement — the bound reviewer still gets spec + diff + evidence only, never
   a live checkout. The final answer is recoverable from the `--json` stream (last `agent_message`).
-- Reviews of **Claude-authored** work go through `scripts/review` (reviewer = Codex; needs
-  `--author`, refuses Codex-authored artifacts, counts rounds, refuses a sixth). Codex-authored work
-  is reviewed by Claude — worker diffs by the bound reviewer in the dispatcher, plans in-session —
-  under the same five-round cap.
+- **Claude-authored** work goes through `scripts/review`: it derives the artifact's author vendor,
+  refuses a match with the reviewer's, and takes `--author` only as a cross-check. Worker diffs go
+  to the bound reviewer in `scripts/models.json`; today `gpt-5.6-sol` shares the worker's vendor
+  but not its model. Plans are reviewed in-session. Both paths cap at five rounds; a sixth is refused.
 - Plans go through `scripts/codex-plan --brief` (cap 400; refuses a brief missing any required
   section); the no-flag standard tier remains usable. Trigger: CLAUDE.md rule 5.
