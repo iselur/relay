@@ -54,18 +54,19 @@
 <main>
 <h1>How Relay works</h1>
 <p class="lead">You drop an idea on it. One AI manages the work, another builds it, a third pair of
-eyes from the other vendor judges it — and nothing lands on <code>main</code> without you.</p>
+eyes judges it — and nothing lands on <code>main</code> without you.</p>
 
 <h2>Why this exists</h2>
 <p>Most agent frameworks coordinate AI agents and trust what the agents say. Relay is built the
 other way around — like CI/CD with a trust boundary. External workers build as a separate user
 that cannot reach your home directory or your original credentials, with network-off test runs;
-their test results are rerun rather than believed; and nothing grades its own work — today's
-pairing puts the other vendor's model in judgment, sandboxed, given only spec, diff, and
-evidence, its verdict bound to the exact diff it saw. The operating rulebook is capped by CI at 70 lines, and its standing policy
+their test results are rerun rather than believed; and nothing grades its own work — the dispatcher
+refuses the author's own model, <code>scripts/review</code> refuses the author's own vendor, the
+reviewer sandboxed,
+given only spec, diff, and evidence, its verdict bound to the exact diff it saw. The operating rulebook is capped by CI at 80 lines, and its standing policy
 is that every new rule must come from a real failure in shipped work — the process shrinks
-instead of growing. Claude and Codex hold the active roles today; Kimi is wired in as a third
-vendor, one line in <code>models.json</code> away from a role. <code>SECURITY.md</code> maps the
+instead of growing. Roles are configured in <code>models.json</code>; Kimi is wired in as a third
+vendor, one line away from a role. <code>SECURITY.md</code> maps the
 boundaries, the configured assumptions, and the known gaps.</p>
 
 <h2>The cast</h2>
@@ -73,16 +74,16 @@ boundaries, the configured assumptions, and the known gaps.</p>
   <div class="role" style="--c: var(--you)"><b>You — the owner</b>
     <p>Bring ideas, approve risky work, merge to <code>main</code>. Nobody else can.</p></div>
   <div class="role" style="--c: var(--orch)"><b>Orchestrator — the manager</b>
-    <p>Grills ideas, writes specs, launches workers, holds the trust boundary. Today: Claude.</p></div>
+    <p>Grills ideas, writes specs, launches workers, holds the trust boundary. Set in <code>models.json</code>; today: Claude.</p></div>
   <div class="role" style="--c: var(--worker)"><b>Worker — the builder</b>
-    <p>Implements the spec in a locked-down sandbox. Today: Codex; Kimi wired as a third vendor.</p></div>
+    <p>Implements the spec in a locked-down sandbox. Set in <code>models.json</code>; Kimi wired as a third vendor.</p></div>
   <div class="role" style="--c: var(--review)"><b>Reviewer — the judge</b>
     <p>Never the author's model. Given only spec, diff, evidence. Claude: no tools; Codex: read-only.</p></div>
 </div>
 
 <h2>The flow</h2>
 <figure>
-<svg viewBox="0 0 840 560" role="img" aria-label="Task flow from idea to merged code">
+<svg viewBox="0 0 840 538" role="img" aria-label="Task flow from idea to merged code">
   <defs>
     <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
@@ -128,8 +129,8 @@ boundaries, the configured assumptions, and the known gaps.</p>
 
   <!-- Row 3: review → PR -->
   <rect class="node" x="330" y="214" width="180" height="66" fill="var(--review-bg)" stroke="var(--review)"/>
-  <text class="label" x="420" y="236" text-anchor="middle">6 · Cross review</text>
-  <text class="sub"   x="420" y="254" text-anchor="middle">other vendor judges the exact</text>
+  <text class="label" x="420" y="236" text-anchor="middle">6 · Review</text>
+  <text class="sub"   x="420" y="254" text-anchor="middle">reviewer judges the exact</text>
   <text class="sub"   x="420" y="270" text-anchor="middle">diff · max 5 rounds</text>
 
   <rect class="node" x="650" y="214" width="180" height="66" fill="var(--check-bg)" stroke="var(--check)"/>
@@ -152,13 +153,12 @@ boundaries, the configured assumptions, and the known gaps.</p>
   <text class="edgelabel" x="252" y="300">review finds a problem →</text>
   <text class="edgelabel" x="252" y="316">one revision, next round</text>
 
-  <!-- watchdog strip -->
-  <rect class="node" x="10" y="452" width="820" height="88" fill="var(--orch-bg)" stroke="var(--orch)" stroke-dasharray="6 4"/>
-  <text class="label" x="30" y="482">While you're away — the watchdog</text>
-  <text class="sub" x="30" y="504">A tiny timer checks every 10 minutes: work pending but nothing running? It starts or revives the</text>
-  <text class="sub" x="30" y="522">manager's session. One file (<tspan font-family="monospace">HALT</tspan>) freezes everything. Risky work still waits for your approval.</text>
+  <!-- halt strip -->
+  <rect class="node" x="10" y="452" width="820" height="66" fill="var(--orch-bg)" stroke="var(--orch)" stroke-dasharray="6 4"/>
+  <text class="label" x="30" y="482">Stopping everything</text>
+  <text class="sub" x="30" y="504">One file (<tspan font-family="monospace">HALT</tspan>) freezes the whole system. Risky work still waits for your approval.</text>
 </svg>
-<figcaption>Amber needs you. Blue is the manager, green the sandboxed builder, purple the cross-vendor judge.</figcaption>
+<figcaption>Amber needs you. Blue is the manager, green the sandboxed builder, purple the independent reviewer.</figcaption>
 </figure>
 
 <h2>What keeps it honest</h2>
@@ -173,9 +173,9 @@ boundaries, the configured assumptions, and the known gaps.</p>
   <li><b>A test that didn't run didn't pass.</b> The tests are restored from the manager's own copy
       before grading; a skipped, missing, or empty result is a failure. The worker saying "it
       passed" counts for nothing.</li>
-  <li><b>Nothing reviews its own work.</b> The reviewer is always from the other vendor, gets no
-      tools, and its verdict holds only for the exact code it saw. Five review rounds maximum,
-      then ship or escalate — never loop forever.</li>
+  <li><b>Nothing reviews its own work.</b> The dispatcher refuses the author's own model;
+      <code>scripts/review</code> refuses the author's own vendor. The reviewer gets no tools, and its
+      verdict holds only for the exact code it saw. Five review rounds maximum, then ship or escalate.</li>
   <li><b>You own <code>main</code>.</b> Enforced by your GitHub branch protection, not by trust.</li>
 </ul>
 
