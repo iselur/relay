@@ -28,6 +28,18 @@ cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
 # dispatch integrate grades from a write-stripped tree; cp -p carries that read-only mode into
 # this test's own scratch copy, which case 5 must rewrite — make the copy writable regardless.
 chmod u+w "$tmp/repo/scripts/models.json"
+# The self-review gate compares the artifact's recorded author MODEL with the reviewer's, so these
+# assertions pin the reviewer role instead of inheriting the owner's live config — otherwise
+# flipping models.json turns an exit-4 assertion into a silent pass.
+pin_reviewer() { # $1 model
+  python3 - "$tmp/repo/scripts/models.json" "$1" <<'PIN'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["roles"]["orchestrator_artifact_reviewer"] = {"model": sys.argv[2], "effort": "high"}
+json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+PIN
+}
+pin_reviewer gpt-5.6-sol
 
 cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -149,6 +161,26 @@ rc=$?
   || bad "correctly-derived codex authorship gave exit $rc, expected 4 (self-review vendor gate)"
 [ -e .orchestrator/reviews/real-codex-topic ] && bad "self-review refusal still created review state" \
   || ok "self-review refusal writes nothing"
+
+# 3b. SAME VENDOR, DIFFERENT MODEL: the gate is model-level, matching the dispatcher's worker-diff
+#     rule, so a sol-authored attempt reviewed by luna runs. This is the case that lets one vendor
+#     supply both the orchestrator and its artifact reviewer.
+pin_reviewer gpt-5.6-luna
+scripts/review --topic cross-model-topic --author codex --context .orchestrator/attempts/SPEC-901/1/diff.patch "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 0 ] && ok "codex artifact reviewed by a different codex model runs (exit 0)" \
+  || bad "sol-authored artifact under a luna reviewer gave exit $rc, expected 0"
+[ -s .orchestrator/reviews/cross-model-topic/round-1.md ] \
+  && ok "cross-model review wrote its round-1 verdict" || bad "no round-1.md for the cross-model review"
+
+# 3c. FAIL CLOSED WHERE THE MODEL IS UNKNOWN: a worker-worktree path records the vendor but no
+#     author model, so it stays refused for the whole vendor — the gate weakens only where the
+#     author model is actually on record, never by default.
+scripts/review --topic no-model-topic --author codex --context .worktrees/SPEC-902-1/notes.txt "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 4 ] && ok "codex artifact with no author model on record stays refused (exit 4)" \
+  || bad "unrecorded author model gave exit $rc, expected 4 (vendor-level fallback)"
+pin_reviewer gpt-5.6-sol
 
 # 4. UNKNOWN MODEL (R71): an attempt whose recorded worker_model is absent from vendor_map must be
 #    refused, never guessed into a vendor — a net-new model requires an explicit vendor_map entry

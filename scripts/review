@@ -344,19 +344,19 @@ print(d.get('worker_model') or '')
       printf 'error\t-\t%s is PLAN-%s (frontmatter author_model=%s -> %s) inside attempt %s/%s whose launch.json worker_model=%s -> %s; provenance conflict, refuse rather than guess\n' "$f" "$plan_id" "$plan_model" "$plan_vendor" "$spec" "$n" "$wm" "$vendor"
       return 0
     fi
-    printf '%s\t%s\tattempt %s/%s launch.json worker_model=%s\n' "$vendor" "$plan_id" "$spec" "$n" "$wm"
+    printf '%s\t%s\tattempt %s/%s launch.json worker_model=%s\t%s\n' "$vendor" "$plan_id" "$spec" "$n" "$wm" "$wm"
     return 0
   fi
 
   # 2. A codex-plan artifact outside any attempt: bind to its frontmatter identity (STEP 1).
   if [[ -n "$plan_vendor" ]]; then
-    printf '%s\t%s\tcodex-plan artifact (PLAN-%s) frontmatter author_model=%s\n' "$plan_vendor" "$plan_id" "$plan_id" "$plan_model"
+    printf '%s\t%s\tcodex-plan artifact (PLAN-%s) frontmatter author_model=%s\t%s\n' "$plan_vendor" "$plan_id" "$plan_id" "$plan_model" "$plan_model"
     return 0
   fi
 
   # 3. Either root dispatch.py ever hands to a worker (isolated or not).
   if [[ "$real" == "$iso_worktrees"/* || "$real" == "$local_worktrees"/* ]]; then
-    printf 'codex\t%s\tworker worktree path %s\n' "$plan_id" "$real"
+    printf 'codex\t%s\tworker worktree path %s\t-\n' "$plan_id" "$real"
     return 0
   fi
 
@@ -377,7 +377,7 @@ print(d.get('worktree') or '')
       [[ -n "$wt" ]] || continue
       wt=$(realpath -m -- "$wt")
       if [[ "$real" == "$wt" || "$real" == "$wt"/* ]]; then
-        printf 'codex\t%s\trecorded worktree in %s\n' "$plan_id" "$lc"
+        printf 'codex\t%s\trecorded worktree in %s\t-\n' "$plan_id" "$lc"
         return 0
       fi
     done < <(find "$attempts_root" -mindepth 3 -maxdepth 3 -name launch.json 2>/dev/null)
@@ -386,24 +386,30 @@ print(d.get('worktree') or '')
   # 5. Nothing ties this file to a Codex-marked path. This system has exactly two producers
   #    (AGENTS.md role table) and every Codex-authored path is one of the above, so the absence of
   #    a Codex marker is the signal for Claude/operator authorship (see LIMITATION note at top).
-  printf 'claude\t%s\tno Codex provenance marker found for %s\n' "$plan_id" "$real"
+  printf 'claude\t%s\tno Codex provenance marker found for %s\t-\n' "$plan_id" "$real"
 }
 
 ((${#contexts[@]})) || die "REFUSED — no --context evidence supplied; authorship cannot be derived without it (fail closed, B18). Pass --context FILE pointing at the artifact under review."
 
 derived=""
+derived_model="-"
 evidence_lines=()
 declare -A plan_ids=()
 for context in "${contexts[@]}"; do
   [[ -f "$context" && -r "$context" ]] || die "context is not a readable file: $context"
-  IFS=$'\t' read -r vendor plan_id note <<<"$(derive_one "$context")"
+  IFS=$'\t' read -r vendor plan_id note model <<<"$(derive_one "$context")"
   [[ "$vendor" == "error" ]] && die "REFUSED — $note (fail closed, B18)"
   [[ "$plan_id" != "-" ]] && plan_ids["$plan_id"]=1
   evidence_lines+=("$context: $vendor — $note")
+  # Branches 3–5 record a vendor but no model, so '-' means "no author model on record" and, below,
+  # keeps the vendor-level refusal. Contexts that disagree on the model collapse to '-' too.
+  [[ -n "$model" ]] || model="-"
   if [[ -z "$derived" ]]; then
-    derived="$vendor"
+    derived="$vendor"; derived_model="$model"
   elif [[ "$vendor" != "$derived" ]]; then
     die "REFUSED — context files disagree on recorded authorship (mixed provenance): $(printf '%s | ' "${evidence_lines[@]}")"
+  elif [[ "$model" != "$derived_model" ]]; then
+    derived_model="-"
   fi
 done
 
@@ -440,12 +446,19 @@ if (( ${#plan_ids[@]} == 1 )); then
 fi
 # --------------------------------------------------------------------------------------------------
 
-# B18 self-review guard: the reviewer vendor must not match the artifact's vendor. The vendor is
-# now dynamic (REVIEWER_VENDOR, derived from the configured model), not hardcoded to "codex".
-if [[ "$derived" == "$REVIEWER_VENDOR" ]]; then
-  echo "review: REFUSED — recorded provenance shows this is a $REVIEWER_VENDOR-authored artifact, and this review uses the same $REVIEWER_VENDOR vendor." >&2
+# B18 self-review guard: the reviewer must not be the artifact's own author. Recorded provenance
+# decides it at MODEL level, matching the dispatcher's worker-diff rule — a different model of the
+# same vendor is a different reviewer. Branches 3–5 record no author model, so provenance that
+# reaches only the vendor keeps refusing the whole vendor: the guard weakens only where the author
+# model is actually on record.
+if [[ "$derived" == "$REVIEWER_VENDOR" && ( "$derived_model" == "-" || "$derived_model" == "$MODEL" ) ]]; then
+  if [[ "$derived_model" == "-" ]]; then
+    echo "review: REFUSED — recorded provenance shows this is a $REVIEWER_VENDOR-authored artifact with no author model on record, and this review uses $REVIEWER_VENDOR model $MODEL." >&2
+  else
+    echo "review: REFUSED — recorded provenance shows this artifact was authored by $derived_model, which is the model this review uses." >&2
+  fi
   for line in "${evidence_lines[@]}"; do echo "        evidence: $line" >&2; done
-  echo "        Same-vendor review is not allowed (CLAUDE.md). Use a reviewer from a different vendor." >&2
+  echo "        Self-review is not allowed (CLAUDE.md). Use a reviewer model the artifact's author is not." >&2
   exit 4
 fi
 
