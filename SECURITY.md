@@ -98,6 +98,12 @@ proves them), **configured assumptions** (set up outside this repo, verified man
    second, non-trusted human account exists on the box; neither is exploitable in the single-owner
    model this system is built for.
 
+8. **`scripts/review`'s same-vendor refusal rests on a DERIVED author, not an authenticated one.**
+   Anything under a recorded worker worktree is classified `codex` by path alone, so a Claude or
+   Kimi reviewer can be handed an artifact of its own vendor from there — fail-OPEN. A `codex-plan`
+   `author_model:` stamp is likewise the author's own word; closing that needs a digest-bound
+   receipt written at dispatch by something other than the author. Both queued in BACKLOG.md.
+
 ## Scope
 
 Single-owner system on a private VPS. No external vulnerability reports are expected; if you

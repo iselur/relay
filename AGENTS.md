@@ -53,7 +53,7 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
   choice now, not a requirement — the bound reviewer still gets spec + diff + evidence only, never
   a live checkout. The final answer is recoverable from the `--json` stream (last `agent_message`).
 - Reviews of **Claude-authored** work go through `scripts/review` (reviewer = the configured
-  artifact reviewer; needs `--author`, refuses the reviewer's own vendor, counts rounds, refuses a
+  artifact reviewer; needs `--author`, refuses the reviewer's own DERIVED vendor, counts rounds, a
   sixth). Worker diffs go to the bound reviewer in `scripts/models.json` — today `gpt-5.6-sol`, the
   worker's vendor but never its model — and plans in-session, under the same five-round cap.
 - Plans go through `scripts/codex-plan --brief` (cap 400; refuses a brief missing any required

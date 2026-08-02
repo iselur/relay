@@ -33,7 +33,8 @@ the ones that are not are written down as configured assumptions or known gaps.
 - **Evidence, not prose.** A worker saying "tests passed" counts for nothing — the tests are
   restored from the orchestrator's own copy and rerun. A test that did not run did not pass.
 - **Nothing grades its own work.** Same-model self-review is refused by the dispatcher;
-  same-vendor review is refused by `scripts/review`. The reviewer is given only spec, diff, and
+  same-vendor review is refused by `scripts/review`, on the author vendor it derives — derivation
+  has recorded gaps, listed in SECURITY.md. The reviewer is given only spec, diff, and
   evidence, sandboxed, and its verdict binds only to the exact code it saw; moved code means a
   fresh review. The owner sets the pairing in `scripts/models.json`.
 - **Isolation or no launch.** External-CLI workers run as a separate machine user that cannot
