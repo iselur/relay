@@ -116,6 +116,17 @@ check("role model missing from vendor_map refuses launch (exit 2)", load_result(
 bad = copy.deepcopy(good); bad["cli_aliases"]["claude-fable-5"] = 7
 scratch.write_text(json.dumps(bad))
 check("non-string CLI alias refuses launch (exit 2)", load_result() == "exit2")
+# R102 round-2 review: the self-review gates compare CONFIG model ids, so two ids resolving to one
+# CLI name are one real model under two names — enough for a model to review its own work.
+bad = copy.deepcopy(good)
+bad["cli_aliases"]["claude-opus-4-8"] = bad["cli_aliases"]["claude-fable-5"]
+scratch.write_text(json.dumps(bad))
+check("two model ids sharing one CLI alias refuse launch (exit 2)", load_result() == "exit2")
+# Same review: scripts/review emits a classified model in a tab-delimited record, and a model is
+# classified only by being a vendor_map key — so a key carrying a tab would split that record.
+bad = copy.deepcopy(good); bad["vendor_map"]["gpt-5.6-x\ty"] = "codex"
+scratch.write_text(json.dumps(bad))
+check("a vendor_map key containing a tab refuses launch (exit 2)", load_result() == "exit2")
 # Owner decision 2026-07-16: vendor pairing is config-authored, never policed — a same-vendor
 # config VALIDATES.
 sv = copy.deepcopy(good)

@@ -6,7 +6,7 @@
     "utility_subagent": { "model": "claude-sonnet-4-6", "effort": "default" },
     "worker": { "model": "gpt-5.6-luna", "effort": "high" },
     "bound_reviewer": { "model": "gpt-5.6-sol", "effort": "high" },
-    "orchestrator_artifact_reviewer": { "model": "gpt-5.6-sol", "effort": "high" }
+    "orchestrator_artifact_reviewer": { "model": "gpt-5.6-luna", "effort": "high" }
   },
   "cli_aliases": {
     "claude-fable-5": "fable",

@@ -39,6 +39,8 @@ __pycache__/
 .orchestrator/plans/
 .orchestrator/decisions/
 .orchestrator/reviews/
+# Owner's migration note to the incoming orchestrator CLI — transient, deleted once the switch settles
+/HANDOFF-CODEX.md
 
 # --- private: never publish (operator, 2026-07-13) ---
 .orchestrator/REQUEST-LEDGER.md

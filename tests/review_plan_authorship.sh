@@ -24,6 +24,14 @@ cp -p scripts/review "$tmp/repo/scripts/review"
 cp -p scripts/models.json "$tmp/repo/scripts/models.json"
 cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
 chmod u+w "$tmp/repo/scripts/models.json"
+# The self-review gate compares author MODEL with reviewer model, so the sol fixtures below only
+# exercise it while the reviewer IS the sol model. Pin it rather than inherit the owner's config.
+python3 - "$tmp/repo/scripts/models.json" <<'PIN'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["roles"]["orchestrator_artifact_reviewer"] = {"model": "gpt-5.6-sol", "effort": "high"}
+json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+PIN
 
 cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash

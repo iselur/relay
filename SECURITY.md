@@ -98,11 +98,11 @@ proves them), **configured assumptions** (set up outside this repo, verified man
    second, non-trusted human account exists on the box; neither is exploitable in the single-owner
    model this system is built for.
 
-8. **`scripts/review`'s same-vendor refusal rests on a DERIVED author, not an authenticated one.**
-   Anything under a recorded worker worktree is classified `codex` by path alone, so a Claude or
-   Kimi reviewer can be handed an artifact of its own vendor from there — fail-OPEN. A `codex-plan`
-   `author_model:` stamp is likewise the author's own word; closing that needs a digest-bound
-   receipt written at dispatch by something other than the author. Both queued in BACKLOG.md.
+8. **`scripts/review`'s self-review refusal rests on a DERIVED author, not an authenticated one.**
+   A worker worktree is classified `codex` by path alone, so a Claude or Kimi reviewer can be handed
+   an artifact of its own vendor from there — fail-OPEN. The refusal is model-level, so `codex-plan`'s
+   `author_model:` stamp — the author's own word — is what lets one vendor hold both roles. Closing
+   both needs a digest-bound receipt written at dispatch by something other than the author (BACKLOG.md).
 
 ## Scope
 
