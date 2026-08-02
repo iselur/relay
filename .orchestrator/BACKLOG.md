@@ -36,6 +36,9 @@ tracked in the private ledger. In-flight work lives in the ledger, not here.)
 - 2026-07-15 audit remainder: re-verified 2026-07-16 — seven of eight highs already fixed on main,
   the last a low-risk merge-window race (owner enables GitHub's up-to-date-branch rule); four
   state-machine mediums confirmed but low risk. Report: claude-out/audit-reverify-2026-07-16.md.
-- Fable retirement follow-through: after the owner's manual flip, point the bound reviewer in
-  `scripts/models.json` at its successor via a reviewed PR.
+- Self-review granularity is inconsistent: `scripts/review` refuses at VENDOR level, the dispatcher
+  refuses at MODEL level, and `models_check.py` leaves pairing entirely to the owner. Pick one rule.
+- `scripts/review` classifies every file under a worker worktree as `codex` by path alone, so a Claude
+  or Kimi worker's output derives the wrong vendor. Fails closed (wrong refusal), but read the
+  worktree's own `launch.json` `worker_model` instead, and refuse when no launch record matches.
 - External benchmark score and cost reporting — after a real product exists.

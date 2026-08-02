@@ -42,7 +42,7 @@ export PATH="$tmp/bin:$PATH"
 
 # Fixtures ------------------------------------------------------------------------------------
 # A plain file that touches no Codex-marked path: derives 'claude' by absence of a Codex marker.
-printf 'a claude-drafted analysis, never touched by Codex\n' > claude-note.md
+printf -- '---\nauthor_model: claude-opus-5\n---\na claude-drafted analysis, never touched by Codex\n' > claude-note.md
 
 # A real dispatch attempt, exactly as scripts/dispatch.py would record one: launch.json recording
 # worker_model, written BEFORE any review call — this script must never write or trust this file,
@@ -179,6 +179,38 @@ rc=$?
 [ -e .orchestrator/reviews/gutted-config ] && bad "gutted-config refusal still created review state" \
   || ok "gutted-config refusal writes nothing"
 # restore for any later cases, still writable ($ROOT may be a write-stripped grader tree)
+cp "$ROOT/scripts/models.json" scripts/models.json
+chmod u+w scripts/models.json
+
+# 6. NO STAMP, NO REVIEW (2026-08-02). An artifact off every marked path has exactly one possible
+#    provenance — its own `author_model:` — and without one the call must refuse. The two guesses
+#    that stood here before both failed: a hardcoded 'claude' sent a Codex orchestrator's own files
+#    to the Codex reviewer with no refusal, and reading roles.orchestrator instead only moved the
+#    hole in time, re-deriving a Codex-written file as Claude the moment the role switched back.
+printf 'a note with no author stamp at all\n' > unstamped-note.md
+scripts/review --topic unstamped --author claude --context unstamped-note.md "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" != 0 ] && ok "an unstamped artifact is refused rather than guessed (exit $rc)" \
+  || bad "unstamped artifact was accepted — provenance is being guessed again"
+[ -e .orchestrator/reviews/unstamped ] && bad "unstamped refusal still created review state" \
+  || ok "unstamped refusal writes nothing"
+
+# 7. THE STAMP OUTRANKS THE CONFIG. Flipping roles.orchestrator to Codex must change NOTHING here:
+#    that is what lets the owner switch orchestrator by editing models.json alone (rule: a model swap
+#    is one edit there). A derivation that moved with the role would break every case below.
+python3 - scripts/models.json <<'ORCH'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["roles"]["orchestrator"] = {"model": "gpt-5.6-sol", "effort": "high"}
+json.dump(cfg, open(sys.argv[1], "w"))
+ORCH
+scripts/review --topic orch-flip --author claude --context claude-note.md "please review" >/dev/null 2>&1 \
+  && ok "a claude-stamped artifact still reviews under a codex orchestrator" \
+  || bad "claude-stamped artifact broke when roles.orchestrator became codex — derivation follows config, not the stamp"
+scripts/review --topic orch-flip-forged --author codex --context claude-note.md "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 6 ] && ok "forged --author codex is still caught under a codex orchestrator (exit 6)" \
+  || bad "forged author gave exit $rc, expected 6 — the stamp stopped outranking the config"
 cp "$ROOT/scripts/models.json" scripts/models.json
 chmod u+w scripts/models.json
 

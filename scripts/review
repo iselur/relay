@@ -4,7 +4,7 @@
 # script refuses it. The cap lives in code because a prose cap already lost once to a ten-round
 # loop. Only round-N.md files are rounds: sibling artifacts (dispositions, notes) never count.
 #
-# The reviewer this script invokes is Codex, so it may only review Claude-authored artifacts.
+# The reviewer is whichever model the owner configured; it may review any artifact NOT its own.
 # B18: --author is NOT trusted as an assertion — a caller could mislabel a Codex-authored artifact
 # as --author claude and get it routed to a Codex reviewer, which is exactly self-review. So
 # authorship is DERIVED from provenance this repo's dispatcher (scripts/dispatch.py) and
@@ -22,21 +22,21 @@
 #     or any read failure all refuse outright (fail closed) rather than guessing;
 #   - a --context file inside a recorded worker worktree (launch.json "worktree", or either root
 #     dispatch.py ever hands to a worker) is likewise codex;
-#   - anything else is claude (this system has exactly two producers; nothing else writes to a
-#     Codex-marked path).
+#   - anything else must carry its own top-level `author_model:` frontmatter stamp, the same durable
+#     record codex-plan writes; an artifact with no stamp and no marked path is REFUSED, not guessed.
 # --author is kept only as a CROSS-CHECK: it must agree with the derived value or the call is
 # refused (exit 6). At least one --context file is REQUIRED so there is always something to derive
 # from; a call with no evidence at all is refused (fail closed) rather than trusted.
-# LIMITATION (documented, not solved here): a freshly drafted Claude file that has not yet touched
-# any Codex-marked path derives as 'claude' by absence of a Codex marker, not by positive proof of
-# a human/Claude hand — this repo has no signing or content-provenance system. What this closes is
-# the literal B18 report: an artifact that already carries dispatcher-recorded Codex provenance can
-# no longer be laundered through a mislabeled --author flag. Residual (same class): a .stdout/.stderr
-# has no frontmatter of its own, so a raw stream RENAMED off its reserved PLAN-NNN.* name loses the
-# only handle on its sibling and derives 'claude' — the plan .md it came from does not.
+# LIMITATION (documented, not solved here): a stamp is a self-declaration, not a signature — this
+# repo has no signing or content-provenance system, so an artifact can understate its own author.
+# That is a strictly smaller hole than the guess it replaced, because it fails CLOSED: the way to
+# get reviewed is to write a stamp, and a missing or unmapped one refuses. Residual (same class): a
+# .stdout/.stderr carries no frontmatter of its own, so a raw stream RENAMED off its reserved
+# PLAN-NNN.* name loses the only handle on its sibling and is refused for want of provenance — the
+# plan .md it came from is not.
 #
-# 'codex' as the derived/checked author is always refused (never Codex-grades-Codex). Codex-authored
-# work is reviewed by Claude (worker diffs: bound reviewer in the dispatcher; plans: Claude in-session).
+# An artifact whose derived vendor equals the CONFIGURED reviewer's vendor is refused: nothing
+# reviews its own work (CLAUDE.md rule 7). The owner picks the pairing in scripts/models.json.
 #
 # Usage: scripts/review --topic <slug> --author <claude|codex> --context FILE [--context FILE]...
 #        [--] [PROMPT...]
@@ -181,7 +181,7 @@ derive_one() {
   elif [[ "$base" == *.md ]]; then
     md_file="$real"   # inspect content; may or may not carry codex-plan frontmatter
   fi
-  local plan_id="-" plan_vendor="" plan_model=""
+  local plan_id="-" plan_vendor="" plan_model="" stamp_vendor="" stamp_model=""
   if [[ -n "$md_file" ]]; then
     local parsed prc pstatus pid pmodel vendor
     parsed=$("$PY" - "$md_file" <<'PYEOF'
@@ -246,10 +246,16 @@ if not isinstance(data, dict):
     print("notplan"); sys.exit(0)
 
 # IDENTITY: a top-level PLAN id. No PLAN id -> not a codex-plan artifact, keep the caller topic. An
-# `author_model:` key on its own does NOT make an ordinary doc a plan.
+# `author_model:` key on its own does NOT make an ordinary doc a plan — but it IS provenance, and
+# for an orchestrator-authored file it is the only provenance there is, so report it separately.
 idv = data.get("id")
 if not (isinstance(idv, str) and re.fullmatch(r'PLAN-[0-9]+', idv)):
-    print("notplan"); sys.exit(0)
+    amv = data.get("author_model")
+    if amv is None:
+        print("notplan"); sys.exit(0)
+    if not (isinstance(amv, str) and re.fullmatch(r'[A-Za-z0-9._-]+', amv)):
+        print("broken\tmalformed author_model value %r" % (amv,)); sys.exit(0)
+    print("stamp\t-\t%s" % (amv,)); sys.exit(0)
 
 # From here the file claims codex-plan identity; missing or malformed provenance must refuse.
 amv = data.get("author_model")
@@ -288,6 +294,19 @@ PYEOF
           return 0
         fi
         plan_id="$pid"; plan_vendor="$vendor"; plan_model="$pmodel" ;;
+      stamp)
+        # Not a plan (no PLAN id), but it carries its own `author_model:`. A reserved PLAN-NNN name
+        # still demands the full plan frontmatter — a stamp alone must not satisfy it.
+        if (( named_plan )); then
+          printf 'error\t-\t%s uses codex-plan reserved name PLAN-NNN but lacks its frontmatter (top-level id: PLAN-NNN + author_model); provenance cannot be read\n' "$md_file"
+          return 0
+        fi
+        vendor=$(classify_model "$pmodel")
+        if [[ "$vendor" != "claude" && "$vendor" != "codex" && "$vendor" != "kimi" ]]; then
+          printf 'error\t-\t%s frontmatter author_model %s does not match a known vendor; refuse rather than guess\n' "$md_file" "$pmodel"
+          return 0
+        fi
+        stamp_vendor="$vendor"; stamp_model="$pmodel" ;;
       notplan)
         if (( named_plan )); then
           printf 'error\t-\t%s uses codex-plan reserved name PLAN-NNN but lacks its frontmatter (top-level id: PLAN-NNN + author_model); provenance cannot be read\n' "$md_file"
@@ -383,10 +402,18 @@ print(d.get('worktree') or '')
     done < <(find "$attempts_root" -mindepth 3 -maxdepth 3 -name launch.json 2>/dev/null)
   fi
 
-  # 5. Nothing ties this file to a Codex-marked path. This system has exactly two producers
-  #    (AGENTS.md role table) and every Codex-authored path is one of the above, so the absence of
-  #    a Codex marker is the signal for Claude/operator authorship (see LIMITATION note at top).
-  printf 'claude\t%s\tno Codex provenance marker found for %s\n' "$plan_id" "$real"
+  # 5. Nothing ties this file to a worker- or plan-marked path, so its only possible provenance is
+  #    the `author_model:` stamp read in STEP 1 — a durable record written beside the artifact by
+  #    whoever wrote it. Absent that, there is nothing to derive from and the call REFUSES. Guessing
+  #    here is what the earlier versions got wrong in both directions: a fixed 'claude' handed a
+  #    Codex orchestrator's own files to a Codex reviewer with no refusal, and reading the CURRENT
+  #    roles.orchestrator instead just moved the same hole in time — a file Codex wrote is re-derived
+  #    as Claude the moment the owner switches the role back, and then sails past the guard.
+  if [[ -n "$stamp_vendor" ]]; then
+    printf '%s\t%s\tfrontmatter author_model=%s\n' "$stamp_vendor" "$plan_id" "$stamp_model"
+    return 0
+  fi
+  printf 'error\t-\t%s carries no recorded provenance: it is not under a dispatch attempt or worker worktree, and its frontmatter has no top-level `author_model:`. Stamp it with the model that wrote it; refuse rather than guess\n' "$real"
 }
 
 ((${#contexts[@]})) || die "REFUSED — no --context evidence supplied; authorship cannot be derived without it (fail closed, B18). Pass --context FILE pointing at the artifact under review."

@@ -35,7 +35,7 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
    checkpoints. Reference the brief, never copy it; what we learn later is added with a date and reopens the
    checkpoints it touches. Briefs and shipped specs are working files: delete them once the work ships, git keeps them.
 6. **Cross-checking earns its cost** on ideas, briefs, and plans — a plan leaves plan mode only
-   after `scripts/review --author claude` completes and its findings are answered under rule 3;
+   after `scripts/review --author <the orchestrator's vendor>` completes and findings are answered under rule 3;
    deterministic checks and tests outrank model agreement elsewhere — agreement is not evidence.
 7. **Maximal delegation:** the orchestrator delegates every delegable task to a worker by default; what a worker cannot take for architectural reasons (it needs the
    orchestrator's harness) goes to parallel subagents in isolated worktrees, several at once when the pieces are independent; the orchestrator works directly only on

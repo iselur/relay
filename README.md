@@ -4,25 +4,22 @@ Relay lets you get maximum from your Claude and Codex **subscriptions** 💸 (no
 makes two great models work together with minimum oversight, passing work between them like a relay
 team.
 
-This setup sets **Claude** as **Orchestrator**👩‍🏫 that manages a task backlog while **Workers**👷 (**Codex**) handle the
-implementation. They can work for days without you; the final merge is yours, or the
+The **Orchestrator**👩‍🏫 manages a task backlog while **Workers**👷 handle the
+implementation — which model plays each role is set in `scripts/models.json`. They can work for days without you; the final merge is yours, or the
 orchestrator's under your recorded grant.
 
 ## How it works
 
-Give Claude (Orchestrator) a task and it turns the request into a checked spec, then delegates the
-build to Workers (Codex). Claude and Codex inspect and challenge the results for up to five review
-rounds.
+Give the Orchestrator a task and it turns the request into a checked spec, then delegates the
+build to Workers. The Orchestrator and Reviewer inspect and challenge the results for up to five
+review rounds.
 
-Once started, the system can continue autonomously while you are away. A watchdog checks the
-private request ledger every ten minutes and restarts or resumes the session whenever work is
-pending. Automatically retrying after a usage-window limit is a built-in but owner-gated option
-(off by default): when enabled it retries on a fixed cadence until the window reopens. Every
-change must pass tests and verification.
+Once started, the system can continue autonomously while you are away: work already dispatched
+runs to completion without you. Every change must pass tests and verification.
 
 Passing work becomes a pull request to `ready-for-main`. Promotion to `main` is yours — or the
-orchestrator's, only under your recorded grant (green `ci` plus a binding cross-vendor PASS on
-the exact diff).
+orchestrator's, only under your recorded grant (green `ci` plus a binding PASS from an
+independent reviewer on the exact diff).
 
 The [visual explanation](how-it-works.html) shows the whole process — and who does which job —
 on one page.
@@ -35,17 +32,16 @@ the ones that are not are written down as configured assumptions or known gaps.
 
 - **Evidence, not prose.** A worker saying "tests passed" counts for nothing — the tests are
   restored from the orchestrator's own copy and rerun. A test that did not run did not pass.
-- **Nothing grades its own work.** Same-model self-review is refused, and today's pairing puts
-  the other vendor in judgment. The reviewer is given only spec, diff, and evidence, sandboxed —
-  Claude with all tools denied, Codex read-only (its filesystem-read residual is accepted in
-  SECURITY.md) — and its verdict binds only to the exact code it saw; moved code means a fresh
-  review.
+- **Nothing grades its own work.** Same-model self-review is refused by the dispatcher;
+  same-vendor review is refused by `scripts/review`. The reviewer is given only spec, diff, and
+  evidence, sandboxed, and its verdict binds only to the exact code it saw; moved code means a
+  fresh review. The owner sets the pairing in `scripts/models.json`.
 - **Isolation or no launch.** External-CLI workers run as a separate machine user that cannot
   reach your home directory or your original credentials (they hold their own copied vendor
   login), and their test runs have no network; without that sandbox they do not launch — the
   only exception is the recorded owner-ordered `ORCH_ALLOW_UNISOLATED` override. Subagent
   workers run inside the orchestrator's own session; SECURITY.md maps both boundaries.
-- **A rulebook that shrinks.** The operating rules are capped by CI at 70 lines, and the
+- **A rulebook that shrinks.** The operating rules are capped by CI at 80 lines, and the
   standing policy is that a new rule requires a real failure in shipped work and replaces a
   line, never stacks.
 - **Multi-vendor by design.** Claude and Codex hold the active roles today; Kimi is wired in as
@@ -57,16 +53,16 @@ do not cover.
 ## How to make it autonomous 🔄
 
 Autonomy by default is off (as a precaution).
-To let the orchestrator (Claude) merge gated worker pull requests to `ready-for-main` without a
+To let the orchestrator merge gated worker pull requests to `ready-for-main` without a
 per-PR click, create `.orchestrator/AUTONOMY.local.json` as described in BOOTSTRAP.md step 7.
 Merges to `main` are yours unless your recorded grant lets the orchestrator promote under its
-conditions (green `ci`, binding cross-vendor PASS).
+conditions (green `ci`, binding reviewer PASS).
 
 ## How to set it up
 
 Get the cheapest Hetzner shared VM — about $7/month is enough.
 Install Tailscale, tmux, and Claude Code on it.
-Have two subscriptions and log in for orchestrator (Claude) and worker (Codex).
+Have subscriptions for the models assigned in `scripts/models.json` and log each in.
 Have a GitHub repository you own.
 
 Then:
@@ -83,6 +79,6 @@ BOOTSTRAP.md handles the setup in order and pauses whenever the owner (you) must
 
 ## Names used here
 
-The roles are always owner (you), orchestrator (Claude), and worker (Codex).
+The roles are always owner (you), orchestrator, worker, and reviewer — which model plays each role is set in `scripts/models.json`.
 
 MIT — see [LICENSE](LICENSE).

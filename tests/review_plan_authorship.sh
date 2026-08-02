@@ -51,7 +51,7 @@ mk_plan .orchestrator/plans/PLAN-105.md claude-opus-4-8
 printf 'raw stdout provenance\n' > .orchestrator/plans/PLAN-105.stdout
 printf 'orphan stdout, no sibling md\n' > .orchestrator/plans/PLAN-106.stdout
 mk_plan .orchestrator/plans/PLAN-107.md claude-opus-4-8
-printf 'a plain claude-drafted note\n' > claude-note.md
+printf -- '---\nauthor_model: claude-opus-5\n---\na plain claude-drafted note\n' > claude-note.md
 # Finding-1 fixtures: a Sol plan and a Claude plan copied to NON-reserved names. Content-based
 # detection must classify from the frontmatter, so a rename cannot strip the recorded authorship.
 mk_plan .orchestrator/plans/PLAN-201.md gpt-5.6-sol

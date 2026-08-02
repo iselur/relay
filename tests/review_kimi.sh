@@ -49,7 +49,7 @@ export PATH="$tmp/bin:$PATH"
 
 # ---- fixtures ---------------------------------------------------------------------------------
 # A plain file that derives 'claude' by absence of any Codex/kimi marker.
-printf 'a plain claude-drafted note\n' > claude-note.md
+printf -- '---\nauthor_model: claude-opus-5\n---\na plain claude-drafted note\n' > claude-note.md
 
 # A dispatch attempt whose worker was kimi-k3 — derives 'kimi' from launch.json.
 mkdir -p .orchestrator/attempts/SPEC-501/1

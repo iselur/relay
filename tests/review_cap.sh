@@ -35,7 +35,7 @@ export PATH="$tmp/bin:$PATH"
 # of trusting --author, so every claude-authored call below needs a --context file that is NOT
 # under a Codex-marked path (derives 'claude'), and the one codex-authored call needs a --context
 # file inside a fake dispatch attempt (derives 'codex' from that attempt's own launch.json).
-printf 'a plain claude-drafted note, not touching any Codex-marked path\n' > claude-note.md
+printf -- '---\nauthor_model: claude-opus-5\n---\na plain claude-drafted note, not touching any Codex-marked path\n' > claude-note.md
 mkdir -p .orchestrator/attempts/SPEC-900/1
 printf '{"worker_model": "gpt-5.6-sol"}\n' > .orchestrator/attempts/SPEC-900/1/launch.json
 printf 'fake codex worker diff\n' > .orchestrator/attempts/SPEC-900/1/diff.patch
