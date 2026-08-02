@@ -180,6 +180,29 @@ scripts/review --topic no-model-topic --author codex --context .worktrees/SPEC-9
 rc=$?
 [ "$rc" = 4 ] && ok "codex artifact with no author model on record stays refused (exit 4)" \
   || bad "unrecorded author model gave exit $rc, expected 4 (vendor-level fallback)"
+
+# 3d. A TAB IN THE PATH must not smuggle a model past the '-' checks: the derivation line is
+#     tab-separated and the free-form note is read last, so a note containing a tab used to spill
+#     into the model field and leave it neither empty nor '-' — silently skipping the refusal.
+mkdir -p ".worktrees/SPEC-904$(printf '\t')1"
+printf 'worker notes\n' > ".worktrees/SPEC-904$(printf '\t')1/notes.txt"
+scripts/review --topic tab-path-topic --author codex --context ".worktrees/SPEC-904$(printf '\t')1/notes.txt" "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 4 ] && ok "a tab in the artifact path still refuses (exit 4)" \
+  || bad "tab in path gave exit $rc, expected 4 — the note spilled into the model field"
+
+# 3e. SAME VENDOR, CONFLICTING RECORDS: a plan's own author_model and its host attempt's
+#     worker_model must agree on the MODEL, not merely the vendor. A sol-authored plan hosted by a
+#     luna attempt would otherwise derive as luna and let a sol reviewer grade sol's own work.
+mkdir -p .orchestrator/attempts/SPEC-905/1
+printf '{"worker_model": "gpt-5.6-luna", "spec_id": "SPEC-905", "attempt": 1}\n' \
+  > .orchestrator/attempts/SPEC-905/1/launch.json
+printf -- '---\nid: PLAN-905\nauthor_model: gpt-5.6-sol\n---\n\nplan body\n' \
+  > .orchestrator/attempts/SPEC-905/1/PLAN-905.md
+scripts/review --topic plan-905 --author codex --context .orchestrator/attempts/SPEC-905/1/PLAN-905.md "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 2 ] && ok "plan author_model conflicting with its attempt's worker_model is refused (exit 2)" \
+  || bad "same-vendor model conflict gave exit $rc, expected 2 — provenance was laundered"
 pin_reviewer gpt-5.6-sol
 
 # 4. UNKNOWN MODEL (R71): an attempt whose recorded worker_model is absent from vendor_map must be
