@@ -117,11 +117,16 @@ rc=$?
 [ "$rc" = 6 ] && ok "forged --author claude on a --out plan's .stdout is refused (exit 6)" \
   || bad "forged --author claude on a --out plan .stdout NOT refused (exit $rc)"
 
-# 1d. The reverse forgery also refused: a plain claude-authored file mislabeled --author codex.
-scripts/review --topic forged-reverse --author codex --context claude-note.md "please review" >/dev/null 2>&1
+# 1d. AN UNSTAMPED ARTIFACT DECLARED --author codex: nothing on disk records who wrote it, so the
+#     derivation used to assume 'claude' and reject the truthful declaration as a mismatch, leaving a
+#     Codex orchestrator's own draft reviewable only under a false --author claude. It must instead
+#     believe the declaration and refuse the whole vendor (exit 4) — no author model is on record.
+scripts/review --topic unstamped-codex --author codex --context claude-note.md "please review" >/dev/null 2>&1
 rc=$?
-[ "$rc" = 6 ] && ok "forged --author codex on a claude-authored artifact is refused (exit 6)" \
-  || bad "forged --author codex on a claude-authored artifact NOT refused (exit $rc)"
+[ "$rc" = 4 ] && ok "an unstamped artifact declared --author codex is refused as self-review (exit 4)" \
+  || bad "unstamped --author codex gave exit $rc, expected 4 (vendor-level refusal, not a mismatch)"
+[ -e .orchestrator/reviews/unstamped-codex ] && bad "unstamped-codex refusal still created review state" \
+  || ok "unstamped-codex refusal writes nothing"
 
 # 2. MISSING PROVENANCE: no --context at all means nothing to derive from — refuse rather than
 #    trust the --author string alone (this is the exact B18 bug: a bare, caller-supplied claim).
