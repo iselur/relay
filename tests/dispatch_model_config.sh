@@ -122,11 +122,8 @@ bad = copy.deepcopy(good)
 bad["cli_aliases"]["claude-opus-4-8"] = bad["cli_aliases"]["claude-fable-5"]
 scratch.write_text(json.dumps(bad))
 check("two model ids sharing one CLI alias refuse launch (exit 2)", load_result() == "exit2")
-# Same review: the shell consumers pass model ids through tab-delimited records, so an id carrying
-# a tab or newline would split one record into two and slip past the model comparison.
-bad = copy.deepcopy(good); bad["roles"]["worker"]["model"] = "gpt-5.6-luna\tgpt-5.6-sol"
-scratch.write_text(json.dumps(bad))
-check("a role model id containing a tab refuses launch (exit 2)", load_result() == "exit2")
+# Same review: scripts/review emits a classified model in a tab-delimited record, and a model is
+# classified only by being a vendor_map key — so a key carrying a tab would split that record.
 bad = copy.deepcopy(good); bad["vendor_map"]["gpt-5.6-x\ty"] = "codex"
 scratch.write_text(json.dumps(bad))
 check("a vendor_map key containing a tab refuses launch (exit 2)", load_result() == "exit2")

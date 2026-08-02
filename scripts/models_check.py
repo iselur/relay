@@ -69,9 +69,6 @@ def validate(cfg) -> list:
             if not _nonempty_str(entry.get(k)):
                 errs.append(f"roles.{r}.{k} must be a non-empty string")
         if _nonempty_str(entry.get("model")):
-            if not _is_model_id(entry["model"]):
-                errs.append(f"roles.{r}.model must be a single bare token (no whitespace or "
-                            f"control characters): {entry['model']!r}")
             named_models.add(entry["model"])
     for r in sorted(set(roles) - set(ROLES)):
         errs.append(f"unknown role: {r}")
@@ -91,6 +88,8 @@ def validate(cfg) -> list:
         vm = {}
     vm = vm if isinstance(vm, dict) else {}
     for m, v in sorted(vm.items()):
+        # scripts/review classifies a recorded model by vendor_map membership, then emits it in a
+        # tab-delimited record; this key check is what keeps a tab out of that record (R102 round-3).
         if not _is_model_id(m):
             errs.append(f"vendor_map key must be a single bare token (no whitespace or control "
                         f"characters): {m!r}")

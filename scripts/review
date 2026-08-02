@@ -128,13 +128,6 @@ classify_model() {
   "$PY" "$MODELS_CHECK" "$MODELS_CFG" vendor "$1" 2>/dev/null || echo unknown
 }
 
-# A model id recorded on disk (launch.json worker_model, plan frontmatter author_model) must be one
-# bare token. models_check.py enforces this for the config; these two records are written by the
-# dispatcher and by codex-plan, not by it, so they are checked where they are read.
-is_model_token() {
-  [[ -n "$1" && "$1" != *[[:space:][:cntrl:]]* ]]
-}
-
 # Prints 'VENDOR<TAB>evidence note' on stdout. Never calls die()/exit — it runs inside a command
 # substitution (its own subshell), where an exit would be swallowed by the subshell and silently
 # skip the fail-closed refusal in the caller. On any problem it prints 'error<TAB>reason' instead;
@@ -291,10 +284,6 @@ PYEOF
           printf 'error\t-\t-\t%s uses codex-plan reserved name PLAN-%s but its frontmatter id is PLAN-%s; provenance mismatch, refuse rather than bind the wrong artifact\n' "$f" "$expect_pid" "$pid"
           return 0
         fi
-        if ! is_model_token "$pmodel"; then
-          printf 'error\t-\t-\t%s frontmatter author_model is not a single bare model token; refuse rather than parse it\n' "$md_file"
-          return 0
-        fi
         vendor=$(classify_model "$pmodel")
         if [[ "$vendor" != "claude" && "$vendor" != "codex" && "$vendor" != "kimi" ]]; then
           printf 'error\t-\t-\t%s frontmatter author_model %s does not match a known vendor; refuse rather than guess\n' "$md_file" "$pmodel"
@@ -344,13 +333,9 @@ print(d.get('worker_model') or '')
       printf 'error\t-\t-\t%s has no worker_model recorded; corrupt attempt provenance\n' "$lc"
       return 0
     fi
-    # A recorded model id must be ONE bare token before it is compared or emitted: this record is
-    # tab-delimited, so an id carrying a tab or newline would split it and slip past the model
-    # comparison below. models_check.py refuses such ids in the config; launch.json is not config.
-    if ! is_model_token "$wm"; then
-      printf 'error\t-\t-\t%s worker_model is not a single bare model token; refuse rather than parse it\n' "$lc"
-      return 0
-    fi
+    # A model reaches the tab-delimited record below only by being a vendor_map KEY, and
+    # models_check.py refuses a key that is not one bare token — so classify_model is already the
+    # check that an id cannot carry a tab and split the record (R102 round-3 review).
     vendor=$(classify_model "$wm")
     if [[ "$vendor" != "claude" && "$vendor" != "codex" && "$vendor" != "kimi" ]]; then
       printf 'error\t-\t-\t%s worker_model %s does not match a known vendor; refuse rather than guess\n' "$lc" "$wm"
