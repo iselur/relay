@@ -1,48 +1,48 @@
 # BOOTSTRAP — stand up your own orchestrator
 
-Instructions for **your Claude Code**, running on a fresh Ubuntu 24.04 VPS. Follow gate by gate.
-Stop and hand back to the human at every **[HUMAN]** step — those are account/infrastructure actions
-Claude can't do. Everything else Claude runs and verifies.
+Instructions for **your orchestrator CLI** — Codex by default, Claude Code the same way — running on
+a fresh Ubuntu 24.04 VPS. Follow gate by gate. Stop and hand back to the human at every **[HUMAN]**
+step — those are account/infrastructure actions it can't do. Everything else it runs and verifies.
 
 ## 0. Prerequisites (the human provides)
 
 - **[HUMAN]** An **Ubuntu 24.04** VPS (2 vCPU / 4 GB is enough to start; more for heavy real-product test suites). SSH access.
 - **[HUMAN]** A non-root sudo user you'll operate as (any name). All paths in this system resolve to *that* user automatically — nothing is hardcoded.
 - **[HUMAN]** (Recommended) **Tailscale** on the box and your laptop/phone; put SSH on the tailnet only and close all public ports.
-- **[HUMAN]** **Claude Code** installed on the box and logged into your **Claude** subscription (not an API key).
-- **[HUMAN]** A **Codex** subscription; you'll do the device-auth login when prompted.
+- **[HUMAN]** A **Codex** subscription; the CLI goes on at gate 4, with a device-auth login.
+- **[HUMAN]** Optionally **Claude Code** and a **Claude** subscription (not an API key), to run the orchestrator on Claude instead.
 - **[HUMAN]** A **GitHub repo you own** (the one you created from this template). Protect `main` and `ready-for-main` with a ruleset: require the `ci` check, require PRs, block force-push and deletion, no bypass actors.
 
-## 1. Toolchain (Claude)
+## 1. Toolchain (orchestrator)
 
 Verify/install: `git`, `gh` (GitHub CLI), `ripgrep`, `jq`, `python3` + `venv`, Node 22+. Create the
 Python venv and install `scripts/requirements.txt`. Enable systemd linger for your user
 (`loginctl enable-linger $USER`) so worker units survive logout.
 
-## 2. Make this repo yours (Claude → `scripts/init-operator`)
+## 2. Make this repo yours (orchestrator → `scripts/init-operator`)
 
 Run **`scripts/init-operator`**. It is safe by default: it refuses to run against the original
 template remote, generates a fresh per-instance identity, sets a **repo-local** git identity, leaves
 autonomy **disabled**, clears the example owner state, and ensures an `ready-for-main` branch exists.
 Review its output.
 
-## 3. GitHub auth + CI (Claude, with human for the login)
+## 3. GitHub auth + CI (orchestrator, with human for the login)
 
 - **[HUMAN]** `gh auth login` (device flow), then `gh auth refresh -s workflow` so CI can be created.
-- Claude: `gh auth setup-git`, confirm the `ci` workflow exists (`.github/workflows/ci.yml`), open a
+- Orchestrator: `gh auth setup-git`, confirm the `ci` workflow exists (`.github/workflows/ci.yml`), open a
   trivial PR and confirm the `ci` check reports green and that a direct push to `main` is rejected by
   your ruleset.
 
-## 4. Codex CLI (Claude, human for the login)
+## 4. Codex CLI login (orchestrator, human for the login)
 
 Install the Codex CLI — either layout works for isolated workers: the npm package
 (`npm install -g --prefix ~/.local @openai/codex`, which also needs a system node at
 `/usr/bin/node`) or the native binary installer. **[HUMAN]** `codex login --device-auth` on your
-Codex subscription (not an API key). Claude: confirm `codex login status`, then a trivial
+Codex subscription (not an API key). Then confirm `codex login status` and that a trivial
 `codex exec` round-trips. (`dispatch launch` verifies a worker-launchable runtime exists and
 refuses with instructions if not.)
 
-## 5. Worker isolation — the load-bearing security step (Claude)
+## 5. Worker isolation — the load-bearing security step (orchestrator)
 
 Run **`scripts/setup-worker-user.sh`** (idempotent, uses sudo). It installs distro bubblewrap + acl,
 creates the dedicated `codex-worker` user + `codexwork` group, moves worktrees to `/srv/codexwork`
@@ -50,7 +50,7 @@ creates the dedicated `codex-worker` user + `codexwork` group, moves worktrees t
 worker is denied every one of your credentials**. Then run `bash tests/worker_isolation.sh` — all
 drills must pass. If any fails, STOP; do not dispatch workers.
 
-## 6. First job end to end (Claude)
+## 6. First job end to end (orchestrator)
 
 Write a tiny real spec in `specs/`, **[HUMAN]** approve it (record an approval artifact bound to this
 instance), then `./scripts/dispatch launch <SPEC-ID>` and `./scripts/dispatch await <attempt-id>`.
