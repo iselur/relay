@@ -65,7 +65,7 @@ refuses the author's own model, <code>scripts/review</code> refuses the author's
 reviewer sandboxed,
 given only spec, diff, and evidence, its verdict bound to the exact diff it saw. The operating rulebook is capped by CI at 80 lines, and its standing policy
 is that every new rule must come from a real failure in shipped work — the process shrinks
-instead of growing. Roles are configured in <code>models.json</code>; Kimi is wired in as a third
+instead of growing. Worker and reviewer models are configured in <code>models.json</code>; Kimi is wired in as a third
 vendor, one line away from a role. <code>SECURITY.md</code> maps the
 boundaries, the configured assumptions, and the known gaps.</p>
 
@@ -74,7 +74,7 @@ boundaries, the configured assumptions, and the known gaps.</p>
   <div class="role" style="--c: var(--you)"><b>You — the owner</b>
     <p>Bring ideas, approve risky work, merge to <code>main</code>. Nobody else can.</p></div>
   <div class="role" style="--c: var(--orch)"><b>Orchestrator — the manager</b>
-    <p>Grills ideas, writes specs, launches workers, holds the trust boundary. Set in <code>models.json</code>; today: Claude.</p></div>
+    <p>Grills ideas, writes specs, launches workers, holds the trust boundary. Today: Claude Code, set in its own settings — not <code>models.json</code>.</p></div>
   <div class="role" style="--c: var(--worker)"><b>Worker — the builder</b>
     <p>Implements the spec in a locked-down sandbox. Set in <code>models.json</code>; Kimi wired as a third vendor.</p></div>
   <div class="role" style="--c: var(--review)"><b>Reviewer — the judge</b>
@@ -156,7 +156,7 @@ boundaries, the configured assumptions, and the known gaps.</p>
   <!-- halt strip -->
   <rect class="node" x="10" y="452" width="820" height="66" fill="var(--orch-bg)" stroke="var(--orch)" stroke-dasharray="6 4"/>
   <text class="label" x="30" y="482">Stopping everything</text>
-  <text class="sub" x="30" y="504">One file (<tspan font-family="monospace">HALT</tspan>) freezes the whole system. Risky work still waits for your approval.</text>
+  <text class="sub" x="30" y="504">One file (<tspan font-family="monospace">HALT</tspan>) stops new launches and merges. Risky work still waits for your approval.</text>
 </svg>
 <figcaption>Amber needs you. Blue is the manager, green the sandboxed builder, purple the independent reviewer.</figcaption>
 </figure>
@@ -174,7 +174,8 @@ boundaries, the configured assumptions, and the known gaps.</p>
       before grading; a skipped, missing, or empty result is a failure. The worker saying "it
       passed" counts for nothing.</li>
   <li><b>Nothing reviews its own work.</b> The dispatcher refuses the author's own model;
-      <code>scripts/review</code> refuses the author's own vendor. The reviewer gets no tools, and its
+      <code>scripts/review</code> refuses the author's own vendor. A Claude reviewer gets no tools; a Codex one runs read-only (residual in
+           <code>SECURITY.md</code>). Its
       verdict holds only for the exact code it saw. Five review rounds maximum, then ship or escalate.</li>
   <li><b>You own <code>main</code>.</b> Enforced by your GitHub branch protection, not by trust.</li>
 </ul>

@@ -5,7 +5,7 @@ makes two great models work together with minimum oversight, passing work betwee
 team.
 
 The **Orchestrator**👩‍🏫 (today Claude) manages a task backlog while **Workers**👷 handle the
-implementation — the model behind each role is set in `scripts/models.json`. They can work for days without you; the final merge is yours, or the
+implementation — the worker and reviewer models are set in `scripts/models.json`. They can work for days without you; the final merge is yours, or the
 orchestrator's under your recorded grant.
 
 ## How it works
@@ -62,7 +62,7 @@ conditions (green `ci`, binding reviewer PASS).
 
 Get the cheapest Hetzner shared VM — about $7/month is enough.
 Install Tailscale, tmux, and Claude Code on it.
-Have subscriptions for the models assigned in `scripts/models.json` and log each in.
+Have subscriptions for the orchestrator CLI and for the models in `scripts/models.json`, and log each in.
 Have a GitHub repository you own.
 
 Then:
@@ -79,6 +79,7 @@ BOOTSTRAP.md handles the setup in order and pauses whenever the owner (you) must
 
 ## Names used here
 
-The roles are always owner (you), orchestrator, worker, and reviewer; the model behind each is set in `scripts/models.json`.
+The roles are always owner (you), orchestrator, worker, and reviewer. Worker and reviewer models come
+from `scripts/models.json`; the orchestrator is whichever CLI is running.
 
 MIT — see [LICENSE](LICENSE).
