@@ -2,7 +2,7 @@
 
 This file is the whole rulebook; CI caps its size. A new rule requires a real failure in shipped
 work and REPLACES a line, never stacks. Roles, not model names: **owner** (the human),
-**orchestrator**, **worker**, **reviewer** — scripts/models.json maps the roles scripts consume; the orchestrator is its own CLI's setting. AGENTS.md holds the commands.
+**orchestrator**, **worker**, **reviewer** — scripts/models.json maps the roles scripts consume; the orchestrator is its own CLI's setting. **Read AGENTS.md too — the commands and the exact CLI invocations live only there, and no CLI loads it for you.**
 
 ## Session start
 
@@ -47,7 +47,7 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
 
 ## Safety invariants (never violate)
 
-- `main` changes only by the owner, or by the orchestrator merging a `ready-for-main` PR into `main` whose own `ci` check is green and whose exact diff holds a binding PASS (owner grant 2026-07-15). `ready-for-main` changes only through a pull request with `ci` green.
+- `main` changes only by the owner, or by the orchestrator merging a `ready-for-main` PR into `main` whose own `ci` check is green and whose exact diff holds a binding PASS (owner grant 2026-07-15) — one round on the union, not a fresh ladder, where every slice in it already passed. `ready-for-main` changes only through a pull request with `ci` green.
 - External-CLI workers run as a separate identity; no isolation means no launch.
   `ORCH_ALLOW_UNISOLATED=1` needs the owner's explicit instruction, and its use is recorded.
   Subagent workers run inside the orchestrator's own session and trust domain.
