@@ -442,11 +442,12 @@ if (( ${#plan_ids[@]} > 1 )); then
   die "REFUSED — context files reference multiple distinct PLAN artifacts (${!plan_ids[*]}); one artifact per review, its rounds are its cap"
 fi
 
-# --author is a CROSS-CHECK against the derived provenance, never the source of truth (B18).
+# --author is a CROSS-CHECK wherever provenance IS recorded (B18). Where none is, the fallback above
+# already took --author at face value, so $derived equals $author and this check cannot fire.
 if [[ "$author" != "$derived" ]]; then
   echo "review: REFUSED — recorded provenance says this artifact is '$derived'-authored, but --author asserted '$author'." >&2
   for line in "${evidence_lines[@]}"; do echo "        evidence: $line" >&2; done
-  echo "        Authorship is derived from dispatch/codex-plan provenance recorded on disk, never a caller assertion (B18)." >&2
+  echo "        Where provenance is recorded on disk, authorship comes from it, not from a caller assertion (B18)." >&2
   exit 6
 fi
 
