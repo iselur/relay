@@ -1,87 +1,52 @@
 # Relay
 
-Relay lets you get maximum from your Claude and Codex **subscriptions** 💸 (no API key needed) and
-makes two great models work together with minimum oversight, passing work between them like a relay
-team.
+Relay is a reusable oversight approach for coding agents. It gives an agent a checked path from a
+request to a pull request: a worker produces the change, the harness verifies it, and a configured
+separate reviewer checks the exact diff before it moves forward.
 
-The **Orchestrator**👩‍🏫 (Codex by default, Claude Code just as well) manages a task backlog while **Workers**👷 handle the
-implementation — the worker and reviewer models are set in `scripts/models.json`. They can work for days without you; the final merge is yours, or the
-orchestrator's under your recorded grant.
+Relay has been used across more than 500 production pull requests. In that use, the worker/reviewer
+loop repeatedly surfaced concrete issues and improvements before merge. That is a record of repeated
+production use, not a claim that Relay always outperforms direct model use.
 
-## How it works
+The approach can be reused in any repository where coding agents need oversight. This repository is
+a ready-to-run Linux/GitHub reference implementation using subscription-based CLIs. The approach
+itself does not require a VPS, VM, or particular host.
 
-Give the Orchestrator a task and it turns the request into a checked spec, then delegates the
-build to Workers. The Orchestrator and Reviewer inspect and challenge the results for up to five
-review rounds.
-
-Once started, the system can continue autonomously while you are away: work already dispatched
-runs to completion without you. Every change must pass tests and verification.
-
-Passing work becomes a pull request to `ready-for-main`. Promotion to `main` is yours — or the
-orchestrator's, only under your recorded grant (green `ci` plus a binding PASS from an
-independent reviewer on the exact diff).
-
-The [visual explanation](how-it-works.html) shows the whole process — and who does which job —
-on one page.
-
-## Why Relay is different 🛡️
-
-Most agent frameworks coordinate AI agents and trust what the agents say. Relay is built like
-CI/CD with a trust boundary: the load-bearing claims are backed by gates a machine checks, and
-the ones that are not are written down as configured assumptions or known gaps.
-
-- **Evidence, not prose.** A worker saying "tests passed" counts for nothing — the tests are
-  restored from the orchestrator's own copy and rerun. A test that did not run did not pass.
-- **Self-review is refused on recorded provenance.** The dispatcher refuses the author's own
-  model; `scripts/review` refuses the author's own model too, and the author's whole vendor where
-  no author model is recorded — derivation has recorded gaps, listed in SECURITY.md, so this is as
-  good as the record, not a guarantee. The reviewer is sandboxed and given only spec, diff, and evidence; its verdict binds
-  only to the exact code it saw, and moved code means a fresh review. The owner sets the pairing
-  in `scripts/models.json`.
-- **Isolation or no launch.** External-CLI workers run as a separate machine user that cannot
-  reach your home directory or your original credentials (they hold their own copied vendor
-  login), and their test runs have no network; without that sandbox they do not launch — the
-  only exception is the recorded owner-ordered `ORCH_ALLOW_UNISOLATED` override. Subagent
-  workers run inside the orchestrator's own session; SECURITY.md maps both boundaries.
-- **A rulebook that shrinks.** The operating rules are capped by CI at 80 lines, and the
-  standing policy is that a new rule requires a real failure in shipped work and replaces a
-  line, never stacks.
-- **Multi-vendor by design.** Codex holds the active roles today; Claude and Kimi are wired in as
-  alternatives — giving either a role is one line in `scripts/models.json`.
-
-Honesty is part of the design: SECURITY.md lists the known gaps and the assumptions the tests
-do not cover.
-
-## How to make it autonomous 🔄
-
-Autonomy by default is off (as a precaution).
-To let the orchestrator merge gated worker pull requests to `ready-for-main` without a
-per-PR click, create `.orchestrator/AUTONOMY.local.json` as described in BOOTSTRAP.md step 7.
-Merges to `main` are yours unless your recorded grant lets the orchestrator promote under its
-conditions (green `ci`, binding reviewer PASS).
-
-## How to set it up
-
-Get the cheapest Hetzner shared VM — about $7/month is enough.
-Install Tailscale, tmux, and your orchestrator CLI — Codex, or Claude Code.
-Have subscriptions for the orchestrator CLI and for the models in `scripts/models.json`, and log each in.
-Have a GitHub repository you own.
-
-Then:
-
-1. Create the repository from this template.
-2. Clone it onto the VM.
-3. Open your orchestrator CLI in the clone and paste:
+## The compact flow
 
 ```text
-Read BOOTSTRAP.md and set me up gate by gate, pausing at each human step.
+request -> approved spec -> worker build -> harness checks -> bound review -> pull request
 ```
 
-BOOTSTRAP.md handles the setup in order and pauses whenever the owner (you) must act.
+The harness owns the authoritative commit, evidence, and release decision. A worker's prose alone
+is not proof. Passing work targets `ready-for-main`; promotion to `main` remains separately
+protected.
 
-## Names used here
+The owner brings the request and approves the spec. The orchestrator coordinates the work, the
+worker implements it, and the bound reviewer checks the exact candidate diff. The harness checks
+scope, test execution, and review evidence before opening the pull request.
 
-The roles are always owner (you), orchestrator, worker, and reviewer. Worker and reviewer models come
-from `scripts/models.json`; the orchestrator is whichever CLI is running.
+## Why use Relay
+
+- Structured worker and reviewer roles.
+- Exact-candidate scope, test, and review checks.
+- Repeated use in production pull requests.
+
+Relay is designed to make evidence visible at the point where work moves forward. It keeps the
+roles and checks explicit without asking the reviewer to trust a worker's summary.
+
+Relay's guarantees are deliberately scoped. [SECURITY.md](SECURITY.md) separates what repository
+tests prove from deployment assumptions and known gaps.
+
+## Learn more
+
+- [How Relay works](how-it-works.html) explains the roles and flow visually.
+- [BOOTSTRAP.md](BOOTSTRAP.md) is the setup path for this reference implementation.
+- [SECURITY.md](SECURITY.md) is the source of truth for guarantees, assumptions, and gaps.
+- [CLAUDE.md](CLAUDE.md) contains the operating rules.
+- [AGENTS.md](AGENTS.md) contains repository conventions and commands.
+
+Start with the setup path when using this repository. Adapt the oversight approach to the repository,
+agent tools, and release controls that your team already uses.
 
 MIT — see [LICENSE](LICENSE).
