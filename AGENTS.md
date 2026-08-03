@@ -1,15 +1,15 @@
 # AGENTS.md — conventions and commands
 
-Referenced by [CLAUDE.md](CLAUDE.md), which holds the operating rules in terms of ROLES. Humans read
-the role table here; machines read `scripts/models.json` (roles, CLI aliases, vendor map).
-A model swap is one edit there, never to the rulebook; a new model also adds its vendor_map line.
+**Before any work read and follow [CLAUDE.md](CLAUDE.md): the whole operating rulebook, binding on you,
+and no CLI loads it for you.** Its rules are in ROLES; humans read the role table here, machines read
+`scripts/models.json` — a model swap is one edit there, never the rulebook, plus its vendor_map line.
 
 ## Who plays which role (today)
 
 | Role | Today | Note |
 |---|---|---|
 | owner | the human | approves specs, merges `main` |
-| orchestrator | Claude Code on this box (Fable 5 high; the owner flips settings.json to Opus 4.8 at Fable retirement) | dispatches, reviews worker diffs, reports |
+| orchestrator | Claude Code or Codex CLI — whichever you launch; its model comes from that CLI, not `models.json` | dispatches, reviews worker diffs, reports |
 | worker | per `scripts/models.json`: Codex CLI (`gpt-5.6-luna`) detached, or a Claude subagent in-session | BUILD phase; a subagent BUILD is graded by `dispatch continue` |
 | reviewer | per `scripts/models.json` (bound reviewer) | never reviews its own work |
 
@@ -42,7 +42,7 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
 
 ## Codex on this box
 
-- Model split (from `scripts/models.json`): worker BUILD `gpt-5.6-luna`; plans and reviews `gpt-5.6-sol`.
+- Model split (`scripts/models.json`): worker BUILD `gpt-5.6-luna`; plans `gpt-5.6-sol`; artifact reviews `gpt-5.6-luna` — never the plan author's model, or every plan is refused.
 - Invocation: `codex exec -m <model per split above> -c model_reasoning_effort=high
   --sandbox read-only --skip-git-repo-check - <prompt.txt` — prompt on stdin always (argv dies
   over 130KB). Web search: `-c tools.web_search=true`. Standard tier: never set `service_tier` (owner cost decision 2026-07-16).
@@ -52,9 +52,9 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
   `bwrap: loopback: Failed RTM_NEWADDR`; proof: `tests/worker_userns.sh`). Inlining context is a
   choice now, not a requirement — the bound reviewer still gets spec + diff + evidence only, never
   a live checkout. The final answer is recoverable from the `--json` stream (last `agent_message`).
-- Reviews of **Claude-authored** work go through `scripts/review` (reviewer = Codex; needs
-  `--author`, refuses Codex-authored artifacts, counts rounds, refuses a sixth). Codex-authored work
-  is reviewed by Claude — worker diffs by the bound reviewer in the dispatcher, plans in-session —
-  under the same five-round cap.
+- **Orchestrator artifacts** go through `scripts/review`: it refuses the reviewer's own recorded author
+  model, and the whole vendor where none is recorded — there `--author` IS that unauthenticated vendor,
+  elsewhere only a cross-check (SECURITY.md gap 8). Worker diffs go to the bound reviewer in
+  `scripts/models.json`; both are model-level. Five rounds each; a sixth is refused.
 - Plans go through `scripts/codex-plan --brief` (cap 400; refuses a brief missing any required
   section); the no-flag standard tier remains usable. Trigger: CLAUDE.md rule 5.

@@ -4,7 +4,8 @@
 # script refuses it. The cap lives in code because a prose cap already lost once to a ten-round
 # loop. Only round-N.md files are rounds: sibling artifacts (dispositions, notes) never count.
 #
-# The reviewer this script invokes is Codex, so it may only review Claude-authored artifacts.
+# The reviewer this script invokes is the orchestrator_artifact_reviewer model in models.json; it
+# may review anything its own model did not author (see the model-level rule below).
 # B18: --author is NOT trusted as an assertion — a caller could mislabel a Codex-authored artifact
 # as --author claude and get it routed to a Codex reviewer, which is exactly self-review. So
 # authorship is DERIVED from provenance this repo's dispatcher (scripts/dispatch.py) and
@@ -22,21 +23,23 @@
 #     or any read failure all refuse outright (fail closed) rather than guessing;
 #   - a --context file inside a recorded worker worktree (launch.json "worktree", or either root
 #     dispatch.py ever hands to a worker) is likewise codex;
-#   - anything else is claude (this system has exactly two producers; nothing else writes to a
-#     Codex-marked path).
-# --author is kept only as a CROSS-CHECK: it must agree with the derived value or the call is
-# refused (exit 6). At least one --context file is REQUIRED so there is always something to derive
-# from; a call with no evidence at all is refused (fail closed) rather than trusted.
-# LIMITATION (documented, not solved here): a freshly drafted Claude file that has not yet touched
-# any Codex-marked path derives as 'claude' by absence of a Codex marker, not by positive proof of
-# a human/Claude hand — this repo has no signing or content-provenance system. What this closes is
+#   - anything else has no recorded producer at all, and falls back to the --author vendor.
+# --author is kept only as a CROSS-CHECK: wherever provenance IS on record it must agree with the
+# derived value or the call is refused (exit 6). At least one --context file is REQUIRED so there is
+# always something to derive from; a call with no evidence at all is refused (fail closed).
+# LIMITATION (documented, not solved here): an unstamped file has no recorded producer, so the
+# fallback believes --author and the cross-check cannot bite — an orchestrator of ANY vendor can
+# understate itself there. It is never self-review-safe on its own word: a fallback derivation
+# carries no model, so the whole asserted vendor is refused. This repo has no signing or
+# content-provenance system, so nothing here proves a hand. What this closes is
 # the literal B18 report: an artifact that already carries dispatcher-recorded Codex provenance can
 # no longer be laundered through a mislabeled --author flag. Residual (same class): a .stdout/.stderr
 # has no frontmatter of its own, so a raw stream RENAMED off its reserved PLAN-NNN.* name loses the
-# only handle on its sibling and derives 'claude' — the plan .md it came from does not.
+# only handle on its sibling and falls back to --author — the plan .md it came from does not.
 #
-# 'codex' as the derived/checked author is always refused (never Codex-grades-Codex). Codex-authored
-# work is reviewed by Claude (worker diffs: bound reviewer in the dispatcher; plans: Claude in-session).
+# The reviewer's own MODEL is always refused as the derived/checked author (nothing grades its own
+# work), and the author's whole VENDOR is refused wherever no author model is on record. So one
+# vendor can hold both roles, on different models — set in scripts/models.json, never here.
 #
 # Usage: scripts/review --topic <slug> --author <claude|codex> --context FILE [--context FILE]...
 #        [--] [PROMPT...]
@@ -138,7 +141,7 @@ derive_one() {
   # `exit` here would be swallowed by the subshell and skip the caller's fail-closed refusal.
   local f="$1" real
   if ! real=$(realpath -e -- "$f" 2>/dev/null); then
-    printf 'error\t-\tcannot resolve context path: %s\n' "$f"
+    printf 'error\t-\t-\tcannot resolve context path: %s\n' "$f"
     return 0
   fi
 
@@ -171,7 +174,7 @@ derive_one() {
     expect_pid="${BASH_REMATCH[1]}"
     md_file="${real%.*}.md"
     if [[ ! -f "$md_file" ]]; then
-      printf 'error\t-\t%s carries codex-plan .%s naming but its sibling %s is missing; provenance cannot be read\n' "$f" "${base##*.}" "$md_file"
+      printf 'error\t-\t-\t%s carries codex-plan .%s naming but its sibling %s is missing; provenance cannot be read\n' "$f" "${base##*.}" "$md_file"
       return 0
     fi
   elif [[ "$base" =~ ^PLAN-([0-9]+)\.md$ ]]; then
@@ -263,39 +266,39 @@ PYEOF
     )
     prc=$?
     if (( prc != 0 )); then
-      printf 'error\t-\t%s: frontmatter parser exited nonzero (%d); refuse rather than guess\n' "$md_file" "$prc"
+      printf 'error\t-\t-\t%s: frontmatter parser exited nonzero (%d); refuse rather than guess\n' "$md_file" "$prc"
       return 0
     fi
     IFS=$'\t' read -r pstatus pid pmodel <<<"$parsed"
     case "$pstatus" in
       readfail)
-        printf 'error\t-\t%s: cannot read for the codex-plan frontmatter check\n' "$md_file"
+        printf 'error\t-\t-\t%s: cannot read for the codex-plan frontmatter check\n' "$md_file"
         return 0 ;;
       noyaml)
-        printf 'error\t-\t%s: no YAML parser available to read plan frontmatter; refuse rather than guess\n' "$md_file"
+        printf 'error\t-\t-\t%s: no YAML parser available to read plan frontmatter; refuse rather than guess\n' "$md_file"
         return 0 ;;
       broken)
-        printf 'error\t-\t%s: %s (fail closed)\n' "$md_file" "$pid"
+        printf 'error\t-\t-\t%s: %s (fail closed)\n' "$md_file" "$pid"
         return 0 ;;
       ok)
         if (( named_plan )) && [[ "$pid" != "$expect_pid" ]]; then
-          printf 'error\t-\t%s uses codex-plan reserved name PLAN-%s but its frontmatter id is PLAN-%s; provenance mismatch, refuse rather than bind the wrong artifact\n' "$f" "$expect_pid" "$pid"
+          printf 'error\t-\t-\t%s uses codex-plan reserved name PLAN-%s but its frontmatter id is PLAN-%s; provenance mismatch, refuse rather than bind the wrong artifact\n' "$f" "$expect_pid" "$pid"
           return 0
         fi
         vendor=$(classify_model "$pmodel")
         if [[ "$vendor" != "claude" && "$vendor" != "codex" && "$vendor" != "kimi" ]]; then
-          printf 'error\t-\t%s frontmatter author_model %s does not match a known vendor; refuse rather than guess\n' "$md_file" "$pmodel"
+          printf 'error\t-\t-\t%s frontmatter author_model %s does not match a known vendor; refuse rather than guess\n' "$md_file" "$pmodel"
           return 0
         fi
         plan_id="$pid"; plan_vendor="$vendor"; plan_model="$pmodel" ;;
       notplan)
         if (( named_plan )); then
-          printf 'error\t-\t%s uses codex-plan reserved name PLAN-NNN but lacks its frontmatter (top-level id: PLAN-NNN + author_model); provenance cannot be read\n' "$md_file"
+          printf 'error\t-\t-\t%s uses codex-plan reserved name PLAN-NNN but lacks its frontmatter (top-level id: PLAN-NNN + author_model); provenance cannot be read\n' "$md_file"
           return 0
         fi
         ;;  # a non-reserved .md with no plan frontmatter — not a plan; plan_id stays '-'
       *)
-        printf 'error\t-\t%s: unrecognized frontmatter parser status; refuse rather than guess\n' "$md_file"
+        printf 'error\t-\t-\t%s: unrecognized frontmatter parser status; refuse rather than guess\n' "$md_file"
         return 0 ;;
     esac
   fi
@@ -315,7 +318,7 @@ PYEOF
     n="${rel%%/*}"
     lc="$attempts_root/$spec/$n/launch.json"
     if [[ ! -f "$lc" ]]; then
-      printf 'error\t-\t%s is inside dispatch attempt %s/%s but its launch.json is missing (%s); provenance cannot be established\n' "$f" "$spec" "$n" "$lc"
+      printf 'error\t-\t-\t%s is inside dispatch attempt %s/%s but its launch.json is missing (%s); provenance cannot be established\n' "$f" "$spec" "$n" "$lc"
       return 0
     fi
     wm=$("$PY" -c "
@@ -328,35 +331,42 @@ except Exception:
 print(d.get('worker_model') or '')
 " "$lc")
     if [[ -z "$wm" ]]; then
-      printf 'error\t-\t%s has no worker_model recorded; corrupt attempt provenance\n' "$lc"
+      printf 'error\t-\t-\t%s has no worker_model recorded; corrupt attempt provenance\n' "$lc"
       return 0
     fi
+    # A model reaches the tab-delimited record below only by being a vendor_map KEY, and
+    # models_check.py refuses a key that is not one bare token — so classify_model is already the
+    # check that an id cannot carry a tab and split the record (R102 round-3 review).
     vendor=$(classify_model "$wm")
     if [[ "$vendor" != "claude" && "$vendor" != "codex" && "$vendor" != "kimi" ]]; then
-      printf 'error\t-\t%s worker_model %s does not match a known vendor; refuse rather than guess\n' "$lc" "$wm"
+      printf 'error\t-\t-\t%s worker_model %s does not match a known vendor; refuse rather than guess\n' "$lc" "$wm"
       return 0
     fi
     # A PLAN file inside an attempt has two independent provenance records: the attempt's launch.json
-    # worker_model and the plan's own frontmatter author_model. They must AGREE — a conflict is
-    # ambiguous provenance and refuses, so a Claude attempt cannot host a Sol-authored plan (or vice
-    # versa) to launder its vendor.
-    if [[ -n "$plan_vendor" && "$plan_vendor" != "$vendor" ]]; then
-      printf 'error\t-\t%s is PLAN-%s (frontmatter author_model=%s -> %s) inside attempt %s/%s whose launch.json worker_model=%s -> %s; provenance conflict, refuse rather than guess\n' "$f" "$plan_id" "$plan_model" "$plan_vendor" "$spec" "$n" "$wm" "$vendor"
+    # worker_model and the plan's own frontmatter author_model. They must AGREE on the MODEL, not
+    # merely the vendor — the guard below is model-level, so a Sol-authored plan hosted by a Luna
+    # attempt would otherwise derive as Luna and let a Sol reviewer grade Sol's own work.
+    if [[ -n "$plan_model" && "$plan_model" != "$wm" ]]; then
+      printf 'error\t-\t-\t%s is PLAN-%s (frontmatter author_model=%s) inside attempt %s/%s whose launch.json worker_model=%s; provenance conflict, refuse rather than guess\n' "$f" "$plan_id" "$plan_model" "$spec" "$n" "$wm"
       return 0
     fi
-    printf '%s\t%s\tattempt %s/%s launch.json worker_model=%s\n' "$vendor" "$plan_id" "$spec" "$n" "$wm"
+    if [[ -n "$plan_vendor" && "$plan_vendor" != "$vendor" ]]; then
+      printf 'error\t-\t-\t%s is PLAN-%s (frontmatter author_model=%s -> %s) inside attempt %s/%s whose launch.json worker_model=%s -> %s; provenance conflict, refuse rather than guess\n' "$f" "$plan_id" "$plan_model" "$plan_vendor" "$spec" "$n" "$wm" "$vendor"
+      return 0
+    fi
+    printf '%s\t%s\t%s\tattempt %s/%s launch.json worker_model=%s\n' "$vendor" "$plan_id" "$wm" "$spec" "$n" "$wm"
     return 0
   fi
 
   # 2. A codex-plan artifact outside any attempt: bind to its frontmatter identity (STEP 1).
   if [[ -n "$plan_vendor" ]]; then
-    printf '%s\t%s\tcodex-plan artifact (PLAN-%s) frontmatter author_model=%s\n' "$plan_vendor" "$plan_id" "$plan_id" "$plan_model"
+    printf '%s\t%s\t%s\tcodex-plan artifact (PLAN-%s) frontmatter author_model=%s\n' "$plan_vendor" "$plan_id" "$plan_model" "$plan_id" "$plan_model"
     return 0
   fi
 
   # 3. Either root dispatch.py ever hands to a worker (isolated or not).
   if [[ "$real" == "$iso_worktrees"/* || "$real" == "$local_worktrees"/* ]]; then
-    printf 'codex\t%s\tworker worktree path %s\n' "$plan_id" "$real"
+    printf 'codex\t%s\t-\tworker worktree path %s\n' "$plan_id" "$real"
     return 0
   fi
 
@@ -377,33 +387,44 @@ print(d.get('worktree') or '')
       [[ -n "$wt" ]] || continue
       wt=$(realpath -m -- "$wt")
       if [[ "$real" == "$wt" || "$real" == "$wt"/* ]]; then
-        printf 'codex\t%s\trecorded worktree in %s\n' "$plan_id" "$lc"
+        printf 'codex\t%s\t-\trecorded worktree in %s\n' "$plan_id" "$lc"
         return 0
       fi
     done < <(find "$attempts_root" -mindepth 3 -maxdepth 3 -name launch.json 2>/dev/null)
   fi
 
-  # 5. Nothing ties this file to a Codex-marked path. This system has exactly two producers
-  #    (AGENTS.md role table) and every Codex-authored path is one of the above, so the absence of
-  #    a Codex marker is the signal for Claude/operator authorship (see LIMITATION note at top).
-  printf 'claude\t%s\tno Codex provenance marker found for %s\n' "$plan_id" "$real"
+  # 5. Nothing on disk ties this file to any producer. This used to assume 'claude', which was only
+  #    true while Claude was the sole orchestrator; a Codex orchestrator's own draft has no marker
+  #    either, so that assumption mislabeled it and made a truthful --author codex unusable. With no
+  #    record to check, --author is the only signal there is, so it is taken at face value here —
+  #    and, carrying no model, it keeps the vendor-level refusal below (see LIMITATION at top).
+  printf '%s\t%s\t-\tno recorded provenance for %s; falling back to the asserted --author\n' "$author" "$plan_id" "$real"
 }
 
 ((${#contexts[@]})) || die "REFUSED — no --context evidence supplied; authorship cannot be derived without it (fail closed, B18). Pass --context FILE pointing at the artifact under review."
 
 derived=""
+derived_model="-"
 evidence_lines=()
 declare -A plan_ids=()
 for context in "${contexts[@]}"; do
   [[ -f "$context" && -r "$context" ]] || die "context is not a readable file: $context"
-  IFS=$'\t' read -r vendor plan_id note <<<"$(derive_one "$context")"
+  # The free-form note is read LAST: `read` gives the final variable everything that is left, so a
+  # note (or a path inside one) containing a tab would otherwise land in $model and defeat the
+  # '-' checks below. model sits in a fixed position and can only ever be a model name or '-'.
+  IFS=$'\t' read -r vendor plan_id model note <<<"$(derive_one "$context")"
   [[ "$vendor" == "error" ]] && die "REFUSED — $note (fail closed, B18)"
   [[ "$plan_id" != "-" ]] && plan_ids["$plan_id"]=1
   evidence_lines+=("$context: $vendor — $note")
+  # Branches 3–5 record a vendor but no model, so '-' means "no author model on record" and, below,
+  # keeps the vendor-level refusal. Contexts that disagree on the model collapse to '-' too.
+  [[ -n "$model" ]] || model="-"
   if [[ -z "$derived" ]]; then
-    derived="$vendor"
+    derived="$vendor"; derived_model="$model"
   elif [[ "$vendor" != "$derived" ]]; then
     die "REFUSED — context files disagree on recorded authorship (mixed provenance): $(printf '%s | ' "${evidence_lines[@]}")"
+  elif [[ "$model" != "$derived_model" ]]; then
+    derived_model="-"
   fi
 done
 
@@ -421,11 +442,12 @@ if (( ${#plan_ids[@]} > 1 )); then
   die "REFUSED — context files reference multiple distinct PLAN artifacts (${!plan_ids[*]}); one artifact per review, its rounds are its cap"
 fi
 
-# --author is a CROSS-CHECK against the derived provenance, never the source of truth (B18).
+# --author is a CROSS-CHECK wherever provenance IS recorded (B18). Where none is, the fallback above
+# already took --author at face value, so $derived equals $author and this check cannot fire.
 if [[ "$author" != "$derived" ]]; then
   echo "review: REFUSED — recorded provenance says this artifact is '$derived'-authored, but --author asserted '$author'." >&2
   for line in "${evidence_lines[@]}"; do echo "        evidence: $line" >&2; done
-  echo "        Authorship is derived from dispatch/codex-plan provenance recorded on disk, never a caller assertion (B18)." >&2
+  echo "        Where provenance is recorded on disk, authorship comes from it, not from a caller assertion (B18)." >&2
   exit 6
 fi
 
@@ -440,12 +462,19 @@ if (( ${#plan_ids[@]} == 1 )); then
 fi
 # --------------------------------------------------------------------------------------------------
 
-# B18 self-review guard: the reviewer vendor must not match the artifact's vendor. The vendor is
-# now dynamic (REVIEWER_VENDOR, derived from the configured model), not hardcoded to "codex".
-if [[ "$derived" == "$REVIEWER_VENDOR" ]]; then
-  echo "review: REFUSED — recorded provenance shows this is a $REVIEWER_VENDOR-authored artifact, and this review uses the same $REVIEWER_VENDOR vendor." >&2
+# B18 self-review guard: the reviewer must not be the artifact's own author. Recorded provenance
+# decides it at MODEL level, matching the dispatcher's worker-diff rule — a different model of the
+# same vendor is a different reviewer. Branches 3–5 record no author model, so provenance that
+# reaches only the vendor keeps refusing the whole vendor: the guard weakens only where the author
+# model is actually on record.
+if [[ "$derived" == "$REVIEWER_VENDOR" && ( "$derived_model" == "-" || "$derived_model" == "$MODEL" ) ]]; then
+  if [[ "$derived_model" == "-" ]]; then
+    echo "review: REFUSED — recorded provenance shows this is a $REVIEWER_VENDOR-authored artifact with no author model on record, and this review uses $REVIEWER_VENDOR model $MODEL." >&2
+  else
+    echo "review: REFUSED — recorded provenance shows this artifact was authored by $derived_model, which is the model this review uses." >&2
+  fi
   for line in "${evidence_lines[@]}"; do echo "        evidence: $line" >&2; done
-  echo "        Same-vendor review is not allowed (CLAUDE.md). Use a reviewer from a different vendor." >&2
+  echo "        Self-review is not allowed (CLAUDE.md). Use a reviewer model the artifact's author is not." >&2
   exit 4
 fi
 

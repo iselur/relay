@@ -36,6 +36,10 @@ tracked in the private ledger. In-flight work lives in the ledger, not here.)
 - 2026-07-15 audit remainder: re-verified 2026-07-16 — seven of eight highs already fixed on main,
   the last a low-risk merge-window race (owner enables GitHub's up-to-date-branch rule); four
   state-machine mediums confirmed but low risk. Report: claude-out/audit-reverify-2026-07-16.md.
-- Fable retirement follow-through: after the owner's manual flip, point the bound reviewer in
-  `scripts/models.json` at its successor via a reviewed PR.
+- `scripts/review` provenance, three holes: a file under a worker worktree is `codex` by path alone (a
+  Claude or Kimi reviewer then fails OPEN — read `launch.json` `worker_model` instead); an `author_model:`
+  stamp is the author's own word, so an author can understate itself (needs a digest-bound receipt written
+  at dispatch by something other than the author); and it compares config model ids, so re-pointing a
+  `cli_aliases` target after authoring lets a differently-named reviewer invoke the same provider model
+  (R102 round-3 — needs the invoked identity stamped at authoring time).
 - External benchmark score and cost reporting — after a real product exists.

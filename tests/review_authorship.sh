@@ -28,6 +28,18 @@ cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
 # dispatch integrate grades from a write-stripped tree; cp -p carries that read-only mode into
 # this test's own scratch copy, which case 5 must rewrite — make the copy writable regardless.
 chmod u+w "$tmp/repo/scripts/models.json"
+# The self-review gate compares the artifact's recorded author MODEL with the reviewer's, so these
+# assertions pin the reviewer role instead of inheriting the owner's live config — otherwise
+# flipping models.json turns an exit-4 assertion into a silent pass.
+pin_reviewer() { # $1 model
+  python3 - "$tmp/repo/scripts/models.json" "$1" <<'PIN'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["roles"]["orchestrator_artifact_reviewer"] = {"model": sys.argv[2], "effort": "high"}
+json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+PIN
+}
+pin_reviewer gpt-5.6-sol
 
 cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -105,11 +117,16 @@ rc=$?
 [ "$rc" = 6 ] && ok "forged --author claude on a --out plan's .stdout is refused (exit 6)" \
   || bad "forged --author claude on a --out plan .stdout NOT refused (exit $rc)"
 
-# 1d. The reverse forgery also refused: a plain claude-authored file mislabeled --author codex.
-scripts/review --topic forged-reverse --author codex --context claude-note.md "please review" >/dev/null 2>&1
+# 1d. AN UNSTAMPED ARTIFACT DECLARED --author codex: nothing on disk records who wrote it, so the
+#     derivation used to assume 'claude' and reject the truthful declaration as a mismatch, leaving a
+#     Codex orchestrator's own draft reviewable only under a false --author claude. It must instead
+#     believe the declaration and refuse the whole vendor (exit 4) — no author model is on record.
+scripts/review --topic unstamped-codex --author codex --context claude-note.md "please review" >/dev/null 2>&1
 rc=$?
-[ "$rc" = 6 ] && ok "forged --author codex on a claude-authored artifact is refused (exit 6)" \
-  || bad "forged --author codex on a claude-authored artifact NOT refused (exit $rc)"
+[ "$rc" = 4 ] && ok "an unstamped artifact declared --author codex is refused as self-review (exit 4)" \
+  || bad "unstamped --author codex gave exit $rc, expected 4 (vendor-level refusal, not a mismatch)"
+[ -e .orchestrator/reviews/unstamped-codex ] && bad "unstamped-codex refusal still created review state" \
+  || ok "unstamped-codex refusal writes nothing"
 
 # 2. MISSING PROVENANCE: no --context at all means nothing to derive from — refuse rather than
 #    trust the --author string alone (this is the exact B18 bug: a bare, caller-supplied claim).
@@ -149,6 +166,49 @@ rc=$?
   || bad "correctly-derived codex authorship gave exit $rc, expected 4 (self-review vendor gate)"
 [ -e .orchestrator/reviews/real-codex-topic ] && bad "self-review refusal still created review state" \
   || ok "self-review refusal writes nothing"
+
+# 3b. SAME VENDOR, DIFFERENT MODEL: the gate is model-level, matching the dispatcher's worker-diff
+#     rule, so a sol-authored attempt reviewed by luna runs. This is the case that lets one vendor
+#     supply both the orchestrator and its artifact reviewer.
+pin_reviewer gpt-5.6-luna
+scripts/review --topic cross-model-topic --author codex --context .orchestrator/attempts/SPEC-901/1/diff.patch "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 0 ] && ok "codex artifact reviewed by a different codex model runs (exit 0)" \
+  || bad "sol-authored artifact under a luna reviewer gave exit $rc, expected 0"
+[ -s .orchestrator/reviews/cross-model-topic/round-1.md ] \
+  && ok "cross-model review wrote its round-1 verdict" || bad "no round-1.md for the cross-model review"
+
+# 3c. FAIL CLOSED WHERE THE MODEL IS UNKNOWN: a worker-worktree path records the vendor but no
+#     author model, so it stays refused for the whole vendor — the gate weakens only where the
+#     author model is actually on record, never by default.
+scripts/review --topic no-model-topic --author codex --context .worktrees/SPEC-902-1/notes.txt "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 4 ] && ok "codex artifact with no author model on record stays refused (exit 4)" \
+  || bad "unrecorded author model gave exit $rc, expected 4 (vendor-level fallback)"
+
+# 3d. A TAB IN THE PATH must not smuggle a model past the '-' checks: the derivation line is
+#     tab-separated and the free-form note is read last, so a note containing a tab used to spill
+#     into the model field and leave it neither empty nor '-' — silently skipping the refusal.
+mkdir -p ".worktrees/SPEC-904$(printf '\t')1"
+printf 'worker notes\n' > ".worktrees/SPEC-904$(printf '\t')1/notes.txt"
+scripts/review --topic tab-path-topic --author codex --context ".worktrees/SPEC-904$(printf '\t')1/notes.txt" "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 4 ] && ok "a tab in the artifact path still refuses (exit 4)" \
+  || bad "tab in path gave exit $rc, expected 4 — the note spilled into the model field"
+
+# 3e. SAME VENDOR, CONFLICTING RECORDS: a plan's own author_model and its host attempt's
+#     worker_model must agree on the MODEL, not merely the vendor. A sol-authored plan hosted by a
+#     luna attempt would otherwise derive as luna and let a sol reviewer grade sol's own work.
+mkdir -p .orchestrator/attempts/SPEC-905/1
+printf '{"worker_model": "gpt-5.6-luna", "spec_id": "SPEC-905", "attempt": 1}\n' \
+  > .orchestrator/attempts/SPEC-905/1/launch.json
+printf -- '---\nid: PLAN-905\nauthor_model: gpt-5.6-sol\n---\n\nplan body\n' \
+  > .orchestrator/attempts/SPEC-905/1/PLAN-905.md
+scripts/review --topic plan-905 --author codex --context .orchestrator/attempts/SPEC-905/1/PLAN-905.md "please review" >/dev/null 2>&1
+rc=$?
+[ "$rc" = 2 ] && ok "plan author_model conflicting with its attempt's worker_model is refused (exit 2)" \
+  || bad "same-vendor model conflict gave exit $rc, expected 2 — provenance was laundered"
+pin_reviewer gpt-5.6-sol
 
 # 4. UNKNOWN MODEL (R71): an attempt whose recorded worker_model is absent from vendor_map must be
 #    refused, never guessed into a vendor — a net-new model requires an explicit vendor_map entry

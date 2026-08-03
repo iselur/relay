@@ -2,7 +2,7 @@
 
 This file is the whole rulebook; CI caps its size. A new rule requires a real failure in shipped
 work and REPLACES a line, never stacks. Roles, not model names: **owner** (the human),
-**orchestrator**, **worker**, **reviewer** — scripts/models.json maps roles to today's models; AGENTS.md holds the commands.
+**orchestrator**, **worker**, **reviewer** — scripts/models.json maps the roles scripts consume; the orchestrator is its own CLI's setting. AGENTS.md holds the commands.
 
 ## Session start
 
@@ -35,11 +35,11 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
    checkpoints. Reference the brief, never copy it; what we learn later is added with a date and reopens the
    checkpoints it touches. Briefs and shipped specs are working files: delete them once the work ships, git keeps them.
 6. **Cross-checking earns its cost** on ideas, briefs, and plans — a plan leaves plan mode only
-   after `scripts/review --author claude` completes and its findings are answered under rule 3;
+   after `scripts/review --author <the plan's own author>` completes and its findings are answered under rule 3;
    deterministic checks and tests outrank model agreement elsewhere — agreement is not evidence.
 7. **Maximal delegation:** the orchestrator delegates every delegable task to a worker by default; what a worker cannot take for architectural reasons (it needs the
    orchestrator's harness) goes to parallel subagents in isolated worktrees, several at once when the pieces are independent; the orchestrator works directly only on
-   its own tasks (dispatch, review, the trust boundary). Nothing reviews its own work; the owner sets role models and vendors in scripts/models.json.
+   its own tasks (dispatch, review, the trust boundary). Nothing reviews its own work; the owner sets worker and reviewer models and vendors in scripts/models.json.
 8. **Code discipline:** the simplest, cleanest solution that works, held to a deletion test at brief and
    diff review: anything the approved outcome, existing external contracts, and named safety invariants
    can be met at least as simply without is omitted — tests, symmetry, or hypothetical future consumers

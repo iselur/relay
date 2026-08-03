@@ -19,6 +19,15 @@ cp -p scripts/review "$tmp/repo/scripts/review"
 # $ROOT/scripts/models_check.py and fails closed without them; both sit beside the copied script.
 cp -p scripts/models.json "$tmp/repo/scripts/models.json"
 cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
+# The self-review gate compares author MODEL with reviewer model; pin the reviewer to the model the
+# codex fixture below records, so the owner's live config cannot turn that refusal into a pass.
+chmod u+w "$tmp/repo/scripts/models.json"
+python3 - "$tmp/repo/scripts/models.json" <<'PIN'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["roles"]["orchestrator_artifact_reviewer"] = {"model": "gpt-5.6-sol", "effort": "high"}
+json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+PIN
 
 cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -45,7 +54,7 @@ if scripts/review --topic 'Bad Slug!' --author claude --context claude-note.md x
 if scripts/review --topic demo-topic --context claude-note.md x 2>/dev/null; then bad "accepted a review with no --author"; else ok "refuses a missing --author"; fi
 if scripts/review --topic demo-topic --author gemini --context claude-note.md x 2>/dev/null; then bad "accepted an unknown author"; else ok "refuses an unknown author"; fi
 
-# 2. Codex-authored artifacts are refused — the reviewer IS Codex, and Codex never grades Codex.
+# 2. Artifacts authored by the reviewer's own model are refused — nothing grades its own work.
 # (--author here MATCHES the derived provenance, so this exercises the vendor refusal, not B18's
 # mismatch refusal — see tests/review_authorship.sh for the mismatch/no-provenance cases.)
 scripts/review --topic demo-topic --author codex --context .orchestrator/attempts/SPEC-900/1/diff.patch "review this codex plan" >/dev/null 2>&1
