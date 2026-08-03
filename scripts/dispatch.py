@@ -250,7 +250,6 @@ def resolve_launch_models(approval: dict, cfg: dict) -> dict:
     # through the worker-adapter registry pinned at dispatcher import — a vendor with no
     # registered worker adapter would resolve, freeze a truthful vendor, and then have no CLI
     # to execute under. Refuse it at resolution, before any side effects, not at run time.
-    # Today the registry is codex-only; claude joins in R73 Job 3 (subagent worker runtime).
     if VENDOR_ADAPTERS is None:
         die(f"launch refused: vendor adapters failed to load at dispatcher start "
             f"({VENDOR_ADAPTERS_ERR}); fail closed")
