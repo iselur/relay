@@ -1,87 +1,53 @@
 # Relay
 
-Relay lets you get maximum from your Claude and Codex **subscriptions** 💸 (no API key needed) and
-makes two great models work together with minimum oversight, passing work between them like a relay
-team.
+Relay is a reusable oversight approach for coding agents. It gives an agent a checked path from
+a request to a pull request: a worker produces the change, the harness verifies it, and a
+configured separate reviewer checks the exact diff before it moves forward.
 
-The **Orchestrator**👩‍🏫 (Codex by default, Claude Code just as well) manages a task backlog while **Workers**👷 handle the
-implementation — the worker and reviewer models are set in `scripts/models.json`. They can work for days without you; the final merge is yours, or the
-orchestrator's under your recorded grant.
+The approach can be reused in any repository where coding agents need oversight. This repository
+is a ready-to-run reference implementation for Linux, GitHub, and subscription CLIs; those
+implementation choices belong to this reference, not to the approach itself.
 
-## How it works
+## The workflow
 
-Give the Orchestrator a task and it turns the request into a checked spec, then delegates the
-build to Workers. The Orchestrator and Reviewer inspect and challenge the results for up to five
-review rounds.
+`request` → `approved spec` → `worker build` → `harness checks` → `bound review` → `pull request`
 
-Once started, the system can continue autonomously while you are away: work already dispatched
-runs to completion without you. Every change must pass tests and verification.
+The harness owns the authoritative commit, evidence, and release decision. Worker prose alone is
+not proof: tests and checks must run against the exact candidate. Passing work targets
+`ready-for-main`; promotion to `main` remains separately protected.
 
-Passing work becomes a pull request to `ready-for-main`. Promotion to `main` is yours — or the
-orchestrator's, only under your recorded grant (green `ci` plus a binding PASS from an
-independent reviewer on the exact diff).
+## What Relay provides
 
-The [visual explanation](how-it-works.html) shows the whole process — and who does which job —
-on one page.
+- Structured owner, orchestrator, worker, and reviewer roles.
+- Exact-candidate scope, test, and review checks.
+- A repeatable path from an approved request to a reviewable pull request.
 
-## Why Relay is different 🛡️
+Relay has been used across more than 500 production pull requests. Its worker/reviewer loop
+repeatedly surfaced concrete issues and improvements before merge.
 
-Most agent frameworks coordinate AI agents and trust what the agents say. Relay is built like
-CI/CD with a trust boundary: the load-bearing claims are backed by gates a machine checks, and
-the ones that are not are written down as configured assumptions or known gaps.
+## See the system
 
-- **Evidence, not prose.** A worker saying "tests passed" counts for nothing — the tests are
-  restored from the orchestrator's own copy and rerun. A test that did not run did not pass.
-- **Self-review is refused on recorded provenance.** The dispatcher refuses the author's own
-  model; `scripts/review` refuses the author's own model too, and the author's whole vendor where
-  no author model is recorded — derivation has recorded gaps, listed in SECURITY.md, so this is as
-  good as the record, not a guarantee. The reviewer is sandboxed and given only spec, diff, and evidence; its verdict binds
-  only to the exact code it saw, and moved code means a fresh review. The owner sets the pairing
-  in `scripts/models.json`.
-- **Isolation or no launch.** External-CLI workers run as a separate machine user that cannot
-  reach your home directory or your original credentials (they hold their own copied vendor
-  login), and their test runs have no network; without that sandbox they do not launch — the
-  only exception is the recorded owner-ordered `ORCH_ALLOW_UNISOLATED` override. Subagent
-  workers run inside the orchestrator's own session; SECURITY.md maps both boundaries.
-- **A rulebook that shrinks.** The operating rules are capped by CI at 80 lines, and the
-  standing policy is that a new rule requires a real failure in shipped work and replaces a
-  line, never stacks.
-- **Multi-vendor by design.** Codex holds the active roles today; Claude and Kimi are wired in as
-  alternatives — giving either a role is one line in `scripts/models.json`.
+[How Relay works](how-it-works.html) gives a visual overview of the flow and roles.
 
-Honesty is part of the design: SECURITY.md lists the known gaps and the assumptions the tests
-do not cover.
+[BOOTSTRAP.md](BOOTSTRAP.md) is the setup path for making this repository yours. It walks through
+the toolchain, GitHub, CLI access, worker isolation, and the first job.
 
-## How to make it autonomous 🔄
+[SECURITY.md](SECURITY.md) describes what repository tests prove, what depends on deployment
+configuration, and the known gaps. Relay's guarantees are deliberately scoped.
 
-Autonomy by default is off (as a precaution).
-To let the orchestrator merge gated worker pull requests to `ready-for-main` without a
-per-PR click, create `.orchestrator/AUTONOMY.local.json` as described in BOOTSTRAP.md step 7.
-Merges to `main` are yours unless your recorded grant lets the orchestrator promote under its
-conditions (green `ci`, binding reviewer PASS).
+[CLAUDE.md](CLAUDE.md) is the operating rulebook. [AGENTS.md](AGENTS.md) records the role
+assignments and repository commands.
 
-## How to set it up
+## Roles
 
-Get the cheapest Hetzner shared VM — about $7/month is enough.
-Install Tailscale, tmux, and your orchestrator CLI — Codex, or Claude Code.
-Have subscriptions for the orchestrator CLI and for the models in `scripts/models.json`, and log each in.
-Have a GitHub repository you own.
+The owner approves specs and protects the final promotion. The orchestrator coordinates the work
+and applies the harness gates. The worker implements the approved spec. The bound reviewer checks
+the exact candidate diff.
 
-Then:
+Worker and reviewer configuration lives in `scripts/models.json`; the orchestrator is whichever
+supported CLI runs the process.
 
-1. Create the repository from this template.
-2. Clone it onto the VM.
-3. Open your orchestrator CLI in the clone and paste:
-
-```text
-Read BOOTSTRAP.md and set me up gate by gate, pausing at each human step.
-```
-
-BOOTSTRAP.md handles the setup in order and pauses whenever the owner (you) must act.
-
-## Names used here
-
-The roles are always owner (you), orchestrator, worker, and reviewer. Worker and reviewer models come
-from `scripts/models.json`; the orchestrator is whichever CLI is running.
+Relay keeps the implementation focused on evidence, scope, tests, and review so a repository can
+use the same oversight pattern repeatedly.
 
 MIT — see [LICENSE](LICENSE).
