@@ -52,9 +52,9 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
   `bwrap: loopback: Failed RTM_NEWADDR`; proof: `tests/worker_userns.sh`). Inlining context is a
   choice now, not a requirement — the bound reviewer still gets spec + diff + evidence only, never
   a live checkout. The final answer is recoverable from the `--json` stream (last `agent_message`).
-- **Orchestrator artifacts** go through `scripts/review`: it derives the author's recorded model,
-  refuses the reviewer's own model, and refuses the whole vendor where no author model is recorded;
-  `--author` is only a cross-check. Worker diffs go to the bound reviewer in `scripts/models.json`.
-  Both gates are model-level, so one vendor can hold both roles. Five rounds each; a sixth is refused.
+- **Orchestrator artifacts** go through `scripts/review`: it refuses the reviewer's own recorded author
+  model, and the whole vendor where none is recorded — there `--author` IS that unauthenticated vendor,
+  elsewhere only a cross-check (SECURITY.md gap 8). Worker diffs go to the bound reviewer in
+  `scripts/models.json`; both are model-level. Five rounds each; a sixth is refused.
 - Plans go through `scripts/codex-plan --brief` (cap 400; refuses a brief missing any required
   section); the no-flag standard tier remains usable. Trigger: CLAUDE.md rule 5.
