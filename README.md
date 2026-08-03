@@ -4,7 +4,7 @@ Relay lets you get maximum from your Claude and Codex **subscriptions** 💸 (no
 makes two great models work together with minimum oversight, passing work between them like a relay
 team.
 
-The **Orchestrator**👩‍🏫 (today Claude) manages a task backlog while **Workers**👷 handle the
+The **Orchestrator**👩‍🏫 (Codex by default, Claude Code just as well) manages a task backlog while **Workers**👷 handle the
 implementation — the worker and reviewer models are set in `scripts/models.json`. They can work for days without you; the final merge is yours, or the
 orchestrator's under your recorded grant.
 
@@ -46,8 +46,8 @@ the ones that are not are written down as configured assumptions or known gaps.
 - **A rulebook that shrinks.** The operating rules are capped by CI at 80 lines, and the
   standing policy is that a new rule requires a real failure in shipped work and replaces a
   line, never stacks.
-- **Multi-vendor by design.** Claude and Codex hold the active roles today; Kimi is wired in as
-  a third vendor — giving it a role is one line in `scripts/models.json`.
+- **Multi-vendor by design.** Codex holds the active roles today; Claude and Kimi are wired in as
+  alternatives — giving either a role is one line in `scripts/models.json`.
 
 Honesty is part of the design: SECURITY.md lists the known gaps and the assumptions the tests
 do not cover.
@@ -63,7 +63,7 @@ conditions (green `ci`, binding reviewer PASS).
 ## How to set it up
 
 Get the cheapest Hetzner shared VM — about $7/month is enough.
-Install Tailscale, tmux, and Claude Code on it.
+Install Tailscale, tmux, and your orchestrator CLI — Codex, or Claude Code.
 Have subscriptions for the orchestrator CLI and for the models in `scripts/models.json`, and log each in.
 Have a GitHub repository you own.
 
@@ -71,7 +71,7 @@ Then:
 
 1. Create the repository from this template.
 2. Clone it onto the VM.
-3. Open Claude Code in the clone and paste:
+3. Open your orchestrator CLI in the clone and paste:
 
 ```text
 Read BOOTSTRAP.md and set me up gate by gate, pausing at each human step.
