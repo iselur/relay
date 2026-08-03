@@ -1,8 +1,8 @@
 # AGENTS.md — conventions and commands
 
-Referenced by [CLAUDE.md](CLAUDE.md), which holds the operating rules in terms of ROLES. Humans read
-the role table here; machines read `scripts/models.json` (roles, CLI aliases, vendor map).
-A model swap is one edit there, never to the rulebook; a new model also adds its vendor_map line.
+**Before any work read and follow [CLAUDE.md](CLAUDE.md): the whole operating rulebook, binding on you,
+and no CLI loads it for you.** Its rules are in ROLES; humans read the role table here, machines read
+`scripts/models.json` — a model swap is one edit there, never the rulebook, plus its vendor_map line.
 
 ## Who plays which role (today)
 
