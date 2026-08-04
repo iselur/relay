@@ -20,7 +20,7 @@ venv at exactly `.venv` (`python3 -m venv .venv`; the scripts hardcode `.venv/bi
 `scripts/requirements.txt`. `sudo loginctl enable-linger $USER` so worker units survive logout.
 Install the `bwrap-userns-restrict` AppArmor profile now, before anything runs `codex exec`, or every
 sandboxed run dies at `bwrap: loopback: Failed RTM_NEWADDR`:
-`sudo apt-get install -y apparmor-profiles && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict`.
+`sudo apt-get install -y apparmor-profiles && sudo cp /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/ && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict`.
 
 ## 2. GitHub auth (orchestrator, with human for the login)
 
@@ -59,9 +59,9 @@ pass, and a SKIP is not a pass. If any fails, STOP; do not dispatch workers.
 
 Write a tiny real spec in `specs/`, **[HUMAN]** approve it — the file must be
 `.orchestrator/approvals/<sha256-of-the-spec-file>.json` (any other name is ignored) and match
-`APPROVAL_SCHEMA` in `scripts/dispatch.py`; the orchestrator never writes one. Then `./scripts/dispatch launch
-<SPEC-ID>` and `./scripts/dispatch await <attempt-id>`. Confirm it runs the worker in isolation,
-passes the gates + review, and opens a draft PR. **You** merge it.
+`APPROVAL_SCHEMA` in `scripts/dispatch.py`; the orchestrator never writes one.
+Then `./scripts/dispatch launch <SPEC-ID>` and `./scripts/dispatch await <attempt-id>`. Confirm it
+runs the worker in isolation, passes the gates + review, and opens a draft PR. **You** merge it.
 
 > The repo ships no sample specs — shipped specs are working files, deleted once the work ships (git
 > keeps them) — so write a fresh one; a new small helper + test is the fastest.
