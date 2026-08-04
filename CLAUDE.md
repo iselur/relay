@@ -44,6 +44,12 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
    diff review: anything the approved outcome, existing external contracts, and named safety invariants
    can be met at least as simply without is omitted — tests, symmetry, or hypothetical future consumers
    never establish need. Diffs are surgical: touch no adjacent code, comments, or formatting; match existing style; remove only what your change orphaned.
+9. **Failure discipline:** on a failure, search the web with the literal error string before the
+   first retry; read and log the whole error; change one variable, and never queue work behind a
+   blocked step. The second identical failure is the signal, the third a hard stop — a stall that
+   survives one honest round of diagnosis goes to a second model. Escalate with the finding, not
+   the symptom. Every understood failure becomes a checkable rule or test before work moves on; a
+   rule that was followed and still failed gets fixed, never a second stacked beside it.
 
 ## Safety invariants (never violate)
 
