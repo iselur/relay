@@ -18,6 +18,9 @@ step — those are account/infrastructure actions it can't do. Everything else i
 Verify/install: `git`, `gh` (GitHub CLI), `ripgrep`, `jq`, `python3` + `venv`, Node 22+. Create the
 venv at exactly `.venv` (`python3 -m venv .venv`; the scripts hardcode `.venv/bin/python`) and install
 `scripts/requirements.txt`. `sudo loginctl enable-linger $USER` so worker units survive logout.
+Install the `bwrap-userns-restrict` AppArmor profile now, before anything runs `codex exec`, or every
+sandboxed run dies at `bwrap: loopback: Failed RTM_NEWADDR`:
+`sudo apt-get install -y apparmor-profiles && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict`.
 
 ## 2. GitHub auth (orchestrator, with human for the login)
 
@@ -31,7 +34,8 @@ Run **`scripts/init-operator`**. It is safe by default: it refuses to run agains
 template remote, generates a fresh per-instance identity, sets a **repo-local** git identity, leaves
 autonomy **disabled**, clears the example owner state, and ensures a `ready-for-main` branch exists.
 Confirm `.github/workflows/ci.yml` exists, open a trivial PR, confirm `ci` is green. **[HUMAN]** Add
-the gate-0 rulesets, then confirm a direct push to `main` is rejected.
+the ruleset described in gate 0 to **both** `main` and `ready-for-main`; then confirm a direct push
+to each is rejected.
 
 ## 4. Codex CLI login (orchestrator, human for the login)
 
@@ -47,17 +51,15 @@ refuses with instructions if not.)
 Run **`scripts/setup-worker-user.sh`** (idempotent, uses sudo). It installs distro bubblewrap + acl,
 creates the dedicated `codex-worker` user + `codexwork` group, moves worktrees to `/srv/codexwork`
 (outside your home), copies your Codex auth into the worker's own home, and **self-verifies that the
-worker is denied every one of your credentials**. Ubuntu's `bwrap-userns-restrict` AppArmor profile
-must also be installed and loaded (package `apparmor-profiles`, then `apparmor_parser -r`) or every
-worker run dies at `bwrap: loopback: Failed RTM_NEWADDR`. Then run `bash tests/worker_isolation.sh`
-and `bash tests/worker_userns.sh` — every drill must pass, and a SKIP is not a pass. If any fails,
-STOP; do not dispatch workers.
+worker is denied every one of your credentials**. Then run `bash tests/worker_isolation.sh` and
+`bash tests/worker_userns.sh` (this one proves the gate-1 AppArmor profile loaded) — every drill must
+pass, and a SKIP is not a pass. If any fails, STOP; do not dispatch workers.
 
 ## 6. First job end to end (orchestrator)
 
-Write a tiny real spec in `specs/`, **[HUMAN]** approve it — a JSON file under
-`.orchestrator/approvals/` matching `APPROVAL_SCHEMA` in `scripts/dispatch.py`, bound to this
-instance and spec digest; the orchestrator never writes one. Then `./scripts/dispatch launch
+Write a tiny real spec in `specs/`, **[HUMAN]** approve it — the file must be
+`.orchestrator/approvals/<sha256-of-the-spec-file>.json` (any other name is ignored) and match
+`APPROVAL_SCHEMA` in `scripts/dispatch.py`; the orchestrator never writes one. Then `./scripts/dispatch launch
 <SPEC-ID>` and `./scripts/dispatch await <attempt-id>`. Confirm it runs the worker in isolation,
 passes the gates + review, and opens a draft PR. **You** merge it.
 
