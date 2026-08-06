@@ -43,3 +43,8 @@ tracked in the private ledger. In-flight work lives in the ledger, not here.)
   `cli_aliases` target after authoring lets a differently-named reviewer invoke the same provider model
   (R102 round-3 — needs the invoked identity stamped at authoring time).
 - External benchmark score and cost reporting — after a real product exists.
+- Test the rendered reviewer prompt (the EVIDENCE section including spec-declared commands)
+  directly instead of relying partly on a source-marker grep (review harness-spec-command-evidence
+  round 1, PASS backlog note).
+- Relax scripts/review's model-level self-review refusal to instance/context level to match
+  CLAUDE.md rule 7 (owner, 2026-08-06) — stricter-than-rule today, safe to keep until needed.
