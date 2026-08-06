@@ -1,0 +1,87 @@
+id: SPEC-029
+title: Vendor-invocation CLI seam in vendor_adapters.py, codex-plan migrated onto it
+risk_class: high
+depends_on: []
+objective: >
+  Implement slice 1 of the program brief .orchestrator/plans/PLAN-012.md: add an invoke-answer
+  CLI entry point to scripts/vendor_adapters.py (python3 scripts/vendor_adapters.py
+  invoke-answer --role <spec_author|orchestrator_artifact_reviewer> [--raw PATH]; prompt bytes
+  on stdin passed to the vendor verbatim, answer on stdout, vendor stderr passed through;
+  model/effort/vendor/alias resolved for the role from scripts/models.json via
+  scripts/models_check.py, whole-config validation first, fail-closed; exit 0 success, 97
+  adapter refusal, 98 recovery failure, 99 config/usage error, vendor exits pass through with
+  97-99 collisions mapped to 96 plus original status on stderr), prove byte-level parity with
+  the base-tip inline invocation paths via tests/vendor_cli_parity.sh BEFORE migrating any
+  consumer, then migrate scripts/codex-plan onto the CLI, deleting its vendor case statement,
+  duplicated argv, Kimi 120000-byte guard, and Kimi extraction heredoc. scripts/review is not
+  touched in this slice.
+in_scope:
+  - scripts/vendor_adapters.py
+  - scripts/codex-plan
+  - tests/vendor_cli_parity.sh
+  - tests/dispatch_vendor_adapter.sh
+  - tests/codex_plan.sh
+  - tests/codex_plan_kimi.sh
+out_of_scope:
+  - scripts/review
+  - scripts/dispatch.py
+  - scripts/models.json
+  - scripts/models_check.py
+  - scripts/dispatch
+  - CLAUDE.md
+  - AGENTS.md
+  - SECURITY.md
+  - .github/**
+  - .orchestrator/**
+acceptance_criteria:
+  - >-
+    tests/vendor_cli_parity.sh exists and passes, and its base pass is base-independent: it
+    materializes the base-tip module set (scripts/vendor_adapters.py, scripts/models_check.py,
+    scripts/models.json via git show) into a tempdir alongside the extracted base consumer so
+    the base run imports only base modules, drives it with stub codex/kimi executables that
+    record NUL-delimited argv and exact prompt bytes (stdin for codex, the -p argument for
+    kimi), drives the new CLI from the working tree with identical inputs, and byte-compares
+    (cmp) argv, prompt bytes, recovered answer bytes, and external statuses for both vendors —
+    covering a codex prompt over 130 KB on stdin, the Kimi 120000-byte UTF-8 boundary (120000
+    accepted, 120001 refused before the stub runs, multibyte at the boundary), Kimi malformed
+    trailing data with role-appropriate recovery, prompt trailing-newline parity (codex-plan
+    sends none), and every row of the brief's exit-status mapping table (config error -> 2,
+    guard refusal -> 1, recovery failure -> 1 with raw retained, empty output -> 1, vendor exit
+    42 -> 42, reserved-collision -> 96 with the original status in retained stderr).
+  - >-
+    The CLI resolves configuration per role fail-closed (spec_author -> KimiWorker last-message
+    recovery; orchestrator_artifact_reviewer -> KimiReviewer fail-closed recovery; effort from
+    the role's models.json entry), reuses the existing adapter classes rather than a parallel
+    hierarchy, never deletes caller paths (--raw PATH receives the vendor's raw stdout; the
+    caller owns retention), and the module still imports cleanly into scripts/dispatch.py with
+    the existing dispatcher adapter API unchanged.
+  - >-
+    scripts/codex-plan invokes vendors only through the new CLI: no case statement on the
+    vendor, no codex or kimi argv, no 120000 byte limit, no python heredoc importing
+    vendor_adapters classes. rg -n 'codex exec|kimi -p|120000|KimiWorker|KimiReviewer' on
+    scripts/codex-plan finds nothing.
+  - >-
+    codex-plan behavior is unchanged from the outside: codex prompts travel on stdin never argv
+    with no trailing newline added; the kimi path invokes the CLI with --raw "$stdout_path" and
+    a temporary answer file moved over "$stdout_path" only on success, so raw output is
+    retained at its current path on vendor failure and on recovery failure; empty output still
+    refuses; existing external exit meanings are preserved per the brief's mapping table; and
+    scripts/models_check.py still validates the whole configuration before any vendor runs.
+  - >-
+    The production-code delta across scripts/vendor_adapters.py and scripts/codex-plan is
+    net-negative, and the whole diff excluding the new test file is negative or within 25 added
+    lines of neutral.
+  - The installed required test suite passes against the exact candidate commit.
+test_command: bash tests/vendor_cli_parity.sh && bash tests/dispatch_vendor_adapter.sh && bash tests/codex_plan.sh && bash tests/codex_plan_kimi.sh
+regression_command: bash tests/vendor_cli_parity.sh && bash tests/dispatch_vendor_adapter.sh && bash tests/codex_plan.sh && bash tests/codex_plan_kimi.sh
+hard_ceiling_hours: 4
+needs_network: false
+context:
+  - .orchestrator/plans/PLAN-012.md
+  - scripts/vendor_adapters.py
+  - scripts/codex-plan
+  - scripts/models_check.py
+  - scripts/models.json
+  - tests/dispatch_vendor_adapter.sh
+  - tests/codex_plan.sh
+  - tests/codex_plan_kimi.sh

@@ -1,0 +1,78 @@
+id: SPEC-030
+title: Migrate scripts/review onto the vendor-invocation CLI seam
+risk_class: high
+depends_on:
+  - SPEC-029
+objective: >
+  Implement slice 2 of the program brief .orchestrator/plans/PLAN-012.md: replace only the
+  vendor-invocation block in scripts/review with a call to the vendor_adapters.py invoke-answer
+  CLI landed by SPEC-029 (--role orchestrator_artifact_reviewer), deleting the reviewer vendor
+  case statement, duplicated codex/kimi argv, the duplicated 120000-byte guard, the hard-coded
+  model_reasoning_effort=high (effort now derives from the role's models.json entry, which is
+  "high" today, so current behavior is byte-identical), and the python heredoc mirroring
+  KimiReviewer.extract_verdict. The prompt is piped with a trailing newline (printf '%s\n') to
+  preserve the exact bytes the current here-string delivers. Review recovery stays fail-closed
+  (KimiReviewer stream-damage semantics). Everything else in scripts/review — authorship
+  derivation, round locking and caps, output paths, stderr files, empty-output refusal, and all
+  existing outer exit meanings — is untouched.
+in_scope:
+  - scripts/review
+  - scripts/vendor_adapters.py
+  - tests/vendor_cli_parity.sh
+  - tests/review_kimi.sh
+  - tests/review_cap.sh
+  - tests/review_authorship.sh
+  - tests/review_plan_authorship.sh
+out_of_scope:
+  - scripts/codex-plan
+  - scripts/dispatch.py
+  - scripts/models.json
+  - scripts/models_check.py
+  - scripts/dispatch
+  - CLAUDE.md
+  - AGENTS.md
+  - SECURITY.md
+  - .github/**
+  - .orchestrator/**
+acceptance_criteria:
+  - >-
+    scripts/review invokes vendors only through the vendor_adapters.py CLI: no vendor case
+    statement, no codex or kimi argv, no 120000 byte limit, no extraction heredoc.
+    rg -n 'codex exec|kimi -p|120000|KimiWorker|KimiReviewer' on scripts/review finds nothing.
+  - >-
+    Review behavior is unchanged from the outside: codex reviewer sandbox stays read-only,
+    codex prompts travel on stdin with the trailing newline the current here-string delivers,
+    Kimi review recovery remains fail-closed after malformed trailing data (KimiReviewer
+    semantics, not KimiWorker), the raw kimi output file is deleted on vendor process failure
+    and retained on recovery failure exactly as today, round-N.md and round-N.stderr keep their
+    paths and round semantics, authorship derivation and the round cap are untouched, and all
+    existing external exit meanings (including exit 4 vendor refusal and exit 6 author
+    mismatch) are preserved: every CLI failure status (96, 97, 98, 99, and vendor pass-through)
+    maps to review's current exit 1 with its current message and retention semantics.
+  - >-
+    tests/vendor_cli_parity.sh covers the review consumer: base-tip scripts/review inline
+    invocation captures (argv, prompt bytes including the trailing newline, answer, status)
+    byte-compare equal to the migrated path for both vendors, and an effort-sensitivity check
+    shows the codex argv follows the configured orchestrator_artifact_reviewer effort.
+  - >-
+    Any change to scripts/vendor_adapters.py in this slice is limited to what exposing the
+    reviewer-role recovery through the existing CLI requires; the dispatcher-facing adapter API
+    and scripts/dispatch.py compatibility are unchanged.
+  - >-
+    The production-code delta across scripts/review and scripts/vendor_adapters.py is
+    net-negative, and the whole diff including tests is negative or within 25 added lines of
+    neutral.
+  - The installed required test suite passes against the exact candidate commit.
+test_command: bash tests/vendor_cli_parity.sh && bash tests/dispatch_vendor_adapter.sh && bash tests/review_kimi.sh && bash tests/review_cap.sh && bash tests/review_authorship.sh && bash tests/review_plan_authorship.sh
+regression_command: bash tests/vendor_cli_parity.sh && bash tests/dispatch_vendor_adapter.sh && bash tests/review_kimi.sh && bash tests/review_cap.sh && bash tests/review_authorship.sh && bash tests/review_plan_authorship.sh
+hard_ceiling_hours: 4
+needs_network: false
+context:
+  - .orchestrator/plans/PLAN-012.md
+  - scripts/review
+  - scripts/vendor_adapters.py
+  - scripts/models_check.py
+  - tests/review_kimi.sh
+  - tests/review_cap.sh
+  - tests/review_authorship.sh
+  - tests/review_plan_authorship.sh

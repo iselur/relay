@@ -1,0 +1,18 @@
+{
+  "spec_id": "SPEC-030",
+  "spec_digest": "13a60d3b8ae51c95c4c1908bc1029ac3e2b0ccf88130a65c6d3e5c44d499e406",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "approver": "val",
+  "approved_scope": [
+    "scripts/review",
+    "scripts/vendor_adapters.py",
+    "tests/vendor_cli_parity.sh",
+    "tests/review_kimi.sh",
+    "tests/review_cap.sh",
+    "tests/review_authorship.sh",
+    "tests/review_plan_authorship.sh"
+  ],
+  "risk_class": "high",
+  "timestamp": "2026-08-06T00:00:36+00:00",
+  "note": "Owner approval delivered by Val merging PR c1-approvals into main on GitHub (2026-08-06); orchestrator authored the proposal, the owner's merge is the approving act. Auto-merge authorized per extended AUTONOMY.local.json grant."
+}
