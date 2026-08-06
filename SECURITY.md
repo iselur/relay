@@ -53,7 +53,7 @@ proves them), **configured assumptions** (set up outside this repo, verified man
   applies only to `dispatch merge` — enforced by `scripts/dispatch.py` code paths that the repo
   suite exercises only partially.
 
-## Known gaps (fixes queued in `.orchestrator/BACKLOG.md`)
+## Known gaps (accepted, not queued — owner 2026-08-06; do not start these unasked)
 
 1. **The worker holds a readable COPY of a vendor login and has network in the build phase.** Setup
    copies the operator-staged Codex auth — and, where the operator has kimi state, a byte-for-byte
