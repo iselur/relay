@@ -74,13 +74,12 @@ check("exhaustion wrote escalation record", any(d.ESCALATIONS.glob("SPEC-T04-*.j
 check("exhaustion wrote failed_remediation_exhausted state",
       json.loads((d.STATE / "SPEC-T04.json").read_text())["status"] == "failed_remediation_exhausted")
 
-# low risk allows 5 remediations; high risk allows 1
+# unified limit (owner decision 2026-08-06): risk_class no longer changes the remediation budget
 for i in range(1, 5): put_attempt("SPEC-T05", i, "failed_test", {"test_exit": i})
-check("low risk: 4 failures still within limit 5", preflight("SPEC-T05", "low", 5)[0] == "ok")
-put_attempt("SPEC-T06", 1, "failed_test", {"test_exit": 1})
-put_attempt("SPEC-T06", 2, "failed_test", {"test_exit": 2})
-check("high risk caps at 1 remediation: 2 failures -> refused",
-      preflight("SPEC-T06", "high", 3)[0] in ("exit17", "exit18"))
+check("low risk: 4th merit failure (> unified limit 3) -> refused exit 18",
+      preflight("SPEC-T05", "low", 5)[0] == "exit18")
+check("module carries ONE remediation limit, no per-risk tiers",
+      d.REMEDIATION_LIMIT == 3 and not hasattr(d, "REMEDIATION_LIMITS"))
 
 # stop-early: two consecutive IDENTICAL findings -> refused even under the limit
 same = {"reasons": ["same finding"], "criteria": [{"criterion": "c", "result": "UNMET"}]}
@@ -134,6 +133,20 @@ check("per-dispatch approval with an unknown field -> refused",
 PA.write_text(valid_pa())
 check("high risk attempt 1 WITH a valid, bound per-dispatch approval -> allowed",
       preflight("SPEC-T08", "high", 1) == ("ok", None))
+
+# unified limit applies to high risk too: 2 distinct failures (old high-tier cap: 1) now proceed,
+# and the 4th merit failure refuses exactly like every other risk class
+put_attempt("SPEC-T08", 1, "failed_test", {"test_exit": 1})
+put_attempt("SPEC-T08", 2, "failed_test", {"test_exit": 2})
+(d.APPROVALS / ("d" * 64 + ".attempt-3.json")).write_text(valid_pa(attempt=3))
+st, ctx = preflight("SPEC-T08", "high", 3)
+check("high risk: 2 distinct failures within unified limit 3 -> allowed",
+      st == "ok" and ctx is not None and ctx["remediation_number"] == 2)
+put_attempt("SPEC-T08", 3, "failed_test", {"test_exit": 3})
+put_attempt("SPEC-T08", 4, "failed_scope")
+(d.APPROVALS / ("d" * 64 + ".attempt-5.json")).write_text(valid_pa(attempt=5))
+check("high risk: 4th merit failure -> refused exit 18 like every class",
+      preflight("SPEC-T08", "high", 5)[0] == "exit18")
 
 # --- Scope-violation detection paths (Gate 4 pipeline test 3, both cases) --------------------
 gtmp = pathlib.Path(tempfile.mkdtemp())

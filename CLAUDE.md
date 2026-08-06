@@ -39,7 +39,7 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
    deterministic checks and tests outrank model agreement elsewhere — agreement is not evidence.
 7. **Maximal delegation:** the orchestrator delegates every delegable task to a worker by default; what a worker cannot take for architectural reasons (it needs the
    orchestrator's harness) goes to parallel subagents in isolated worktrees, several at once when the pieces are independent; the orchestrator works directly only on
-   its own tasks (dispatch, review, the trust boundary). Nothing reviews its own work; the owner sets worker and reviewer models and vendors in scripts/models.json.
+   its own tasks (dispatch, review, the trust boundary). Nothing reviews its own context's work — separate instances, even of the same model, may review each other (owner, 2026-08-06); the owner sets worker and reviewer models and vendors in scripts/models.json.
 8. **Code discipline:** the simplest, cleanest solution that works, held to a deletion test at brief and
    diff review: anything the approved outcome, existing external contracts, and named safety invariants
    can be met at least as simply without is omitted — tests, symmetry, or hypothetical future consumers
