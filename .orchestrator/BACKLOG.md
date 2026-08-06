@@ -17,10 +17,6 @@ against this description: what matches, what doesn't, what is missing.
 1. **Restrict worker build-phase egress before the first product-repo dispatch** (SECURITY.md gap 1,
    LOW-MEDIUM 2026-07-16): worker uid reaches only the model API; the credential-broker fix stays parked.
 
-(The Codex standard-tier cost lever and the Program C review-round-binding piece have shipped to
-main; the rest of Program C — the codex-plan vendor split and the analyst one-shots — is in flight,
-tracked in the private ledger. In-flight work lives in the ledger, not here.)
-
 ## Parked (owner 2026-07-16: keep for the future)
 
 - In-flight session-to-session handoff (deferred in the lifecycle-program descope, owner
@@ -43,8 +39,7 @@ tracked in the private ledger. In-flight work lives in the ledger, not here.)
   `cli_aliases` target after authoring lets a differently-named reviewer invoke the same provider model
   (R102 round-3 — needs the invoked identity stamped at authoring time).
 - External benchmark score and cost reporting — after a real product exists.
-- Test the rendered reviewer prompt (the EVIDENCE section including spec-declared commands)
-  directly instead of relying partly on a source-marker grep (review harness-spec-command-evidence
-  round 1, PASS backlog note).
+- Test the rendered reviewer EVIDENCE section (incl. spec-declared commands) directly instead of
+  relying partly on a source-marker grep (harness-spec-command-evidence round 1, PASS backlog note).
 - Relax scripts/review's model-level self-review refusal to instance/context level to match
   CLAUDE.md rule 7 (owner, 2026-08-06) — stricter-than-rule today, safe to keep until needed.

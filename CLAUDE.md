@@ -17,8 +17,8 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
 3. **Review cap:** a holistic senior-engineer review — correctness, security, simplicity, maintainability — framed by `.orchestrator/REVIEW-FRAMING.md`; comprehensive
    round one, and good code passes round one; up to five rounds, each answered by one revision. A finding blocks only when material and acceptance-relevant — a real
    defect, a significant gap against the brief, or over-engineering answered with a concretely sketched simpler version — the rest go to the backlog, never a forced
-   revision. If material findings persist past round two or three, step back as the owner would and weigh simplifying, another approach, splitting smaller, or another
-   route to the goal; a re-scope restarts as a fresh brief and intake row, telling the owner. Trust-critical work with an unresolved material finding stays BLOCKED: escalate, never ship on a spent cap.
+   revision. If material findings persist past round two or three, or a spec fails its second worker attempt, never just stop or re-dispatch harder: step back as the
+   owner would and weigh simplifying, another approach, splitting smaller, or another route to the goal; a re-scope restarts as a fresh brief and intake row, telling the owner. Trust-critical work with an unresolved material finding stays BLOCKED: escalate, never ship on a spent cap.
 4. **Communication:** bottom line first, stay brief. Past one step, keep a live to-do list, never
    back-filled. Coin a term only for code that exists in this repo.
 5. **Every program gets ONE brief, capped at 400 lines** (`scripts/codex-plan` enforces the cap and
