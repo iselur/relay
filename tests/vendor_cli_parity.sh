@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Byte/status oracle for invoke-answer. The base runner below is extracted from the committed
-# codex-plan snapshot; it is deliberately not a shell reimplementation of either vendor arm.
+# Byte/status oracle for invoke-answer and its codex-plan/review consumers. Base behavior is driven
+# from committed snapshots; the test never reimplements a vendor arm.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE=tests/parity_base
-for file in BASE_SHA vendor_adapters.py models_check.py models.json codex-plan; do
+for file in BASE_SHA vendor_adapters.py models_check.py models.json codex-plan review; do
   [[ -f "$BASE/$file" ]] || { echo "FAIL missing base fixture: $BASE/$file" >&2; exit 1; }
 done
 BASE_SHA=$(<"$BASE/BASE_SHA")
@@ -18,7 +18,7 @@ trap 'rm -rf "$tmp"' EXIT
 # CI has the dispatch commit and verifies every fixture byte. Candidate-isolated grading has no
 # reachable Git metadata and runs exclusively from the committed fixture after cat-file fails.
 if command -v git >/dev/null && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-  for path in scripts/vendor_adapters.py scripts/models_check.py scripts/models.json scripts/codex-plan; do
+  for path in scripts/vendor_adapters.py scripts/models_check.py scripts/models.json scripts/codex-plan scripts/review; do
     git show "$BASE_SHA:$path" >"$tmp/git-show"
     cmp "$tmp/git-show" "$BASE/${path#scripts/}" \
       || { echo "FAIL base fixture differs from $BASE_SHA:$path" >&2; exit 1; }
@@ -357,6 +357,223 @@ assert_status 'fd 3 absent invocation' "$RUN_STATUS" 0
 
 run_status python3 scripts/vendor_adapters.py invoke-answer --role unsupported <"$tmp/prompt"
 assert_status 'CLI usage error' "$RUN_STATUS" 99
+
+# Slice 2: drive the committed review fixture and candidate review in separate git-less roots.
+# Each side resolves only the scripts copied into its own root. Missing base review mechanics fail
+# naturally and loudly; there is no fallback runner or recreated dispatch block.
+mkdir -p "$tmp/review-base/scripts" "$tmp/review-cli/scripts"
+cp "$BASE"/{review,models_check.py,models.json} "$tmp/review-base/scripts/"
+cp scripts/{review,vendor_adapters.py} "$tmp/review-cli/scripts/"
+cp "$BASE"/{models_check.py,models.json} "$tmp/review-cli/scripts/"
+chmod +x "$tmp/review-base/scripts/review" "$tmp/review-cli/scripts/review"
+printf 'review context without terminal newline' >"$tmp/review-base/context.md"
+cp "$tmp/review-base/context.md" "$tmp/review-cli/context.md"
+
+review_configure() {
+  local vendor=$1 effort=$2
+  python3 - "$BASE/models.json" "$tmp/review-base/scripts/models.json" \
+    "$tmp/review-cli/scripts/models.json" "$vendor" "$effort" <<'PY'
+import json, sys
+cfg = json.loads(open(sys.argv[1]).read())
+model = "kimi-k3" if sys.argv[4] == "kimi" else "gpt-5.6-luna"
+cfg["roles"]["orchestrator_artifact_reviewer"] = {"model": model, "effort": sys.argv[5]}
+data = json.dumps(cfg, indent=2) + "\n"
+for path in sys.argv[2:4]:
+    open(path, "w").write(data)
+PY
+}
+
+run_review_pair() {
+  local name=$1 vendor=$2 effort=$3 topic=$4 output=$5 mode=${6:-output} code=${7:-0}
+  review_configure "$vendor" "$effort"
+  rm -rf "$tmp/review-base/.orchestrator/reviews/$topic" \
+         "$tmp/review-cli/.orchestrator/reviews/$topic"
+  rm -f "$tmp"/{review-base.argv,review-cli.argv,review-base.prompt,review-cli.prompt,review-base.inherited,review-cli.inherited,review-base.out,review-cli.out,review-base.err,review-cli.err}
+  export PATH="$tmp/bin:$PATH" STUB_MODE="$mode" STUB_EXIT="$code" STUB_OUTPUT="$output" STUB_STDERR=""
+  export STUB_ARGV="$tmp/review-base.argv" STUB_PROMPT="$tmp/review-base.prompt" \
+         STUB_INHERITED="$tmp/review-base.inherited"
+  run_status env ORCH_TEST_PY=python3 "$tmp/review-base/scripts/review" --topic "$topic" \
+    --author claude --context context.md 'review prompt' \
+    >"$tmp/review-base.out" 2>"$tmp/review-base.err"
+  REVIEW_BASE_STATUS=$RUN_STATUS
+  export STUB_ARGV="$tmp/review-cli.argv" STUB_PROMPT="$tmp/review-cli.prompt" \
+         STUB_INHERITED="$tmp/review-cli.inherited"
+  run_status env ORCH_TEST_PY=python3 "$tmp/review-cli/scripts/review" --topic "$topic" \
+    --author claude --context context.md 'review prompt' \
+    >"$tmp/review-cli.out" 2>"$tmp/review-cli.err"
+  REVIEW_CLI_STATUS=$RUN_STATUS
+  [[ ! -e "$tmp/review-base.inherited" && ! -e "$tmp/review-cli.inherited" ]] \
+    && ok "$name vendor did not inherit fd 3" || fail "$name vendor inherited fd 3"
+}
+
+assert_plus_newline() {
+  local name=$1 base_file=$2 candidate_file=$3
+  if python3 - "$base_file" "$candidate_file" <<'PY'
+from pathlib import Path
+import sys
+base = Path(sys.argv[1]).read_bytes()
+candidate = Path(sys.argv[2]).read_bytes()
+raise SystemExit(0 if candidate == base + b"\n" else 1)
+PY
+  then
+    ok "$name bytes"
+  else
+    fail "$name bytes are not base plus one newline"
+  fi
+}
+
+assert_kimi_argv_plus_newline() {
+  local name=$1 base_file=$2 candidate_file=$3
+  if python3 - "$base_file" "$candidate_file" <<'PY'
+from pathlib import Path
+import sys
+def argv(path):
+    raw = Path(path).read_bytes()
+    if not raw.endswith(b"\0"):
+        raise SystemExit(1)
+    return raw[:-1].split(b"\0")
+base, candidate = argv(sys.argv[1]), argv(sys.argv[2])
+if len(base) != len(candidate):
+    raise SystemExit(1)
+for index, (old, new) in enumerate(zip(base, candidate)):
+    if index and base[index - 1] == b"-p":
+        if new != old + b"\n":
+            raise SystemExit(1)
+    elif new != old:
+        raise SystemExit(1)
+PY
+  then
+    ok "$name bytes"
+  else
+    fail "$name differs beyond the prompt newline"
+  fi
+}
+
+run_review_pair 'review Codex high success' codex high codex-high "$tmp/codex-output"
+assert_status 'review Codex high base' "$REVIEW_BASE_STATUS" 0
+assert_status 'review Codex high candidate' "$REVIEW_CLI_STATUS" 0
+assert_cmp 'review Codex high complete argv' "$tmp/review-base.argv" "$tmp/review-cli.argv"
+assert_cmp 'review Codex high prompt' "$tmp/review-base.prompt" "$tmp/review-cli.prompt"
+assert_cmp 'review Codex high answer' \
+  "$tmp/review-base/.orchestrator/reviews/codex-high/round-1.md" \
+  "$tmp/review-cli/.orchestrator/reviews/codex-high/round-1.md"
+[[ ! -e "$tmp/review-cli/.orchestrator/reviews/codex-high/round-1.md.raw" \
+   && ! -e "$tmp/review-cli/.orchestrator/reviews/codex-high/round-1.md.partial" ]] \
+  && ok 'review Codex success removed raw and partial' \
+  || fail 'review Codex success retained raw or partial'
+
+run_review_pair 'review Kimi success' kimi max kimi-success "$tmp/kimi-output"
+assert_status 'review Kimi base' "$REVIEW_BASE_STATUS" 0
+assert_status 'review Kimi candidate' "$REVIEW_CLI_STATUS" 0
+assert_plus_newline 'review Kimi prompt adds exactly one newline' \
+  "$tmp/review-base.prompt" "$tmp/review-cli.prompt"
+assert_kimi_argv_plus_newline 'review Kimi argv otherwise identical (alias included)' \
+  "$tmp/review-base.argv" "$tmp/review-cli.argv"
+assert_cmp 'review Kimi answer' \
+  "$tmp/review-base/.orchestrator/reviews/kimi-success/round-1.md" \
+  "$tmp/review-cli/.orchestrator/reviews/kimi-success/round-1.md"
+[[ ! -e "$tmp/review-cli/.orchestrator/reviews/kimi-success/round-1.md.raw" \
+   && ! -e "$tmp/review-cli/.orchestrator/reviews/kimi-success/round-1.md.partial" ]] \
+  && ok 'review Kimi success removed raw and partial' \
+  || fail 'review Kimi success retained raw or partial'
+
+# The base review hard-coded high; invoke-answer must instead carry the configured non-high effort.
+run_review_pair 'review Codex configured effort' codex medium codex-medium "$tmp/codex-output"
+grep -zFx 'model_reasoning_effort=high' "$tmp/review-base.argv" >/dev/null \
+  && ok 'base review keeps hard-coded high effort' || fail 'base review high effort oracle missing'
+grep -zFx 'model_reasoning_effort=medium' "$tmp/review-cli.argv" >/dev/null \
+  && ok 'candidate review carries configured non-high effort' || fail 'candidate ignored configured effort'
+
+run_review_pair 'review empty output' codex high review-empty "$tmp/empty"
+assert_status 'review empty output base' "$REVIEW_BASE_STATUS" 1
+assert_status 'review empty output candidate' "$REVIEW_CLI_STATUS" 1
+[[ ! -e "$tmp/review-base/.orchestrator/reviews/review-empty/round-1.md" \
+   && ! -e "$tmp/review-cli/.orchestrator/reviews/review-empty/round-1.md" \
+   && ! -e "$tmp/review-cli/.orchestrator/reviews/review-empty/round-1.md.raw" \
+   && ! -e "$tmp/review-cli/.orchestrator/reviews/review-empty/round-1.md.partial" ]] \
+  && ok 'review empty output minted no round/raw/partial' \
+  || fail 'review empty output left round/raw/partial'
+
+# Every vendor/adapter failure remains review exit 1, retains stderr, and mints no round or raw file.
+for vendor in codex kimi; do
+  for code in 42 96 97 98 99; do
+    topic="review-$vendor-exit-$code"
+    run_review_pair "review $vendor vendor exit $code" "$vendor" \
+      "$([[ $vendor == kimi ]] && echo max || echo high)" "$topic" "$tmp/empty" exit "$code"
+    assert_status "review $vendor vendor exit $code base" "$REVIEW_BASE_STATUS" 1
+    assert_status "review $vendor vendor exit $code candidate" "$REVIEW_CLI_STATUS" 1
+    expected_cli_status=$code
+    ((code < 96)) || expected_cli_status=96
+    grep -F "invocation failed ($expected_cli_status)" "$tmp/review-cli.err" >/dev/null \
+      && grep -F 'round-1.stderr' "$tmp/review-cli.err" >/dev/null \
+      && ok "review $vendor vendor exit $code diagnostic names CLI status and stderr" \
+      || fail "review $vendor vendor exit $code diagnostic incomplete"
+    [[ -f "$tmp/review-base/.orchestrator/reviews/$topic/round-1.stderr" \
+       && -f "$tmp/review-cli/.orchestrator/reviews/$topic/round-1.stderr" ]] \
+      && ok "review $vendor vendor exit $code retained stderr" \
+      || fail "review $vendor vendor exit $code lost stderr"
+    [[ ! -e "$tmp/review-base/.orchestrator/reviews/$topic/round-1.md" \
+       && ! -e "$tmp/review-cli/.orchestrator/reviews/$topic/round-1.md" \
+       && ! -e "$tmp/review-cli/.orchestrator/reviews/$topic/round-1.md.raw" ]] \
+      && ok "review $vendor vendor exit $code left no output/raw" \
+      || fail "review $vendor vendor exit $code left output/raw"
+  done
+done
+
+# Recovery failure is the sole raw-retention case on both old and new Kimi paths.
+run_review_pair 'review Kimi recovery failure' kimi max kimi-recovery \
+  "$tmp/kimi-review-malformed"
+assert_status 'review Kimi recovery failure base' "$REVIEW_BASE_STATUS" 1
+assert_status 'review Kimi recovery failure candidate' "$REVIEW_CLI_STATUS" 1
+assert_cmp 'review Kimi recovery raw' \
+  "$tmp/review-base/.orchestrator/reviews/kimi-recovery/round-1.md.raw" \
+  "$tmp/review-cli/.orchestrator/reviews/kimi-recovery/round-1.md.raw"
+
+# Review's own validated config gate precedes invoke-answer and every vendor subprocess.
+review_configure codex high
+python3 - "$tmp/review-base/scripts/models.json" "$tmp/review-cli/scripts/models.json" <<'PY'
+import json, sys
+cfg = json.loads(open(sys.argv[1]).read())
+cfg["unexpected"] = True
+data = json.dumps(cfg) + "\n"
+for path in sys.argv[1:]:
+    open(path, "w").write(data)
+PY
+rm -f "$tmp"/{review-base.argv,review-cli.argv,review-base.prompt,review-cli.prompt}
+export STUB_ARGV="$tmp/review-base.argv" STUB_PROMPT="$tmp/review-base.prompt" \
+       STUB_INHERITED="$tmp/review-base.inherited"
+run_status env ORCH_TEST_PY=python3 "$tmp/review-base/scripts/review" --topic invalid-base \
+  --author claude --context context.md review >"$tmp/review-base.out" 2>"$tmp/review-base.err"
+assert_status 'review invalid config base' "$RUN_STATUS" 2
+export STUB_ARGV="$tmp/review-cli.argv" STUB_PROMPT="$tmp/review-cli.prompt" \
+       STUB_INHERITED="$tmp/review-cli.inherited"
+run_status env ORCH_TEST_PY=python3 "$tmp/review-cli/scripts/review" --topic invalid-cli \
+  --author claude --context context.md review >"$tmp/review-cli.out" 2>"$tmp/review-cli.err"
+assert_status 'review invalid config candidate' "$RUN_STATUS" 2
+[[ ! -e "$tmp/review-base.argv" && ! -e "$tmp/review-cli.argv" ]] \
+  && ok 'review invalid config launched no vendor' || fail 'review invalid config launched vendor'
+
+# Pin post-gate CLI status 99 independently of config validation.
+review_configure codex high
+cp "$tmp/review-cli/scripts/vendor_adapters.py" "$tmp/review-cli/scripts/vendor_adapters.real"
+printf '%s\n' '#!/usr/bin/env python3' 'import sys' \
+  'print("stub invoke-answer status 99", file=sys.stderr)' 'raise SystemExit(99)' \
+  >"$tmp/review-cli/scripts/vendor_adapters.py"
+run_status env ORCH_TEST_PY=python3 "$tmp/review-cli/scripts/review" --topic cli-status-99 \
+  --author claude --context context.md review >"$tmp/review-cli.out" 2>"$tmp/review-cli.err"
+assert_status 'review post-gate CLI 99 translation' "$RUN_STATUS" 1
+grep -F 'invocation failed (99)' "$tmp/review-cli.err" >/dev/null \
+  && grep -F 'round-1.stderr' "$tmp/review-cli.err" >/dev/null \
+  && ok 'review post-gate CLI 99 diagnostic names status and stderr' \
+  || fail 'review post-gate CLI 99 diagnostic incomplete'
+grep -F 'stub invoke-answer status 99' \
+  "$tmp/review-cli/.orchestrator/reviews/cli-status-99/round-1.stderr" >/dev/null \
+  && ok 'review post-gate CLI 99 retained stderr' || fail 'review post-gate CLI 99 lost stderr'
+[[ ! -e "$tmp/review-cli/.orchestrator/reviews/cli-status-99/round-1.md" \
+   && ! -e "$tmp/review-cli/.orchestrator/reviews/cli-status-99/round-1.md.raw" ]] \
+  && ok 'review post-gate CLI 99 minted no output/raw' \
+  || fail 'review post-gate CLI 99 left output/raw'
+mv "$tmp/review-cli/scripts/vendor_adapters.real" "$tmp/review-cli/scripts/vendor_adapters.py"
 
 if ((failures)); then
   printf 'vendor_cli_parity: %d failure(s)\n' "$failures" >&2
