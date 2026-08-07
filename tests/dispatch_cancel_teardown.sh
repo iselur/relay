@@ -301,6 +301,7 @@ rcand_wt = rtmp / raid
 d.run(["git", "-C", str(rrepo), "worktree", "add", "--quiet", "--detach", str(rcand_wt), rcand])
 
 _orig_wtr, _orig_git, _orig_gwa = d.worktree_root, d.git, d.grant_worker_acl
+_orig_test_runtime_matches = d.test_runtime_matches
 d.worktree_root = lambda *a, **k: rtmp
 def _tgit(*a, **k):
     k.setdefault("cwd", rrepo)
@@ -313,10 +314,12 @@ def _trun(cmd, **k):
         k.setdefault("cwd", str(rrepo))
     return _orig_run(cmd, **k)
 d.run = _trun
+d.test_runtime_matches = lambda record: True
 
 ratt = rtmp / "att"; ratt.mkdir()
 rlc = {"regression_command": "python3 test_reg.py", "regression_test_paths": ["test_reg.py"],
-       "base_sha": rbase, "attempt_id": raid}
+       "base_sha": rbase, "attempt_id": raid,
+       "test_runtime": {"root": str(rtmp), "python": str(rtmp / "python")}}
 
 calls.clear()
 r_deadline = clock.now + 300
@@ -342,6 +345,7 @@ check("run_regression_gate: base runs but candidate is REFUSED once < MIN remain
       and reg2["candidate_exit"] is None and "deadline exhausted" in reg2["reason"])
 
 d.worktree_root, d.git, d.grant_worker_acl, d.run = _orig_wtr, _orig_git, _orig_gwa, _orig_run
+d.test_runtime_matches = _orig_test_runtime_matches
 
 # ==================================================================================================
 # Group E — teardown_attempt(): the shared teardown every ending path uses. Proves producer-first
