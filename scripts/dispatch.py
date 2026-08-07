@@ -2940,29 +2940,34 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             else:
                 # Non-kimi external-CLI vendors (codex): the frozen alias map rides to
                 # the worker adapter for any vendor that needs CLI alias translation; codex
-                # ignores it (verbatim contract, tests/dispatch_worker_adapter.sh). A
-                # ValueError from the adapter is recorded TERMINALLY — the worker is never
-                # invoked with a bad id.
-                try:
-                    argv = worker_adapter.build_argv(lc["worker_model"], lc["worker_effort"], wt,
-                                                     prompt, isolated=True, argv_prefix=argv_prefix,
-                                                     cli_aliases=lc.get("cli_aliases") or {})
-                except ValueError as exc:
-                    finish("error_launch", ERR_LAUNCH,
-                           detail=f"worker argv refused: {exc}")
+                # ignores it (verbatim contract, tests/dispatch_worker_adapter.sh).
                 worker_ceiling_s = remaining_ceiling_s(deadline_ts)
                 if worker_ceiling_s <= 0:
                     finish("error_launch", ERR_TIMEOUT,
                            detail="attempt deadline already exhausted before the worker phase "
                                   "could start (single absolute ceiling, B6); refusing")
-                wc = isolated_run(
+                argv = worker_adapter._build_argv(
+                    lc["worker_model"], lc["worker_effort"], wt, isolated=True,
+                    argv_prefix=argv_prefix, cli_aliases=lc.get("cli_aliases") or {})
+                command = isolated_cmd(
                     lc["worker_unit"], argv, cwd=str(wt),
                     rw_paths=[str(wt), *worker_adapter.iso_rw_paths(WORKER_HOME)],
-                    private_network=False, ceiling_s=worker_ceiling_s, stdout=ev, stderr=er,
+                    private_network=False, ceiling_s=worker_ceiling_s,
                     binds=binds, slice_name=attempt_slice(attempt_id),
                     env_extra=worker_adapter.iso_env_extra(WORKER_HOME))
-                worker_exit = wc.returncode
-                acp_message = None
+
+                def run_isolated(envelope, prompt_text):
+                    return subprocess.run(
+                        envelope.command, input=prompt_text.encode(),
+                        stdout=envelope.stdout, stderr=envelope.stderr).returncode
+
+                envelope = VENDOR_ADAPTERS.BuildEnvelope(
+                    command=command, cwd=wt, env={}, stdout=ev, stderr=er,
+                    deadline_seconds=worker_ceiling_s, isolated=True,
+                    runner=run_isolated, alias=None, event_sink=None)
+                result = worker_adapter.run_build(envelope, prompt)
+                worker_exit = result.exit_code
+                acp_message = result.last_message
         else:
             # Fallback (fresh box / CI): same-user launch with Codex's bwrap sandbox. No systemd
             # RuntimeMaxSec here, so cap the run itself at the time remaining to the absolute deadline
@@ -2978,19 +2983,29 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             # no --cd, no inner sandbox). cmd_launch already refuses such launches before side
             # effects; this converts a refusal on a hand-carried record into a TERMINAL
             # error_launch instead of an uncaught exception that would strand the attempt.
-            try:
-                built = worker_adapter.build_argv(
-                    lc["worker_model"], lc["worker_effort"], wt, prompt, isolated=False,
-                    last_message_path=raw / "worker-last-message.txt",
-                    cli_aliases=lc.get("cli_aliases") or {})
-            except ValueError as exc:
+            if vendors["worker_vendor"] == "kimi":
                 finish("error_launch", ERR_LAUNCH,
-                       detail=f"worker argv refused: {exc}")
+                       detail="worker argv refused: kimi worker has no unisolated mode: the CLI "
+                              "cannot set its own working directory and has no inner sandbox; "
+                              "refusing")
+            built = worker_adapter._build_argv(
+                lc["worker_model"], lc["worker_effort"], wt, isolated=False,
+                last_message_path=raw / "worker-last-message.txt",
+                cli_aliases=lc.get("cli_aliases") or {})
             worker_cmd = [*prefix, *built]
-            with open(os.devnull) as devnull:
-                wc = subprocess.run(worker_cmd, env=scrubbed, stdin=devnull, stdout=ev, stderr=er)
-            worker_exit = wc.returncode
-            acp_message = None
+
+            def run_unisolated(envelope, prompt_text):
+                return subprocess.run(
+                    envelope.command, env=envelope.env, input=prompt_text.encode(),
+                    stdout=envelope.stdout, stderr=envelope.stderr).returncode
+
+            envelope = VENDOR_ADAPTERS.BuildEnvelope(
+                command=worker_cmd, cwd=wt, env=scrubbed, stdout=ev, stderr=er,
+                deadline_seconds=remaining_ceiling_s(deadline_ts), isolated=False,
+                runner=run_unisolated, alias=None, event_sink=None)
+            result = worker_adapter.run_build(envelope, prompt)
+            worker_exit = result.exit_code
+            acp_message = result.last_message
 
     stderr_txt = (raw / "worker-stderr.txt").read_text()
     last_message = (acp_message if acp_message is not None

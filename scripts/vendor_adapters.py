@@ -279,6 +279,16 @@ class CodexWorker:
         return ["codex", "exec", "-m", model_id, "-c", f"model_reasoning_effort={effort}",
                 "--sandbox", "read-only", "--skip-git-repo-check", "-"]
 
+    def _build_argv(self, model_id, effort, worktree, isolated,
+                    argv_prefix=None, last_message_path=None, cli_aliases=None):
+        args = ["exec", "--cd", str(worktree), "-m", model_id,
+                "-c", f"model_reasoning_effort={effort}",
+                "--skip-git-repo-check", "--json"]
+        if isolated:
+            return [*(argv_prefix or []), *args, "-s", "danger-full-access", "-"]
+        return ["codex", *args, "--sandbox", "workspace-write",
+                "--output-last-message", str(last_message_path), "-"]
+
     def build_argv(self, model_id, effort, worktree, prompt, isolated,
                    argv_prefix=None, last_message_path=None, cli_aliases=None):
         args = ["exec", "--cd", str(worktree), "-m", model_id,

@@ -42,23 +42,99 @@ LMP = "/tmp/att/raw/worker-last-message.txt"
 common = ["exec", "--cd", WT, "-m", "gpt-5.6-luna",
           "-c", "model_reasoning_effort=high",
           "--skip-git-repo-check", "--json"]
-check("isolated argv is byte-identical to the pre-adapter dispatcher",
-      w.build_argv("gpt-5.6-luna", "high", WT, PROMPT, isolated=True, argv_prefix=PREFIX)
-      == [*PREFIX, *common, "-s", "danger-full-access", PROMPT])
+check("isolated argv is prompt-free and byte-identical apart from stdin transport",
+      w._build_argv("gpt-5.6-luna", "high", WT, isolated=True, argv_prefix=PREFIX)
+      == [*PREFIX, *common, "-s", "danger-full-access", "-"])
 check("unisolated argv is byte-identical (bwrap sandbox on, last-message file)",
-      w.build_argv("gpt-5.6-luna", "high", WT, PROMPT, isolated=False,
-                   last_message_path=LMP)
+      w._build_argv("gpt-5.6-luna", "high", WT, isolated=False, last_message_path=LMP)
       == ["codex", *common, "--sandbox", "workspace-write",
-          "--output-last-message", LMP, PROMPT])
-av = w.build_argv("gpt-5.6-luna", "high", WT, PROMPT, isolated=True, argv_prefix=PREFIX)
-check("model id passes through untranslated (asserted on build_argv OUTPUT, round-1 minor)",
+          "--output-last-message", LMP, "-"])
+av = w._build_argv("gpt-5.6-luna", "high", WT, isolated=True, argv_prefix=PREFIX)
+check("model id passes through untranslated (asserted on private helper output)",
       av[av.index("-m") + 1] == "gpt-5.6-luna")
-# Kimi slice 2: build_argv grew an optional cli_aliases keyword (kimi's CLI needs the alias);
-# codex accepts it for signature uniformity and IGNORES it — verbatim contract unchanged.
-check("codex build_argv accepts cli_aliases and still passes the model id verbatim",
-      w.build_argv("gpt-5.6-luna", "high", WT, PROMPT, isolated=True, argv_prefix=PREFIX,
-                   cli_aliases={"gpt-5.6-luna": "some-alias"})
-      == [*PREFIX, *common, "-s", "danger-full-access", PROMPT])
+# Kimi slice 2 added the optional cli_aliases keyword for signature uniformity; codex accepts
+# and ignores it, preserving the verbatim model-id contract.
+check("codex private helper accepts cli_aliases and still passes the model id verbatim",
+      w._build_argv("gpt-5.6-luna", "high", WT, isolated=True, argv_prefix=PREFIX,
+                    cli_aliases={"gpt-5.6-luna": "some-alias"})
+      == [*PREFIX, *common, "-s", "danger-full-access", "-"])
+
+# ---- dispatcher run_build + stdin seam ----------------------------------------------------
+import hashlib
+att = pathlib.Path(tempfile.mkdtemp()); (att / "raw").mkdir()
+snap = b"id: SPEC-000\n"
+(att / "spec-snapshot.yaml").write_bytes(snap)
+lc_codex = {"spec_digest": hashlib.sha256(snap).hexdigest(),
+            "deadline_ts": 4102444800.0, "worker_unit": "codex-worker-SPEC-000-1",
+            "worker_vendor": "codex", "reviewer_vendor": "claude",
+            "worker_model": "gpt-5.6-luna", "worker_effort": "high",
+            "cli_aliases": {"gpt-5.6-luna": "ignored"}}
+routes = []
+children = []
+grades = []
+_adapter_class = d.VENDOR_ADAPTERS.CodexWorker
+_orig_run_build = _adapter_class.run_build
+_orig_subprocess_run = d.subprocess.run
+_orig_grade_phase = d._grade_phase
+_orig_codex_runtime = d.worker_codex_runtime
+
+def _capture_run_build(self, envelope, prompt):
+    routes.append((envelope, prompt))
+    return _orig_run_build(self, envelope, prompt)
+
+def _capture_child(command, **kwargs):
+    children.append((command, kwargs))
+    if "--output-last-message" in command:
+        lmp = pathlib.Path(command[command.index("--output-last-message") + 1])
+        lmp.write_text("FALLBACK-FINAL")
+    else:
+        kwargs["stdout"].write(
+            (json.dumps({"item": {"type": "agent_message", "text": "ISOLATED-FINAL"}})
+             + "\n").encode())
+    class R: returncode = 17
+    return R()
+
+def _capture_grade(*args):
+    grades.append(args)
+
+_adapter_class.run_build = _capture_run_build
+d.subprocess.run = _capture_child
+d._grade_phase = _capture_grade
+d.worker_codex_runtime = lambda: (PREFIX, [], pathlib.Path(PREFIX[-1]))
+try:
+    fallback_lc = {**lc_codex, "isolation": False, "exposure_accepted": True}
+    d._run_pipeline("SPEC-000-1", "SPEC-000", 1, att, fallback_lc,
+                    pathlib.Path(WT), att / "raw", lambda *args, **kwargs: None)
+    iso_att = pathlib.Path(tempfile.mkdtemp()); (iso_att / "raw").mkdir()
+    (iso_att / "spec-snapshot.yaml").write_bytes(snap)
+    isolated_lc = {**lc_codex, "isolation": True}
+    d._run_pipeline("SPEC-000-1", "SPEC-000", 1, iso_att, isolated_lc,
+                    pathlib.Path(WT), iso_att / "raw", lambda *args, **kwargs: None)
+finally:
+    _adapter_class.run_build = _orig_run_build
+    d.subprocess.run = _orig_subprocess_run
+    d._grade_phase = _orig_grade_phase
+    d.worker_codex_runtime = _orig_codex_runtime
+
+check("dispatcher routes both Codex branches through run_build exactly once",
+      len(routes) == len(children) == len(grades) == 2)
+check("both runners launch the complete envelope command unchanged",
+      all(child[0] is route[0].command for child, route in zip(children, routes)))
+check("both runners deliver the exact prompt bytes on stdin",
+      all(child[1].get("input") == route[1].encode()
+          for child, route in zip(children, routes)))
+check("both runners use the envelope sinks and fallback uses its scrubbed environment",
+      all(child[1].get("stdout") is route[0].stdout
+              and child[1].get("stderr") is route[0].stderr
+          for child, route in zip(children, routes))
+      and children[0][1].get("env") is routes[0][0].env)
+check("pipeline prompt appears nowhere in either complete argv",
+      all(all(prompt not in str(arg) for arg in envelope.command)
+          for envelope, prompt in routes)
+      and all(envelope.command[-1] == "-" for envelope, _prompt in routes))
+check("both branches consume BuildResult exit and recovered message",
+      [grade[9] for grade in grades] == [17, 17]
+      and [grade[11] for grade in grades] == ["FALLBACK-FINAL", "ISOLATED-FINAL"])
 
 # ---- unisolated env: FULL equality with the pre-refactor scrubbed dict -------------------
 home = pathlib.Path("/home/op")
@@ -145,7 +221,6 @@ finally:
 # Drive _run_pipeline to the corrupt-vendor-record refusal with a finish stub and assert the
 # RECORDED status is error_launch and a member of TERMINAL — `dispatch await` must resolve the
 # refusal immediately, not poll a status that is in neither TERMINAL nor LIVE for 8 hours.
-import hashlib
 att = pathlib.Path(tempfile.mkdtemp()); (att / "raw").mkdir()
 snap = b"id: SPEC-000\n"
 (att / "spec-snapshot.yaml").write_bytes(snap)
