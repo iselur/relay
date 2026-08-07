@@ -252,16 +252,20 @@ for bad in ("main", "ready-for-main", "codex/SPEC-000-2", "codex/SPEC-000-1x",
           not d.valid_attempt_branch(bad, "SPEC-000-1"))
 
 # ---- kimi worker adapter (kimi vendor, ACP transport) --------------------------------------
-# Isolated worker uses kimi_acp.drive (PLAN-009 slice 2); build_argv serves the unisolated
+# Isolated worker uses kimi_acp.drive (PLAN-009 slice 2); run_build serves the unisolated
 # refusal only. All -p/stream-json worker tests removed in slice 3.
 kw = va.get_worker_adapter("kimi")
-try:
-    kw.build_argv("kimi-k3", "max", WT, PROMPT, isolated=False, last_message_path=LMP)
-    kimi_uniso_raises = False
-except ValueError:
-    kimi_uniso_raises = True
+with tempfile.TemporaryFile(mode="w+") as kimi_stderr:
+    kimi_uniso = kw.run_build(
+        va.BuildEnvelope(command=[], cwd=WT, env={}, stdout=None, stderr=kimi_stderr,
+                         deadline_seconds=1, isolated=False, runner=None, alias=None,
+                         event_sink=None),
+        PROMPT)
+    kimi_stderr.seek(0)
+    kimi_uniso_error = kimi_stderr.read()
 check("kimi unisolated build refuses (no --cd, no inner sandbox; fail closed)",
-      kimi_uniso_raises)
+      kimi_uniso.exit_code == 1 and kimi_uniso.last_message is None
+      and "requires an isolated envelope" in kimi_uniso_error)
 check("kimi unisolated scrubbed env is total and carries no CODEX_HOME analog",
       kw.worker_env(home, "op") == {
           "HOME": "/home/op", "USER": "op", "LOGNAME": "op",
