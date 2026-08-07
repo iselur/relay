@@ -1125,7 +1125,9 @@ def findings_of(spec_id: str, n: int, result: dict) -> dict:
 def _findings_key(f: dict) -> str:
     """Canonical form for the repeated-identical-findings stop-early check."""
     core = {k: f.get(k) for k in ("status", "reviewer_reasons", "unmet_criteria",
-                                  "out_of_scope_paths", "test_exit")}
+                                  "out_of_scope_paths", "test_exit", "detail")}
+    # phase log tails carry run-specific paths; the set of failing tests is the stable part
+    core["phase_failures"] = sorted(f.get("phase_failures") or {})
     return json.dumps(core, sort_keys=True)
 
 

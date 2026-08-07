@@ -243,6 +243,15 @@ assert_status 'Kimi reviewer recovery base' "$review_base_status" 1
 assert_status 'Kimi reviewer recovery CLI' "$RUN_STATUS" 98
 assert_cmp 'Kimi reviewer failure retains raw' "$tmp/kimi-review-malformed" "$tmp/cli.raw"
 
+# An empty vendor stream is not a verdict either: reviewer-role empty output fails closed.
+rm -f "$tmp/cli.argv" "$tmp/cli.prompt" "$tmp/cli.inherited"
+export STUB_ARGV="$tmp/cli.argv" STUB_PROMPT="$tmp/cli.prompt" STUB_INHERITED="$tmp/cli.inherited" \
+       STUB_OUTPUT="$tmp/empty"
+run_status python3 "$tmp/cli/scripts/vendor_adapters.py" invoke-answer \
+  --role orchestrator_artifact_reviewer \
+  <"$tmp/prompt" >"$tmp/cli.out" 2>"$tmp/cli.err"
+assert_status 'Kimi reviewer empty output fails closed' "$RUN_STATUS" 98
+
 # Ordinary and reserved vendor statuses apply to both supported vendors.
 for vendor in codex kimi; do
   for code in 42 96 97 98 99; do

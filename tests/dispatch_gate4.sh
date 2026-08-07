@@ -114,6 +114,17 @@ check("stop-early on identical findings -> refused exit 18",
       preflight("SPEC-T07", "default", 3)[0] == "exit18")
 check("stop-early wrote escalation", any(d.ESCALATIONS.glob("SPEC-T07-*.json")))
 
+# stop-early keys on the failure evidence, not just status+exit: two failed_test attempts with
+# the same test_exit but different detail are DIFFERENT findings (attestation-phase failures
+# share test_exit 0, SPEC-036-1) — and identical evidence still stops early
+put_attempt("SPEC-T10", 1, "failed_test", {"test_exit": 0, "detail": "t.sh failed in phase"})
+put_attempt("SPEC-T10", 2, "failed_test", {"test_exit": 0, "detail": "u.sh failed in phase"})
+check("same exit, different detail -> not identical, proceeds",
+      preflight("SPEC-T10", "default", 3)[0] == "ok")
+put_attempt("SPEC-T10", 3, "failed_test", {"test_exit": 0, "detail": "u.sh failed in phase"})
+check("same exit, same detail -> stop-early exit 18",
+      preflight("SPEC-T10", "default", 4)[0] == "exit18")
+
 # --- High-risk per-dispatch approval (B1: validated + bound, not existence-only) -------------
 _real_ensure_instance = d.ensure_instance                # restored before the instance-binding block
 d.ensure_instance = lambda: {"instance_id": "0" * 32}   # deterministic instance for binding checks
