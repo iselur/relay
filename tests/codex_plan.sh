@@ -32,7 +32,7 @@ printf '%s\n' "${args[@]:0:last}" >"$CODEX_STUB_ARGS"
 [[ "${args[$last]}" == "-" ]] || { printf 'prompt not on stdin: last arg is %s\n' "${args[$last]}" >&2; exit 91; }
 cat >"$CODEX_STUB_PROMPT"
 
-printf '%s' "${CODEX_STUB_STDOUT:-stub plan output}"
+printf '%s' "${CODEX_STUB_STDOUT-stub plan output}"
 printf '%s' "${CODEX_STUB_STDERR:-}" >&2
 exit "${CODEX_STUB_EXIT:-0}"
 STUB
@@ -201,13 +201,24 @@ assert_file "$run_dir/PLAN-010.stderr"
 [[ "$(<"$run_dir/PLAN-010.stdout")" == 'partial output' ]] || fail "failure stdout not retained"
 [[ "$(<"$run_dir/PLAN-010.stderr")" == 'failure detail' ]] || fail "failure stderr not retained"
 
-if PATH="$tmp/bin:$PATH" \
-  CODEX_STUB_ARGS="$args_file" \
-  CODEX_STUB_PROMPT="$prompt_file" \
-  CODEX_STUB_STDOUT='   ' \
-    scripts/codex-plan --out "$run_dir" 'empty output failure' >/dev/null 2>&1; then
-  fail "whitespace-only Codex result was accepted"
-fi
+set +e
+empty_diag="$(PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$args_file" \
+  CODEX_STUB_PROMPT="$prompt_file" CODEX_STUB_STDOUT='' \
+    scripts/codex-plan --out "$tmp/empty-plans" 'empty output failure' 2>&1 >/dev/null)"
+empty_status=$?
+blank_diag="$(PATH="$tmp/bin:$PATH" CODEX_STUB_ARGS="$args_file" \
+  CODEX_STUB_PROMPT="$prompt_file" CODEX_STUB_STDOUT='   ' \
+    scripts/codex-plan --out "$run_dir" 'whitespace output failure' 2>&1 >/dev/null)"
+blank_status=$?
+set -e
+[[ "$empty_status" == 1 ]] || fail "empty Codex result exited $empty_status, want 1"
+[[ "$blank_status" == 1 ]] || fail "whitespace-only Codex result exited $blank_status, want 1"
+[[ "$empty_diag" == *'Codex produced empty output; provenance retained'* ]] \
+  || fail "empty-output diagnostic lost provenance wording: $empty_diag"
+[[ "$blank_diag" == *'Codex produced empty output; provenance retained'* ]] \
+  || fail "whitespace-output diagnostic lost provenance wording: $blank_diag"
+assert_no_file "$tmp/empty-plans/PLAN-001.md"
+assert_file "$tmp/empty-plans/PLAN-001.stdout"
 assert_no_file "$run_dir/PLAN-011.md"
 assert_file "$run_dir/PLAN-011.stdout"
 assert_file "$run_dir/PLAN-011.stderr"
@@ -358,6 +369,61 @@ grep -q 'concurrent plan ONE' "$conc_dir"/PLAN-002.md "$conc_dir"/PLAN-003.md 2>
   || fail "concurrent plan ONE missing from the allocated ids"
 grep -q 'concurrent plan TWO' "$conc_dir"/PLAN-002.md "$conc_dir"/PLAN-003.md 2>/dev/null \
   || fail "concurrent plan TWO missing from the allocated ids (an overwrite ate it)"
+
+# The CLI's fd-3 model record is the stamp source. Its deliberately different value must win over
+# a fresh read of the adjacent models.json. This stub also gives exact control over CLI statuses.
+mkdir -p "$tmp/pinned/scripts"
+cp -p scripts/codex-plan scripts/models_check.py scripts/models.json "$tmp/pinned/scripts/"
+cat >"$tmp/pinned/scripts/vendor_adapters.py" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+argv = sys.argv[1:]
+raw_path = Path(argv[argv.index("--raw") + 1])
+sys.stdin.buffer.read()
+os.write(3, b"model=cli-selected-model\n")
+raw_path.write_bytes(os.environ.get("ADAPTER_RAW", "raw vendor stream").encode())
+sys.stderr.write(os.environ.get("ADAPTER_STDERR", ""))
+status = int(os.environ.get("ADAPTER_STATUS", "0"))
+if status == 0:
+    sys.stdout.write(os.environ.get("ADAPTER_ANSWER", "answer selected by CLI"))
+raise SystemExit(status)
+PY
+
+fresh_model="$("$PY" "$tmp/pinned/scripts/models_check.py" \
+  "$tmp/pinned/scripts/models.json" get roles.spec_author.model)"
+[[ "$fresh_model" != cli-selected-model ]] || fail "pinning fixture does not discriminate"
+ADAPTER_ANSWER='answer selected by CLI' \
+  "$tmp/pinned/scripts/codex-plan" --out "$tmp/pinned-plans" 'pin the model' >/dev/null
+grep -q '^author_model: cli-selected-model$' "$tmp/pinned-plans/PLAN-001.md" \
+  || fail "author_model was not stamped from invoke-answer fd 3"
+[[ "$(<"$tmp/pinned-plans/PLAN-001.stdout")" == 'answer selected by CLI' ]] \
+  || fail "successful CLI answer did not replace its raw capture"
+
+check_cli_status() { # $1 reported status, $2 codex-plan status
+  local reported=$1 expected=$2 dir="$tmp/cli-$1"
+  set +e
+  ADAPTER_STATUS="$reported" ADAPTER_RAW="raw status $reported" \
+    ADAPTER_STDERR="${3:-}" "$tmp/pinned/scripts/codex-plan" \
+      --out "$dir" "status $reported" >"$tmp/cli-$1.out" 2>"$tmp/cli-$1.err"
+  local got=$?
+  set -e
+  [[ "$got" == "$expected" ]] \
+    || fail "invoke-answer status $reported mapped to $got, want $expected"
+  [[ "$(<"$dir/PLAN-001.stdout")" == "raw status $reported" ]] \
+    || fail "invoke-answer status $reported did not retain raw output"
+}
+
+check_cli_status 99 2
+grep -qi 'models config' "$tmp/cli-99.err" \
+  || fail "invoke-answer status 99 did not name the models config"
+check_cli_status 97 1
+check_cli_status 98 1
+check_cli_status 42 42
+check_cli_status 96 96 'vendor_adapters: vendor exited reserved status 99; reporting 96'
+grep -F 'reserved status 99' "$tmp/cli-96/PLAN-001.stderr" >/dev/null \
+  || fail "reserved-collision diagnostic was not retained"
 
 # R71 (round-1 review): the WHOLE models config is validated before drafting — a copy of the
 # script beside a config missing a required section must refuse, even though its own
