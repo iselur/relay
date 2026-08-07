@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""The ONE validator for scripts/models.json, shared by every consumer (round-1 review, both
+blocking findings): scripts/dispatch.py imports validate(); scripts/review and scripts/codex-plan
+invoke the CLI, so the shell consumers check the WHOLE config — not just the one value they read.
+Stdlib only: the shell consumers must not need the dispatcher venv.
+
+Usage:
+  models_check.py CONFIG                 validate only
+  models_check.py CONFIG get DOTTED.PATH validate, then print the (non-empty string) value
+  models_check.py CONFIG vendor MODEL    validate, then print the declared vendor or 'unknown'
+Any validation failure prints every error to stderr and exits 2, printing no value at all.
+"""
+import json
+import sys
+
+ROLES = ("orchestrator", "spec_author", "utility_subagent", "worker",
+         "bound_reviewer", "orchestrator_artifact_reviewer")
+VENDORS = ("claude", "codex", "kimi")
+SECTIONS = ("schema_version", "roles", "cli_aliases", "vendor_map")
+# Contradiction TRIPWIRE, not a classifier (round-1 review, finding 1): a name carrying a known
+# vendor prefix may not be declared as the other vendor — that misdeclaration is exactly what
+# would let same-vendor review pass. A name with no known prefix still needs its explicit
+# vendor_map entry; nothing here ever infers a vendor for it.
+PREFIX_RULES = (("claude", "claude"), ("gpt-", "codex"), ("codex", "codex"), ("kimi", "kimi"))
+
+
+def _nonempty_str(v) -> bool:
+    return isinstance(v, str) and bool(v.strip())
+
+
+def _is_model_id(v) -> bool:
+    """A model id is one bare token. R102 round-2 review (blocking): the shell consumers pass
+    model ids through tab-delimited records, so an id carrying a tab or newline would split one
+    record into two and slip past the self-review comparison. Refuse them at the source."""
+    return _nonempty_str(v) and v == v.strip() and not any(c.isspace() for c in v) \
+        and not any(ord(c) < 32 or ord(c) == 127 for c in v)
+
+
+def validate(cfg) -> list:
+    """Every problem in the config, as a list of messages; [] means valid."""
+    if not isinstance(cfg, dict):
+        return ["config is not a JSON object"]
+    errs = []
+    for k in SECTIONS:
+        if k not in cfg:
+            errs.append(f"missing required section: {k}")
+    for k in sorted(set(cfg) - set(SECTIONS)):
+        errs.append(f"unknown section: {k}")
+    if "schema_version" in cfg and cfg["schema_version"] != "1":
+        errs.append("schema_version must be the string '1'")
+
+    named_models = set()
+    roles = cfg.get("roles")
+    if roles is not None and not isinstance(roles, dict):
+        errs.append("roles must be an object")
+        roles = {}
+    roles = roles or {}
+    for r in ROLES:
+        if r not in roles:
+            errs.append(f"missing role: {r}")
+            continue
+        entry = roles[r]
+        if not isinstance(entry, dict):
+            errs.append(f"roles.{r} must be an object")
+            continue
+        for k in sorted(set(entry) - {"model", "effort"}):
+            errs.append(f"roles.{r} has unknown key: {k}")
+        for k in ("model", "effort"):
+            if not _nonempty_str(entry.get(k)):
+                errs.append(f"roles.{r}.{k} must be a non-empty string")
+        if _nonempty_str(entry.get("model")):
+            named_models.add(entry["model"])
+    for r in sorted(set(roles) - set(ROLES)):
+        errs.append(f"unknown role: {r}")
+
+    aliases = cfg.get("cli_aliases")
+    if aliases is not None:
+        if not isinstance(aliases, dict):
+            errs.append("cli_aliases must be an object")
+        else:
+            for k, v in aliases.items():
+                if not _nonempty_str(v):
+                    errs.append(f"cli_aliases.{k} must be a non-empty string")
+
+    vm = cfg.get("vendor_map")
+    if vm is not None and not isinstance(vm, dict):
+        errs.append("vendor_map must be an object")
+        vm = {}
+    vm = vm if isinstance(vm, dict) else {}
+    for m, v in sorted(vm.items()):
+        # scripts/review classifies a recorded model by vendor_map membership, then emits it in a
+        # tab-delimited record; this key check is what keeps a tab out of that record (R102 round-3).
+        if not _is_model_id(m):
+            errs.append(f"vendor_map key must be a single bare token (no whitespace or control "
+                        f"characters): {m!r}")
+        if v not in VENDORS:
+            errs.append(f"vendor_map.{m} must be one of {'/'.join(VENDORS)}, not {v!r}")
+            continue
+        for prefix, vendor in PREFIX_RULES:
+            if m.lower().startswith(prefix) and v != vendor:
+                errs.append(f"vendor_map contradiction: {m} declared as {v}")
+    if "vendor_map" in cfg:
+        # Completeness: every model the config itself names must carry a vendor declaration,
+        # or dispatch could launch a model that scripts/review can never classify.
+        for m in sorted(named_models - set(vm)):
+            errs.append(f"model named in config but not declared in vendor_map: {m}")
+    if isinstance(aliases, dict):
+        # R73 round-1 review (blocking): an alias whose TARGET is itself a declared model would
+        # let one model masquerade as another at invocation time — resolution would compare the
+        # distinct config ids while the CLI runs the alias target (self-review laundered through
+        # cli_aliases). Aliases map a model id to its vendor-CLI name, never to another model.
+        for k, v in sorted(aliases.items()):
+            if _nonempty_str(v) and v != k and (v in vm or v in named_models):
+                errs.append(f"cli_aliases.{k} targets another declared model ({v}): an alias "
+                            f"maps a model id to its CLI name, never to a different model")
+        # R102 round-2 review (blocking): the self-review gates compare CONFIG model ids, so two
+        # distinct ids that resolve to the SAME CLI name are one real model wearing two names —
+        # enough to let a model review its own work. Alias targets must be unique.
+        shared = {}
+        for k, v in sorted(aliases.items()):
+            if _nonempty_str(v):
+                shared.setdefault(v, []).append(k)
+        for v, ks in sorted(shared.items()):
+            if len(ks) > 1:
+                errs.append(f"cli_aliases {', '.join(ks)} all resolve to {v}: distinct model ids "
+                            f"must invoke distinct models, or a model can review itself")
+        # Kimi slice 3 (rounds 1-2 review): the kimi CLI accepts only its provider aliases,
+        # never relay model ids — a kimi-vendor model without a cli_aliases entry would freeze
+        # an alias map its adapter must refuse at every invocation, and an IDENTITY alias
+        # (model id mapped to itself) would launder the raw relay id straight through the
+        # translation. Required at validation: a non-empty alias DISTINCT from the model id.
+        for m, v in sorted(vm.items()):
+            if v == "kimi" and (not _nonempty_str(aliases.get(m)) or aliases.get(m) == m):
+                errs.append(f"vendor_map.{m} is kimi-vendor but cli_aliases has no distinct "
+                            f"entry for it (the kimi CLI accepts only its provider aliases, "
+                            f"never relay model ids)")
+
+    # Owner decision 2026-07-16: vendor PAIRING is the owner's call, made by editing this
+    # config — nothing here polices same- vs cross-vendor. The one mechanical rule that remains:
+    # same-MODEL self-review is refused at resolution in dispatch.py ("nothing reviews its
+    # own work" — the one hard limit the rulebook keeps).
+    return errs
+
+
+def load_and_validate(path: str) -> dict:
+    """Read, decode, parse, and validate; raises SystemExit(2) with all errors on stderr."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"models_check: unreadable config {path}: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"models_check: invalid JSON in {path}: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    errs = validate(cfg)
+    if errs:
+        for e in errs:
+            print(f"models_check: {path}: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    return cfg
+
+
+def main(argv) -> int:
+    if len(argv) < 2 or (len(argv) > 2 and argv[2] not in ("get", "vendor")) \
+            or (len(argv) > 2 and len(argv) != 4):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    cfg = load_and_validate(argv[1])
+    if len(argv) == 2:
+        return 0
+    if argv[2] == "get":
+        node = cfg
+        for part in argv[3].split("."):
+            if not isinstance(node, dict) or part not in node:
+                print(f"models_check: no such config path: {argv[3]}", file=sys.stderr)
+                return 2
+            node = node[part]
+        if not _nonempty_str(node):
+            print(f"models_check: {argv[3]} is not a non-empty string", file=sys.stderr)
+            return 2
+        print(node)
+        return 0
+    vendor = cfg["vendor_map"].get(argv[3], "unknown")
+    print(vendor if vendor in VENDORS else "unknown")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

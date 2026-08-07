@@ -27,10 +27,6 @@ Verified mechanics (R73 probe evidence, 2026-07-16, .orchestrator/evidence/r73-p
 """
 
 import json
-import os
-import subprocess
-import sys
-from pathlib import Path
 
 
 def _strict_json_object(raw):
@@ -57,32 +53,6 @@ def _strict_json_object(raw):
             except Exception:
                 obj = None
     return obj if isinstance(obj, dict) else None
-
-
-def _kimi_answer(raw, fail_closed):
-    """Recover stream-json's last assistant string. Reviewer damage invalidates prior output;
-    worker recovery keeps its historical best-effort behavior."""
-    content = None
-    for line in (raw or "").splitlines():
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except Exception:
-            if fail_closed:
-                content = None
-            continue
-        if not isinstance(event, dict):
-            if fail_closed:
-                content = None
-            continue
-        if event.get("role") == "assistant":
-            value = event.get("content")
-            if isinstance(value, str):
-                content = value
-            elif fail_closed:
-                content = None
-    return content
 
 
 class ClaudeReviewer:
@@ -174,9 +144,6 @@ class KimiReviewer:
                 "markdown, no code fences, no prose before or after:\n"
                 + json.dumps(schema_obj, indent=2))
 
-    def recover_answer(self, stdout):
-        return _kimi_answer(stdout, fail_closed=True)
-
     def extract_verdict(self, stdout):
         # Round-1 review (major): taking the last WELL-FORMED assistant string let an earlier
         # PASS survive trailing malformed JSON, non-string content, or raw prose — a stale
@@ -186,7 +153,21 @@ class KimiReviewer:
         # invalidates what came before; only a subsequent VALID assistant event supersedes the
         # damage. Whitespace-only lines are neutral; other non-assistant JSON objects are
         # ordinary stream events and leave the verdict source untouched.
-        content = self.recover_answer(stdout)
+        content = None
+        for line in (stdout or "").splitlines():
+            if not line.strip():
+                continue
+            try:
+                e = json.loads(line)
+            except Exception:
+                content = None
+                continue
+            if not isinstance(e, dict):
+                content = None
+                continue
+            if e.get("role") == "assistant":
+                c = e.get("content")
+                content = c if isinstance(c, str) else None
         return _strict_json_object(content) if content is not None else None
 
 
@@ -200,10 +181,6 @@ class CodexWorker:
     alias (kimi) and deliberately IGNORED here — the verbatim contract stands."""
 
     mode = "external-cli"   # detached CLI process under the worker role envelope (D5)
-
-    def build_answer_argv(self, model_id, effort, request, cli_aliases):
-        return ["codex", "exec", "-m", model_id, "-c", f"model_reasoning_effort={effort}",
-                "--sandbox", "read-only", "--skip-git-repo-check", "-"]
 
     def build_argv(self, model_id, effort, worktree, prompt, isolated,
                    argv_prefix=None, last_message_path=None, cli_aliases=None):
@@ -331,13 +308,6 @@ class KimiWorker:
 
     mode = "external-cli"   # detached CLI process under the worker role envelope (D5)
 
-    def build_answer_argv(self, model_id, effort, request, cli_aliases):
-        return KimiReviewer().build_argv(model_id, effort, None, cli_aliases, None,
-                                         request=request)
-
-    def recover_answer(self, stdout, fail_closed=False):
-        return _kimi_answer(stdout, fail_closed)
-
     def build_argv(self, model_id, effort, worktree, prompt, isolated,
                    argv_prefix=None, last_message_path=None, cli_aliases=None):
         if not isolated:
@@ -463,90 +433,3 @@ def get_worker_adapter(vendor):
         raise ValueError(f"no worker adapter for vendor {vendor!r} "
                          f"(known: {'/'.join(sorted(_WORKERS))})")
     return _WORKERS[vendor]()
-
-
-def _emit_model(model):
-    try:
-        os.fstat(3)
-    except OSError:
-        return
-    os.write(3, f"model={model}\n".encode())
-
-
-def _invoke_answer(argv):
-    usage = ("usage: vendor_adapters.py invoke-answer --role "
-             "<spec_author|orchestrator_artifact_reviewer> [--raw PATH]")
-    if not argv or argv.pop(0) != "invoke-answer":
-        print(usage, file=sys.stderr)
-        return 99
-    opts = {}
-    while argv:
-        if len(argv) < 2 or argv[0] not in ("--role", "--raw") or argv[0] in opts:
-            print(usage, file=sys.stderr)
-            return 99
-        key = argv.pop(0)
-        opts[key] = argv.pop(0)
-    role = opts.get("--role")
-    if role not in ("spec_author", "orchestrator_artifact_reviewer"):
-        print(usage, file=sys.stderr)
-        return 99
-
-    try:
-        from models_check import load_and_validate
-        cfg = load_and_validate(str(Path(__file__).with_name("models.json")))
-        entry = cfg["roles"][role]
-        model, effort = entry["model"], entry["effort"]
-        vendor = cfg["vendor_map"].get(model, "unknown")
-        _emit_model(model)
-    except (KeyError, OSError, SystemExit) as exc:
-        if not isinstance(exc, SystemExit):
-            print(f"vendor_adapters: config error: {exc}", file=sys.stderr)
-        return 99
-
-    prompt = sys.stdin.buffer.read()
-    try:
-        if vendor not in ("codex", "kimi"):
-            raise ValueError(f"invoke-answer does not support vendor {vendor!r}")
-        adapter = get_worker_adapter(vendor)
-        request = prompt if vendor == "codex" else prompt.decode("utf-8")
-        if vendor == "kimi" and "\0" in request:
-            raise ValueError("kimi prompt contains NUL, which cannot be carried in argv")
-        command = adapter.build_answer_argv(model, effort, request, cfg["cli_aliases"])
-    except (UnicodeDecodeError, ValueError) as exc:
-        print(f"vendor_adapters: adapter refusal: {exc}", file=sys.stderr)
-        return 97
-
-    proc = subprocess.run(command, input=prompt if vendor == "codex" else None,
-                          stdout=subprocess.PIPE, close_fds=True)
-    raw = proc.stdout
-    if "--raw" in opts:
-        try:
-            Path(opts["--raw"]).write_bytes(raw)
-        except OSError as exc:
-            print(f"vendor_adapters: cannot write --raw path: {exc}", file=sys.stderr)
-            return 99
-    status = 128 - proc.returncode if proc.returncode < 0 else proc.returncode
-    if status:
-        if status in (96, 97, 98, 99):
-            print(f"vendor_adapters: vendor exited reserved status {status}; reporting 96",
-                  file=sys.stderr)
-            return 96
-        return status
-    if vendor == "kimi":
-        answer = "" if not raw else None
-        if raw:
-            try:
-                recovery = KimiReviewer() if role == "orchestrator_artifact_reviewer" else adapter
-                answer = recovery.recover_answer(raw.decode("utf-8"))
-            except UnicodeDecodeError:
-                pass
-        if answer is None:
-            print("vendor_adapters: kimi answer recovery failed", file=sys.stderr)
-            return 98
-        raw = answer.rstrip("\n").encode() if role == "spec_author" else answer.encode()
-    sys.stdout.buffer.write(raw)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(_invoke_answer(sys.argv[1:]))
