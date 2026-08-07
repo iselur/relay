@@ -385,6 +385,57 @@ lc2 = {"regression_command": "python3 test_vac.py", "regression_test_paths": ["t
        "base_sha": rbase, "attempt_id": "SPEC-R01-1"}
 reg2 = d.run_regression_gate(lc2, rcand_wt, rcand2, ratt, iso=False, deadline_ts=time.time() + 60)
 check("regression gate: vacuous test (passes on base too) -> FAIL", reg2["result"] == "FAIL" and reg2["base_exit"] == 0)
+
+# Isolated runs receive the frozen pinned test runtime, and exit 77 remains did-not-run rather than
+# evidence on either side of the regression pair.
+_orig_isolated_run = d.isolated_run; _orig_gwa = d.grant_worker_acl
+_orig_test_runtime_matches = d.test_runtime_matches
+runtime = {"root": "/opt/frozen-test-runtime", "python": "/opt/frozen-test-runtime/bin/python"}
+lc_iso = {**lc, "test_runtime": runtime}
+isolated_calls = []
+isolated_exits = iter((1, 0))
+def _isolated_run(*args, **kwargs):
+    isolated_calls.append((args, kwargs))
+    return types.SimpleNamespace(returncode=next(isolated_exits))
+d.isolated_run = _isolated_run
+d.grant_worker_acl = lambda wt: None
+d.test_runtime_matches = lambda record: True
+reg_iso = d.run_regression_gate(lc_iso, rcand_wt, rcand, ratt, iso=True,
+                                deadline_ts=time.time() + 60)
+check("regression gate: isolated runs receive ORCH_TEST_PY from the frozen test runtime",
+      len(isolated_calls) == 2
+      and all(kwargs["env_extra"] == {"ORCH_TEST_PY": runtime["python"]}
+              for _, kwargs in isolated_calls))
+check("regression gate: isolated runs bind the frozen test runtime root",
+      len(isolated_calls) == 2
+      and all(kwargs["binds"] == [(runtime["root"], runtime["root"])]
+              for _, kwargs in isolated_calls))
+
+isolated_calls.clear(); isolated_exits = iter((77, 0))
+reg_base_skip = d.run_regression_gate(lc_iso, rcand_wt, rcand, ratt, iso=True,
+                                      deadline_ts=time.time() + 60)
+check("regression gate: base SKIP is did-not-run, never a vacuous proof",
+      reg_base_skip["result"] == "FAIL" and "SKIPPED (exit 77" in reg_base_skip["reason"]
+      and "base" in reg_base_skip["reason"] and "did not run proves nothing" in reg_base_skip["reason"])
+
+isolated_calls.clear(); isolated_exits = iter((1, 77))
+reg_candidate_skip = d.run_regression_gate(lc_iso, rcand_wt, rcand, ratt, iso=True,
+                                           deadline_ts=time.time() + 60)
+check("regression gate: candidate SKIP is did-not-run, not a failed assertion",
+      reg_candidate_skip["result"] == "FAIL" and "SKIPPED (exit 77" in reg_candidate_skip["reason"]
+      and "candidate" in reg_candidate_skip["reason"]
+      and "did not run proves nothing" in reg_candidate_skip["reason"]
+      and "does not satisfy" not in reg_candidate_skip["reason"])
+
+isolated_calls.clear()
+d.test_runtime_matches = lambda record: False
+reg_stale_runtime = d.run_regression_gate({**lc_iso, "test_runtime": None}, rcand_wt, rcand, ratt,
+                                          iso=True, deadline_ts=time.time() + 60)
+check("regression gate: stale/untrusted runtime fails closed before isolated execution",
+      reg_stale_runtime["result"] == "FAIL"
+      and "stale/untrusted" in reg_stale_runtime["reason"] and not isolated_calls)
+d.isolated_run = _orig_isolated_run; d.grant_worker_acl = _orig_gwa
+d.test_runtime_matches = _orig_test_runtime_matches
 d.worktree_root = _orig_wtr; d.git = _orig_git; d.run = _orig_run
 
 # regression_command without regression_test_paths -> validate_spec cross-field error

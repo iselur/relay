@@ -1816,6 +1816,12 @@ def run_regression_gate(lc, wt, worker_commit, att, iso, deadline_ts) -> dict:
     res = {"command": cmd, "test_paths": paths, "base_sha": base_sha,
            "worker_commit": worker_commit, "isolation": iso,
            "base_exit": None, "candidate_exit": None, "result": "FAIL", "reason": ""}
+    test_runtime = lc.get("test_runtime")
+
+    if iso and not test_runtime_matches(test_runtime):
+        res["reason"] = ("stale/untrusted test runtime in the frozen launch record; refusing to run "
+                         "the isolated regression test")
+        return res
 
     def _run_in(unit, cwd, log_path, phase_ceiling_s):
         if iso:
@@ -1823,6 +1829,8 @@ def run_regression_gate(lc, wt, worker_commit, att, iso, deadline_ts) -> dict:
                 cp = isolated_run(unit, ["bash", "-c", cmd], cwd=str(cwd),
                                   rw_paths=[str(cwd)], private_network=True,
                                   ceiling_s=phase_ceiling_s, stdout=lg, stderr=subprocess.STDOUT,
+                                  binds=[(test_runtime["root"], test_runtime["root"])],
+                                  env_extra={"ORCH_TEST_PY": test_runtime["python"]},
                                   slice_name=attempt_slice(attempt_id))
             return cp.returncode
         # Unisolated fallback: no systemd RuntimeMaxSec, so cap the run itself at the remaining time
@@ -1864,6 +1872,11 @@ def run_regression_gate(lc, wt, worker_commit, att, iso, deadline_ts) -> dict:
         if base_wt.exists():
             run(["git", "worktree", "remove", "--force", str(base_wt)])
 
+    skipped = [name for name in ("base", "candidate") if res[f"{name}_exit"] == 77]
+    if skipped:
+        res["reason"] = (f"regression test SKIPPED (exit 77, the suite's did-not-run convention) "
+                         f"on {', '.join(skipped)}; a test that did not run proves nothing.")
+        return res
     if res["base_exit"] == 0:
         res["reason"] = ("vacuous regression proof: regression_command PASSED on the base — the test "
                          "does not catch the intended defect (it would have passed before the fix).")
