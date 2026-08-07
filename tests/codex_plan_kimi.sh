@@ -128,11 +128,15 @@ PY
 big_prompt="$(python3 -c "print('x' * 121000, end='')")"
 # Remove stub marker files so their absence after the run proves kimi was never called.
 rm -f "$prompt_file" "$args_file"
-if PATH="$tmp/bin:$PATH" KIMI_STUB_PROMPT="$prompt_file" KIMI_STUB_ARGS="$args_file" \
-   KIMI_STUB_STDOUT="$valid_response" \
-     "$tmp/scripts/codex-plan" --out "$run_dir" "$big_prompt" >/dev/null 2>&1; then
-  fail "oversized kimi prompt was accepted (must refuse at 120000 bytes)"
-fi
+set +e
+PATH="$tmp/bin:$PATH" KIMI_STUB_PROMPT="$prompt_file" KIMI_STUB_ARGS="$args_file" \
+  KIMI_STUB_STDOUT="$valid_response" \
+    "$tmp/scripts/codex-plan" --out "$run_dir" "$big_prompt" >/dev/null 2>"$tmp/oversize.err"
+oversize_status=$?
+set -e
+[[ "$oversize_status" == 1 ]] || fail "oversized kimi prompt exited $oversize_status, want 1"
+grep -q 'invocation failed (97)' "$tmp/oversize.err" \
+  || fail "oversized kimi prompt did not report CLI status 97"
 # Plan-002 was allocated for the ID claim but the .md must not exist (refusal before invocation).
 assert_file    "$run_dir/PLAN-002.stdout"
 assert_no_file "$run_dir/PLAN-002.md"
@@ -152,19 +156,28 @@ assert_no_file "$run_dir/PLAN-003.md"
 
 # Empty kimi response (no assistant message) is refused as empty output.
 no_assistant='{"role":"system","content":"no plan here"}'
-if PATH="$tmp/bin:$PATH" KIMI_STUB_PROMPT="$prompt_file" KIMI_STUB_ARGS="$args_file" \
-   KIMI_STUB_STDOUT="$no_assistant" \
-     "$tmp/scripts/codex-plan" --out "$run_dir" 'no assistant message' >/dev/null 2>&1; then
-  fail "kimi response with no assistant message was accepted"
-fi
+set +e
+PATH="$tmp/bin:$PATH" KIMI_STUB_PROMPT="$prompt_file" KIMI_STUB_ARGS="$args_file" \
+  KIMI_STUB_STDOUT="$no_assistant" \
+    "$tmp/scripts/codex-plan" --out "$run_dir" 'no assistant message' >/dev/null \
+      2>"$tmp/recovery.err"
+recovery_status=$?
+set -e
+[[ "$recovery_status" == 1 ]] || fail "kimi recovery failure exited $recovery_status, want 1"
+grep -q 'invocation failed (98)' "$tmp/recovery.err" \
+  || fail "kimi recovery failure did not report CLI status 98"
 assert_no_file "$run_dir/PLAN-004.md"
+[[ "$(<"$run_dir/PLAN-004.stdout")" == "$no_assistant" ]] \
+  || fail "kimi recovery failure did not retain raw output"
 
 # Vendor-neutral error wording: non-zero exit message names the vendor, not "Codex".
-err_out="$(
-  PATH="$tmp/bin:$PATH" KIMI_STUB_PROMPT="$prompt_file" KIMI_STUB_ARGS="$args_file" \
+set +e
+err_out="$(PATH="$tmp/bin:$PATH" KIMI_STUB_PROMPT="$prompt_file" KIMI_STUB_ARGS="$args_file" \
   KIMI_STUB_STDOUT='x' KIMI_STUB_EXIT=42 \
-    "$tmp/scripts/codex-plan" --out "$run_dir" 'wording check' 2>&1 || true
-)"
+    "$tmp/scripts/codex-plan" --out "$run_dir" 'wording check' 2>&1)"
+vendor_status=$?
+set -e
+[[ "$vendor_status" == 42 ]] || fail "kimi vendor status mapped to $vendor_status, want 42"
 [[ "$err_out" == *'kimi exited 42'* ]] || fail "error wording did not name 'kimi': $err_out"
 
 echo "PASS codex_plan_kimi.sh"
