@@ -15,6 +15,7 @@ bad() { echo "  FAIL: $1"; fails=1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/repo/scripts" "$tmp/repo/.orchestrator"
 cp -p scripts/review "$tmp/repo/scripts/review"
+cp -p scripts/vendor_adapters.py "$tmp/repo/scripts/vendor_adapters.py"
 # scripts/review reads $ROOT/scripts/models.json (reviewer model + vendor map) through
 # $ROOT/scripts/models_check.py and fails closed without them; both sit beside the copied script.
 cp -p scripts/models.json "$tmp/repo/scripts/models.json"

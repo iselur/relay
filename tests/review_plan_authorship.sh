@@ -21,6 +21,7 @@ bad() { echo "  FAIL: $1"; fails=1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/repo/scripts" "$tmp/repo/.orchestrator"
 cp -p scripts/review "$tmp/repo/scripts/review"
+cp -p scripts/vendor_adapters.py "$tmp/repo/scripts/vendor_adapters.py"
 cp -p scripts/models.json "$tmp/repo/scripts/models.json"
 cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
 chmod u+w "$tmp/repo/scripts/models.json"
