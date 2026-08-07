@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Slice 5: scripts/review kimi vendor-dispatch. Proves with stub binaries (no network, no live
+# scripts/review vendor-adapter coverage. Proves with stub binaries (no network, no live
 # kimi invoked):
 #   (a) kimi is accepted as --author (it is a known vendor);
 #   (b) a kimi-authored artifact (attempt worker_model=kimi-k3) derives 'kimi' and routes
@@ -7,8 +7,8 @@
 #   (c) when the reviewer IS kimi (orchestrator_artifact_reviewer=kimi-k3 in models.json),
 #       a kimi-authored artifact is REFUSED as self-review (exit 4, B18 security gate);
 #   (d) when the reviewer is kimi, a claude-authored artifact runs through the kimi dispatch
-#       path and the stub kimi's stream-json output is recovered as the round output;
-#   (e) a prompt exceeding 120000 bytes is refused before kimi is invoked (byte-limit guard).
+#       path and the adapter recovers the stub kimi's stream-json output as the round output;
+#   (e) a prompt exceeding 120000 bytes is refused by the adapter before kimi is invoked.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -121,17 +121,17 @@ big_prompt=$(python3 -c "print('x' * 120001)")
 refusal_stderr=$(scripts/review --topic kimi-byte-limit --author claude \
   --context claude-note.md "$big_prompt" 2>&1 >/dev/null)
 rc=$?
-[ "$rc" != 0 ] && ok "kimi reviewer refuses a prompt over 120000 bytes (exit $rc)" \
-  || bad "kimi byte-limit refusal did not refuse an oversized prompt"
-echo "$refusal_stderr" | grep -Eq '120000|invocation failed \(97\)' \
-  && ok "refusal diagnostic reports the byte limit or invocation failure status" \
-  || bad "refusal diagnostic mentions neither 120000 nor invocation failed (97) (wrong exit path satisfied the rc check)"
+[ "$rc" = 1 ] && ok "kimi reviewer refuses a prompt over 120000 bytes (exit 1)" \
+  || bad "kimi byte-limit refusal gave exit $rc, expected 1"
+echo "$refusal_stderr" | grep -Fq 'invocation failed (97)' \
+  && ok "refusal diagnostic reports invocation failed (97)" \
+  || bad "refusal diagnostic does not report invocation failed (97)"
 [ -f .orchestrator/reviews/kimi-byte-limit/round-1.md ] \
   && bad "byte-limit refusal still wrote a round file" \
   || ok "byte-limit refusal writes no round file"
 [ -f "$KIMI_INVOKED_MARKER" ] \
-  && bad "kimi binary was invoked despite the byte-limit guard" \
-  || ok "kimi binary not invoked (byte-limit guard fires first)"
+  && bad "kimi binary was invoked despite the adapter refusal" \
+  || ok "kimi binary not invoked (adapter byte-limit guard fires first)"
 
 [ "$fails" -eq 0 ] && echo "PASS review_kimi.sh" || echo "FAIL review_kimi.sh"
 exit "$fails"
