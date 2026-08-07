@@ -533,7 +533,8 @@ def _invoke_answer(argv):
             return 96
         return status
     if vendor == "kimi":
-        answer = "" if not raw else None
+        # an empty answer is never a valid review verdict — only spec_author may return one
+        answer = "" if not raw and role == "spec_author" else None
         if raw:
             try:
                 recovery = KimiReviewer() if role == "orchestrator_artifact_reviewer" else adapter
