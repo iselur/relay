@@ -27,12 +27,15 @@ class RelayHarnessAgent(BaseAgent):
                  skills_dir=None, *args, extra_env=None, row=None, **kwargs):
         super().__init__(logs_dir, model_name, logger, mcp_servers, skills_dir, *args,
                          extra_env=extra_env, **kwargs)
-        if not isinstance(row, str):
+        if isinstance(row, dict):
+            parsed = row
+        elif isinstance(row, str):
+            try:
+                parsed = json.loads(row)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid row agent kwarg: {exc}") from exc
+        else:
             raise ValueError("RelayHarnessAgent requires agent kwarg row=<json>")
-        try:
-            parsed = json.loads(row)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"invalid row agent kwarg: {exc}") from exc
         if not isinstance(parsed, dict) or parsed.get("kind") != "harness":
             raise ValueError("row agent kwarg must describe a harness row")
         self.row = parsed

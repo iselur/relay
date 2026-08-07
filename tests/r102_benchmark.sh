@@ -475,6 +475,25 @@ if trial_dir.is_dir():
     agent_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(agent_module)
 
+    dict_agent = agent_module.RelayHarnessAgent(tmp / "agent-dict", row=canonical[0])
+    string_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-string", row=json.dumps(canonical[0]))
+    check("agent accepts parsed dict row", dict_agent.row == string_agent.row)
+    invalid_type_errors = []
+    for invalid_row in (None, 42):
+        try:
+            agent_module.RelayHarnessAgent(tmp / "agent-invalid", row=invalid_row)
+        except ValueError as exc:
+            invalid_type_errors.append("agent kwarg row=<json>" in str(exc))
+    check("agent rejects invalid row types", invalid_type_errors == [True, True])
+    try:
+        agent_module.RelayHarnessAgent(tmp / "agent-invalid-json", row="not-json")
+    except ValueError as exc:
+        invalid_json_error = "invalid row agent kwarg" in str(exc)
+    else:
+        invalid_json_error = False
+    check("agent rejects invalid row JSON", invalid_json_error)
+
     class Environment:
         def __init__(self, order, tokenized=True):
             self.order = order
