@@ -287,10 +287,11 @@ except ValueError:
     MAX_PARALLEL = 3
 DEFAULT_CEILING_HOURS = 2.0
 
-# Gate 4: remediation limits by risk_class. initial_attempt (attempt 1) is never a remediation.
-# Only MERIT failures count toward the limit — interrupted/stale_base/error_launch are
-# infrastructure outcomes and re-launch fresh without consuming remediation budget.
-REMEDIATION_LIMITS = {"low": 5, "default": 3, "high": 1}
+# Gate 4: one unified remediation limit for every spec (owner decision 2026-08-06); risk_class
+# still governs approvals, never the retry budget. initial_attempt (attempt 1) is never a
+# remediation. Only MERIT failures count toward the limit — interrupted/stale_base/error_launch
+# are infrastructure outcomes and re-launch fresh without consuming remediation budget.
+REMEDIATION_LIMIT = 3
 MERIT_FAILURES = {"failed_test", "failed_review", "failed_scope", "failed_integrity",
                   "failed_regression"}
 ESCALATIONS = ORCH / "escalations"
@@ -1163,7 +1164,7 @@ def remediation_preflight(spec_id: str, spec: dict, digest: str, n: int) -> dict
     if k == 0:
         return None  # initial attempt (or only infrastructure re-launches so far)
 
-    limit = REMEDIATION_LIMITS.get(risk, REMEDIATION_LIMITS["default"])
+    limit = REMEDIATION_LIMIT
     if k > limit:
         ev = {"merit_failures": [{"attempt": a, "status": r.get("status")} for a, r in fails],
               "limit": limit, "risk_class": risk}
@@ -3131,6 +3132,7 @@ def _grade_phase(attempt_id, spec_id, n, att, lc, wt, raw, finish,
     # regression_command must FAIL on the base (with the candidate's test files overlaid, so it fails
     # for the right reason) and PASS on the candidate. A vacuous test (passes on base too) is a merit
     # failure. Runs worker-authored code → isolated (network off) like the test phase.
+    reg = None
     if lc.get("regression_command"):
         reg = run_regression_gate(lc, wt, worker_commit, att, iso, deadline_ts)
         atomic_write(att / "regression.json", json.dumps(reg, indent=2))
@@ -3138,7 +3140,8 @@ def _grade_phase(attempt_id, spec_id, n, att, lc, wt, raw, finish,
             finish("failed_regression", ERR_REGRESSION, worker_commit=worker_commit, regression=reg)
 
     # --- step 8: reviewer (bound, fail-closed) --------------------------------
-    verdict, vraw = review(att, spec_id, lc, worker_commit, attestation)
+    supplemental = spec_command_evidence(lc, test_rc, iso, worker_commit, reg)
+    verdict, vraw = review(att, spec_id, lc, worker_commit, attestation, supplemental)
     # Round-2 finding 3 / round-3 finding 2: bind the EFFECTIVE reviewer model onto the canonical
     # review record through ONE tested writer (write_review_record), so the attribution is covered
     # by a direct assertion rather than only as an incidental side effect of this pipeline.
@@ -3475,7 +3478,20 @@ def validate_review_verdict(verdict: dict, schema_obj: dict, lc: dict, wc: str) 
         verdict.get("security_findings")) is not None
 
 
-def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
+def spec_command_evidence(lc: dict, test_rc: int, iso: bool, worker_commit: str,
+                          reg: dict | None) -> dict:
+    """Attestation of the SPEC-DECLARED commands the dispatcher itself executed. The installed
+    manifest covers only installed required tests; a candidate-NEW required test runs only through
+    the spec's test_command and the regression gate, and on SPEC-034 attempt 2 the reviewer could
+    not see either — it correctly failed the 'suite passes' criterion for lack of evidence."""
+    return {"spec_test_command": {"command": lc["test_command"], "exit_status": test_rc,
+                                  "phase": "candidate-isolated" if iso else "unisolated",
+                                  "subject": f"candidate commit {worker_commit}"},
+            "regression_gate": reg}
+
+
+def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None,
+           spec_command_attestation=None):
     # policy-note item 2: mandatory structured rubric. The worker's plan/checklist is NEVER
     # included here (confirmation-bias contamination) — only spec, diff, and orchestrator evidence.
     wt = Path(lc["worktree"])
@@ -3571,6 +3587,10 @@ def review(att: Path, spec_id: str, lc: dict, wc: str, test_attestation=None):
         "tests (phase-aware; claims are limited to their recorded subject/identity):\n" +
         json.dumps(test_attestation if test_attestation is not None else {"attested": False},
                    indent=2, sort_keys=True) + "\n\n"
+        "spec-declared commands (executed by the installed dispatcher, not the worker; null or "
+        "absent means NO recorded execution):\n" +
+        json.dumps(spec_command_attestation if spec_command_attestation is not None
+                   else {"attested": False}, indent=2, sort_keys=True) + "\n\n"
         "=== DIFF ===\n" + diff
     )
     # R73 Job 1: the adapter shapes the prompt for its CLI's structured-output mechanism (claude:

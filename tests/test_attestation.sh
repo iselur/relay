@@ -77,6 +77,19 @@ for label, manifest in (
  ("unsafe",base+"tests/../x.sh\tcandidate-isolated\tx\n"),
 ): print("policy_"+label,fixture(manifest)[0])
 print("policy_empty",fixture("",names=())[0])
+
+# spec_command_evidence: the reviewer-visible attestation of the spec-declared commands the
+# dispatcher itself ran (test_command + regression gate) — the only recorded execution a
+# candidate-NEW required test gets.
+sce=d.spec_command_evidence({"test_command":"bash tests/x.sh"}, 0, True, "c"*40,
+                            {"result":"PASS","base_exit":1,"candidate_exit":0})
+print("sce_command", sce["spec_test_command"]["command"])
+print("sce_exit", sce["spec_test_command"]["exit_status"])
+print("sce_phase", sce["spec_test_command"]["phase"])
+print("sce_subject", sce["spec_test_command"]["subject"] == "candidate commit " + "c"*40)
+print("sce_reg", sce["regression_gate"]["result"], sce["regression_gate"]["base_exit"])
+sce2=d.spec_command_evidence({"test_command":"t"}, 0, False, "c"*40, None)
+print("sce_no_reg", sce2["regression_gate"], sce2["spec_test_command"]["phase"])
 PY
 ) || { echo "SKIP test_attestation.sh: dispatcher dependencies unavailable"; exit 77; }
 
@@ -89,6 +102,14 @@ check "unlisted test defaults isolated" "default_isolated candidate-isolated" "$
 for c in missing malformed unknown duplicate nonexistent unsafe empty; do
   check "policy $c rejected" "policy_${c} rejected" "$(grep "^policy_${c}" <<<"$out")"
 done
+check "spec command evidence carries the command" "sce_command bash tests/x.sh" "$(grep '^sce_command' <<<"$out")"
+check "spec command evidence carries the exit status" "sce_exit 0" "$(grep '^sce_exit' <<<"$out")"
+check "isolated run is labeled candidate-isolated" "sce_phase candidate-isolated" "$(grep '^sce_phase' <<<"$out")"
+check "subject names the exact candidate commit" "sce_subject True" "$(grep '^sce_subject' <<<"$out")"
+check "regression gate result passes through" "sce_reg PASS 1" "$(grep '^sce_reg' <<<"$out")"
+check "no regression gate -> explicit None, unisolated labeled" "sce_no_reg None unisolated" "$(grep '^sce_no_reg' <<<"$out")"
+grep -q "spec-declared commands (executed by the installed dispatcher" scripts/dispatch.py
+check "reviewer evidence block includes spec-declared commands" 0 $?
 
 echo "== runner records SKIP without upgrading it"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT

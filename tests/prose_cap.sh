@@ -69,7 +69,7 @@ declare -A cap=(
   [README.md]=100
   [BOOTSTRAP.md]=80
   [SECURITY.md]=110
-  [.orchestrator/BACKLOG.md]=45
+  [.orchestrator/BACKLOG.md]=100  # 45→100 on 2026-08-06, owner-approved: cap was never the constraint, staleness was
   [.orchestrator/REVIEW-FRAMING.md]=45  # added 2026-07-18, owner-approved: binding review framing (CLAUDE.md rule 3)
 )
 total_lines=0
