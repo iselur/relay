@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE=tests/parity_base
-for file in BASE_SHA vendor_adapters.py models_check.py models.json codex-plan; do
+for file in BASE_SHA vendor_adapters.py models_check.py models.json codex-plan review; do
   [[ -f "$BASE/$file" ]] || { echo "FAIL missing base fixture: $BASE/$file" >&2; exit 1; }
 done
 BASE_SHA=$(<"$BASE/BASE_SHA")
@@ -18,7 +18,7 @@ trap 'rm -rf "$tmp"' EXIT
 # CI has the dispatch commit and verifies every fixture byte. Candidate-isolated grading has no
 # reachable Git metadata and runs exclusively from the committed fixture after cat-file fails.
 if command -v git >/dev/null && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-  for path in scripts/vendor_adapters.py scripts/models_check.py scripts/models.json scripts/codex-plan; do
+  for path in scripts/vendor_adapters.py scripts/models_check.py scripts/models.json scripts/codex-plan scripts/review; do
     git show "$BASE_SHA:$path" >"$tmp/git-show"
     cmp "$tmp/git-show" "$BASE/${path#scripts/}" \
       || { echo "FAIL base fixture differs from $BASE_SHA:$path" >&2; exit 1; }
@@ -29,6 +29,14 @@ mkdir -p "$tmp/base/scripts" "$tmp/cli/scripts" "$tmp/bin"
 cp "$BASE"/{vendor_adapters.py,models_check.py,models.json,codex-plan} "$tmp/base/scripts/"
 cp scripts/vendor_adapters.py "$tmp/cli/scripts/"
 cp "$BASE"/{models_check.py,models.json} "$tmp/cli/scripts/"
+
+# Slice 2 drives the complete committed review fixture, so its config gate, round locking, output
+# paths, and exit translation remain part of the oracle. The base side contains base bytes only.
+mkdir -p "$tmp/review-base/scripts" "$tmp/review-cli/scripts"
+cp "$BASE"/{review,models_check.py,models.json} "$tmp/review-base/scripts/"
+cp scripts/{review,vendor_adapters.py,models_check.py,models.json} "$tmp/review-cli/scripts/"
+chmod +x "$tmp/review-base/scripts/review" "$tmp/review-cli/scripts/review"
+printf 'plain claude review context\n' >"$tmp/review-context.txt"
 
 # This is the point where committed base bytes become executable oracle behavior. Both the
 # config-resolution block and vendor case are extracted verbatim. The sole mechanical transport
@@ -357,6 +365,208 @@ assert_status 'fd 3 absent invocation' "$RUN_STATUS" 0
 
 run_status python3 scripts/vendor_adapters.py invoke-answer --role unsupported <"$tmp/prompt"
 assert_status 'CLI usage error' "$RUN_STATUS" 99
+
+# Slice 2: scripts/review consumes invoke-answer. Drive the committed base script itself rather
+# than recreating either old vendor arm; missing fixture delimiters and bytes are guarded above.
+configure_review() {
+  local vendor=$1 effort=$2
+  python3 - "$BASE/models.json" "$tmp/review-base/scripts/models.json" \
+    "$tmp/review-cli/scripts/models.json" "$vendor" "$effort" <<'PY'
+import json, sys
+cfg = json.loads(open(sys.argv[1]).read())
+model = "kimi-k3" if sys.argv[4] == "kimi" else "gpt-5.6-luna"
+cfg["roles"]["orchestrator_artifact_reviewer"] = {
+    "model": model, "effort": sys.argv[5]
+}
+data = json.dumps(cfg, indent=2) + "\n"
+for path in sys.argv[2:4]:
+    open(path, "w").write(data)
+PY
+}
+
+run_review() {
+  local side=$1 topic=$2
+  run_status env ORCH_TEST_PY=python3 \
+    "$tmp/review-$side/scripts/review" --topic "$topic" --author claude \
+    --context "$tmp/review-context.txt" "review parity prompt" \
+    >"$tmp/review-$side.stdout" 2>"$tmp/review-$side.outer"
+  REVIEW_STATUS=$RUN_STATUS
+}
+
+rm -rf "$tmp/review-base/.orchestrator" "$tmp/review-cli/.orchestrator"
+printf 'codex review answer\n' >"$tmp/codex-review-output"
+printf '{"role":"assistant","content":"kimi review answer"}\n' >"$tmp/kimi-review-output"
+
+# With high effort, Codex argv, stdin, recovered answer, and observable status stay byte-identical.
+configure_review codex high
+export STUB_MODE=output STUB_OUTPUT="$tmp/codex-review-output" STUB_STDERR=""
+export STUB_ARGV="$tmp/review-base.argv" STUB_PROMPT="$tmp/review-base.prompt" \
+       STUB_INHERITED="$tmp/review-base.inherited"
+run_review base review-codex-high
+base_review_status=$REVIEW_STATUS
+export STUB_ARGV="$tmp/review-cli.argv" STUB_PROMPT="$tmp/review-cli.prompt" \
+       STUB_INHERITED="$tmp/review-cli.inherited"
+run_review cli review-codex-high
+cli_review_status=$REVIEW_STATUS
+assert_status 'review Codex high base' "$base_review_status" 0
+assert_status 'review Codex high candidate' "$cli_review_status" 0
+assert_cmp 'review Codex high complete argv' "$tmp/review-base.argv" "$tmp/review-cli.argv"
+assert_cmp 'review Codex high prompt' "$tmp/review-base.prompt" "$tmp/review-cli.prompt"
+assert_cmp 'review Codex high answer' \
+  "$tmp/review-base/.orchestrator/reviews/review-codex-high/round-1.md" \
+  "$tmp/review-cli/.orchestrator/reviews/review-codex-high/round-1.md"
+[[ ! -e "$tmp/review-cli/.orchestrator/reviews/review-codex-high/round-1.raw" &&
+   ! -e "$tmp/review-cli/.orchestrator/reviews/review-codex-high/round-1.md.partial" ]] \
+  && ok 'review Codex success leaves no raw or partial' \
+  || fail 'review Codex success left raw or partial'
+
+# The base arm hard-coded high. A non-high fixture must move only the candidate's effort argv.
+configure_review codex max
+rm -f "$tmp/review-base.argv" "$tmp/review-cli.argv"
+export STUB_ARGV="$tmp/review-base.argv" STUB_PROMPT="$tmp/review-base.prompt" \
+       STUB_INHERITED="$tmp/review-base.inherited"
+run_review base review-codex-max
+base_review_status=$REVIEW_STATUS
+export STUB_ARGV="$tmp/review-cli.argv" STUB_PROMPT="$tmp/review-cli.prompt" \
+       STUB_INHERITED="$tmp/review-cli.inherited"
+run_review cli review-codex-max
+cli_review_status=$REVIEW_STATUS
+assert_status 'review Codex non-high base' "$base_review_status" 0
+assert_status 'review Codex non-high candidate' "$cli_review_status" 0
+if python3 - "$tmp/review-base.argv" "$tmp/review-cli.argv" <<'PY'
+from pathlib import Path
+import sys
+base = Path(sys.argv[1]).read_bytes().split(b"\0")[:-1]
+candidate = Path(sys.argv[2]).read_bytes().split(b"\0")[:-1]
+old, new = b"model_reasoning_effort=high", b"model_reasoning_effort=max"
+assert base.count(old) == 1 and candidate.count(new) == 1
+candidate[candidate.index(new)] = old
+assert candidate == base
+PY
+then
+  ok 'review Codex candidate carries configured non-high effort'
+else
+  fail 'review Codex non-high argv differs beyond configured effort'
+fi
+assert_cmp 'review Codex non-high prompt' "$tmp/review-base.prompt" "$tmp/review-cli.prompt"
+
+# Kimi keeps the alias and every other argv byte; uniform printf adds exactly one prompt newline.
+configure_review kimi max
+export STUB_OUTPUT="$tmp/kimi-review-output"
+rm -f "$tmp/review-base.argv" "$tmp/review-cli.argv"
+export STUB_ARGV="$tmp/review-base.argv" STUB_PROMPT="$tmp/review-base.prompt" \
+       STUB_INHERITED="$tmp/review-base.inherited"
+run_review base review-kimi
+base_review_status=$REVIEW_STATUS
+export STUB_ARGV="$tmp/review-cli.argv" STUB_PROMPT="$tmp/review-cli.prompt" \
+       STUB_INHERITED="$tmp/review-cli.inherited"
+run_review cli review-kimi
+cli_review_status=$REVIEW_STATUS
+assert_status 'review Kimi base' "$base_review_status" 0
+assert_status 'review Kimi candidate' "$cli_review_status" 0
+if python3 - "$tmp/review-base.argv" "$tmp/review-cli.argv" \
+    "$tmp/review-base.prompt" "$tmp/review-cli.prompt" <<'PY'
+from pathlib import Path
+import sys
+base = Path(sys.argv[1]).read_bytes().split(b"\0")[:-1]
+candidate = Path(sys.argv[2]).read_bytes().split(b"\0")[:-1]
+base_prompt = Path(sys.argv[3]).read_bytes()
+candidate_prompt = Path(sys.argv[4]).read_bytes()
+assert candidate_prompt == base_prompt + b"\n"
+assert base.count(b"-p") == candidate.count(b"-p") == 1
+i, j = base.index(b"-p") + 1, candidate.index(b"-p") + 1
+assert candidate[j] == base[i] + b"\n"
+candidate[j] = base[i]
+assert candidate == base
+assert b"kimi-code/k3" in base
+PY
+then
+  ok 'review Kimi argv preserves alias and adds exactly one prompt newline'
+else
+  fail 'review Kimi argv or prompt delta is not the frozen one-newline change'
+fi
+assert_cmp 'review Kimi recovered answer' \
+  "$tmp/review-base/.orchestrator/reviews/review-kimi/round-1.md" \
+  "$tmp/review-cli/.orchestrator/reviews/review-kimi/round-1.md"
+
+# Vendor exits remain review exit 1 on both sides, including reserved statuses the CLI remaps.
+configure_review codex high
+export STUB_OUTPUT="$tmp/empty"
+for code in 42 96 97 98 99; do
+  export STUB_MODE=exit STUB_EXIT=$code
+  export STUB_ARGV="$tmp/review-base-$code.argv" STUB_PROMPT="$tmp/review-base-$code.prompt" \
+         STUB_INHERITED="$tmp/review-base-$code.inherited"
+  run_review base "review-codex-exit-$code"
+  base_review_status=$REVIEW_STATUS
+  export STUB_ARGV="$tmp/review-cli-$code.argv" STUB_PROMPT="$tmp/review-cli-$code.prompt" \
+         STUB_INHERITED="$tmp/review-cli-$code.inherited"
+  run_review cli "review-codex-exit-$code"
+  cli_review_status=$REVIEW_STATUS
+  assert_status "review Codex vendor exit $code base" "$base_review_status" 1
+  assert_status "review Codex vendor exit $code candidate" "$cli_review_status" 1
+  assert_cmp "review Codex vendor exit $code argv" \
+    "$tmp/review-base-$code.argv" "$tmp/review-cli-$code.argv"
+  assert_cmp "review Codex vendor exit $code prompt" \
+    "$tmp/review-base-$code.prompt" "$tmp/review-cli-$code.prompt"
+done
+
+# Pin the consumer's mapping for every CLI status directly. This includes a post-gate 99: the
+# review config is valid, then the stubbed invoke-answer fails. Only recovery status 98 keeps raw.
+cat >"$tmp/review-cli/scripts/vendor_adapters.py" <<'PY'
+import os, pathlib, sys
+args = sys.argv[1:]
+raw = args[args.index("--raw") + 1]
+pathlib.Path(raw).write_bytes(b"stub raw\n")
+status = int(os.environ["STUB_CLI_STATUS"])
+print(f"stub invoke-answer status {status}", file=sys.stderr)
+raise SystemExit(status)
+PY
+export STUB_MODE=output STUB_STDERR=""
+for code in 99 97 98 96 42; do
+  topic="review-cli-status-$code"
+  export STUB_CLI_STATUS=$code
+  run_review cli "$topic"
+  assert_status "review post-gate CLI status $code" "$REVIEW_STATUS" 1
+  round_dir="$tmp/review-cli/.orchestrator/reviews/$topic"
+  grep -F "invocation failed ($code); stderr at .orchestrator/reviews/$topic/round-1.stderr" \
+      "$tmp/review-cli.outer" >/dev/null \
+    && ok "review CLI status $code diagnostic names status and stderr" \
+    || fail "review CLI status $code diagnostic missing status or stderr"
+  grep -F "stub invoke-answer status $code" "$round_dir/round-1.stderr" >/dev/null \
+    && ok "review CLI status $code retains stderr" \
+    || fail "review CLI status $code lost stderr"
+  [[ ! -e "$round_dir/round-1.md" && ! -e "$round_dir/round-1.md.partial" ]] \
+    && ok "review CLI status $code mints no round or partial" \
+    || fail "review CLI status $code minted round or partial"
+  if [[ "$code" == 98 ]]; then
+    [[ -e "$round_dir/round-1.md.raw" ]] \
+      && ok 'review CLI status 98 retains raw' || fail 'review CLI status 98 lost raw'
+  else
+    [[ ! -e "$round_dir/round-1.md.raw" ]] \
+      && ok "review CLI status $code removes raw" || fail "review CLI status $code retained raw"
+  fi
+done
+
+# Invalid config is still caught by review's own first gate: exit 2 and no vendor/CLI launch.
+cp scripts/vendor_adapters.py "$tmp/review-cli/scripts/vendor_adapters.py"
+configure_review codex high
+python3 - "$tmp/review-base/scripts/models.json" "$tmp/review-cli/scripts/models.json" <<'PY'
+import json, sys
+for path in sys.argv[1:]:
+    cfg = json.load(open(path)); cfg["unexpected"] = True
+    open(path, "w").write(json.dumps(cfg) + "\n")
+PY
+for side in base cli; do
+  rm -f "$tmp/review-$side-invalid.argv" "$tmp/review-$side-invalid.prompt"
+  export STUB_ARGV="$tmp/review-$side-invalid.argv" \
+         STUB_PROMPT="$tmp/review-$side-invalid.prompt" \
+         STUB_INHERITED="$tmp/review-$side-invalid.inherited"
+  run_review "$side" "review-invalid-$side"
+  assert_status "review invalid config $side" "$REVIEW_STATUS" 2
+  [[ ! -e "$tmp/review-$side-invalid.argv" ]] \
+    && ok "review invalid config $side launched no vendor" \
+    || fail "review invalid config $side launched vendor"
+done
 
 if ((failures)); then
   printf 'vendor_cli_parity: %d failure(s)\n' "$failures" >&2
