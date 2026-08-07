@@ -533,15 +533,16 @@ def _invoke_answer(argv):
             return 96
         return status
     if vendor == "kimi":
-        # an empty answer is never a valid review verdict — only spec_author may return one
-        answer = "" if not raw and role == "spec_author" else None
+        answer = "" if not raw else None
         if raw:
             try:
                 recovery = KimiReviewer() if role == "orchestrator_artifact_reviewer" else adapter
                 answer = recovery.recover_answer(raw.decode("utf-8"))
             except UnicodeDecodeError:
                 pass
-        if answer is None:
+        # a blank answer is never a valid review verdict — only spec_author may return one,
+        # whether the stream was empty or its final assistant message had blank content
+        if answer is None or (role == "orchestrator_artifact_reviewer" and not answer.strip()):
             print("vendor_adapters: kimi answer recovery failed", file=sys.stderr)
             return 98
         raw = answer.rstrip("\n").encode() if role == "spec_author" else answer.encode()

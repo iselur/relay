@@ -252,6 +252,16 @@ run_status python3 "$tmp/cli/scripts/vendor_adapters.py" invoke-answer \
   <"$tmp/prompt" >"$tmp/cli.out" 2>"$tmp/cli.err"
 assert_status 'Kimi reviewer empty output fails closed' "$RUN_STATUS" 98
 
+# A non-empty stream recovering to a blank assistant message is not a verdict either.
+printf '{"role":"assistant","content":" \\n"}\n' >"$tmp/kimi-blank"
+rm -f "$tmp/cli.argv" "$tmp/cli.prompt" "$tmp/cli.inherited"
+export STUB_ARGV="$tmp/cli.argv" STUB_PROMPT="$tmp/cli.prompt" STUB_INHERITED="$tmp/cli.inherited" \
+       STUB_OUTPUT="$tmp/kimi-blank"
+run_status python3 "$tmp/cli/scripts/vendor_adapters.py" invoke-answer \
+  --role orchestrator_artifact_reviewer \
+  <"$tmp/prompt" >"$tmp/cli.out" 2>"$tmp/cli.err"
+assert_status 'Kimi reviewer blank answer fails closed' "$RUN_STATUS" 98
+
 # Ordinary and reserved vendor statuses apply to both supported vendors.
 for vendor in codex kimi; do
   for code in 42 96 97 98 99; do
