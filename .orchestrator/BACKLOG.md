@@ -27,3 +27,7 @@ knows them, accepts them, and does not want them built (2026-08-06). Do not re-a
   lifecycle-falsifier branch.
 - Measure whether review catches bugs: plant three known defects, count catches, size review scope from the result.
 - External benchmark score and cost reporting — after a real product exists.
+- Test the rendered reviewer EVIDENCE section (incl. spec-declared commands) directly instead of
+  relying partly on a source-marker grep (harness-spec-command-evidence round 1, PASS backlog note).
+- Relax scripts/review's model-level self-review refusal to instance/context level to match
+  CLAUDE.md rule 7 (owner, 2026-08-06) — stricter-than-rule today, safe to keep until needed.
