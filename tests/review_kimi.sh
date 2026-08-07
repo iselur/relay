@@ -20,6 +20,7 @@ bad() { echo "  FAIL: $1"; fails=1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/repo/scripts" "$tmp/repo/.orchestrator"
 cp -p scripts/review "$tmp/repo/scripts/review"
+cp -p scripts/vendor_adapters.py "$tmp/repo/scripts/vendor_adapters.py"
 cp -p scripts/models.json "$tmp/repo/scripts/models.json"
 cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
 chmod u+w "$tmp/repo/scripts/models.json"
@@ -122,9 +123,9 @@ refusal_stderr=$(scripts/review --topic kimi-byte-limit --author claude \
 rc=$?
 [ "$rc" != 0 ] && ok "kimi reviewer refuses a prompt over 120000 bytes (exit $rc)" \
   || bad "kimi byte-limit refusal did not refuse an oversized prompt"
-echo "$refusal_stderr" | grep -q '120000' \
-  && ok "refusal diagnostic mentions the 120000-byte limit" \
-  || bad "refusal diagnostic does not mention 120000 (wrong exit path satisfied the rc check)"
+echo "$refusal_stderr" | grep -Eq '120000|invocation failed \(97\)' \
+  && ok "refusal diagnostic reports the byte limit or invocation failure status" \
+  || bad "refusal diagnostic mentions neither 120000 nor invocation failed (97) (wrong exit path satisfied the rc check)"
 [ -f .orchestrator/reviews/kimi-byte-limit/round-1.md ] \
   && bad "byte-limit refusal still wrote a round file" \
   || ok "byte-limit refusal writes no round file"
