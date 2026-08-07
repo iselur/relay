@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+# Turn a task and optional context files into a durable Codex-drafted plan.
+set -euo pipefail
+
+out_dir=".orchestrator/plans"
+tier="standard"
+contexts=()
+task_parts=()
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/codex-plan [--brief] [--context FILE]... [--out DIR] [--] [TASK...]
+
+The rulebook (CLAUDE.md rule 5) names one tier: --brief. The lighter tier remains: standard when
+no flag is given.
+  (default)   a non-trivial single spec, decision-complete      cap 250 lines
+  --brief     a program: coordinated specs, a handoff gate,     cap 400 lines
+              trust-boundary/high-risk work, a migration, or
+              an architecture decision across components
+A full brief must contain every anatomy section (checked below): outcome, scope
+and non-goals, frozen decisions, assumptions, the earliest falsifiable proof,
+slices, gates, verification, rollback, deferred, definition of done.
+
+Supply TASK as arguments or, when no task argument is given, on standard input.
+EOF
+}
+
+die() {
+  printf 'codex-plan: %s\n' "$*" >&2
+  exit 2
+}
+
+# R71: the spec/plan-author model comes from the machine config, fetched through
+# scripts/models_check.py — which validates the WHOLE config first (round-1 review), not just
+# this one value. Fail closed — any config problem refuses to draft; no hard-coded fallback.
+SCRIPTS_DIR="$(dirname "$(realpath "$0")")"
+MODELS_CFG="$SCRIPTS_DIR/models.json"
+[ -f "$MODELS_CFG" ] || die "models config missing: $MODELS_CFG (fail closed)"
+MODEL=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" get roles.spec_author.model) \
+  || die "models config invalid, or roles.spec_author.model unusable: $MODELS_CFG"
+EFFORT=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" get roles.spec_author.effort) \
+  || die "models config invalid, or roles.spec_author.effort unusable: $MODELS_CFG"
+VENDOR=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" vendor "$MODEL") \
+  || die "models config invalid, or vendor for $MODEL unusable: $MODELS_CFG"
+case "$VENDOR" in
+  codex) VENDOR_LABEL=Codex ;;
+  kimi)  VENDOR_LABEL=kimi  ;;
+  *)     die "spec_author vendor '$VENDOR' is not supported by codex-plan (known: codex, kimi)" ;;
+esac
+if [[ "$VENDOR" == "kimi" ]]; then
+  CLI_ALIAS=$(python3 "$SCRIPTS_DIR/models_check.py" "$MODELS_CFG" get "cli_aliases.$MODEL") \
+    || die "kimi spec_author requires a CLI alias for $MODEL in $MODELS_CFG"
+fi
+
+while (($#)); do
+  case "$1" in
+    --brief)
+      tier="brief"
+      shift
+      ;;
+    --context)
+      (($# >= 2)) || die "--context requires a file"
+      contexts+=("$2")
+      shift 2
+      ;;
+    --out)
+      (($# >= 2)) || die "--out requires a directory"
+      out_dir="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      task_parts+=("$@")
+      break
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      task_parts+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if ((${#task_parts[@]})); then
+  task="${task_parts[*]}"
+else
+  # The sentinel prevents command substitution from trimming trailing newlines.
+  task="$(cat; printf '\034')"
+  task="${task%$'\034'}"
+fi
+
+[[ "$task" =~ [^[:space:]] ]] || die "task must not be empty"
+[[ -n "$out_dir" ]] || die "--out must not be empty"
+
+for context in "${contexts[@]}"; do
+  [[ -f "$context" && -r "$context" ]] || die "context is not a readable file: $context"
+done
+
+mkdir -p "$out_dir"
+[[ -d "$out_dir" && -w "$out_dir" ]] || die "output directory is not writable: $out_dir"
+
+# Treat plans and their provenance logs as allocated artifacts. This preserves
+# failed-run diagnostics instead of reusing and overwriting their identifier.
+# B17: allocation must be atomic across concurrent detached runs — two runs that both scan
+# before either writes would mint the same PLAN-NNN and overwrite each other's plan and
+# provenance. The lock is held from the scan through the claim below; the claim itself is an
+# exclusive create (noclobber) of the .stdout file, so the ID is occupied on disk before the
+# lock is released and a later scan can never re-mint it.
+exec 8>>"$out_dir/.plan-id.lock"
+flock 8
+max_id=0
+shopt -s nullglob
+for artifact in "$out_dir"/PLAN-*; do
+  name="${artifact##*/}"
+  if [[ "$name" =~ ^PLAN-([0-9]+)($|[^0-9].*) ]]; then
+    number=$((10#${BASH_REMATCH[1]}))
+    ((number > max_id)) && max_id=$number
+  fi
+done
+printf -v plan_id 'PLAN-%03d' "$((max_id + 1))"
+
+plan_path="$out_dir/$plan_id.md"
+stdout_path="$out_dir/$plan_id.stdout"
+stderr_path="$out_dir/$plan_id.stderr"
+# Claim the ID while still holding the lock: exclusive create fails if it somehow exists.
+( set -o noclobber; : > "$stdout_path" ) 2>/dev/null \
+  || die "plan id $plan_id is already claimed ($stdout_path exists); retry"
+flock -u 8
+
+case "$tier" in
+  standard)
+    cap=250
+    instructions=$(cat <<'EOF'
+Draft a durable, decision-complete implementation plan. Cover the decision and
+non-goals, assumptions and supporting evidence, alternatives considered,
+affected boundaries and interfaces, failure modes, ordered implementation
+steps, validation criteria, and rollback. Resolve material choices so an
+implementer can proceed without making new product or architecture decisions.
+Return only the Markdown plan body without YAML frontmatter.
+EOF
+) ;;
+  brief)
+    cap=400
+    # The anatomy of the 235-line brief that stood this system up — every section earned its place
+    # in a real failure. The headings are matched literally below: a brief missing one is refused,
+    # because the missing section is exactly the one nobody thought about.
+    instructions=$(cat <<'EOF'
+Draft a full program brief. Use these EXACT top-level headings, in this order,
+and put real content under each — a heading with filler is worse than none:
+
+## Outcome
+## Scope and non-goals
+## Frozen decisions
+## Assumptions
+## Earliest falsifiable proof
+## Slices
+## Gates
+## Verification
+## Rollback
+## Deferred
+## Definition of done
+
+Rules for the content:
+- Outcome is external and observable: what exists for the owner afterwards that
+  does not exist now.
+- Frozen decisions hold ONLY decisions the owner has already made, each with the
+  condition under which it may be reopened. A technical assumption is never
+  frozen — it goes under Assumptions with the evidence for it, or into a step
+  that verifies it.
+- Earliest falsifiable proof: the smallest end-to-end run that would prove this
+  whole approach wrong, done FIRST, before anything is built around it.
+- Slices: an ordered list of independently shippable increments — one PR each —
+  with what each one proves when it lands. Several small PRs beat one big one; a
+  single-slice program states why one PR suffices.
+- Every gate names the artifact or command that proves it was passed, who
+  arbitrates it, and the explicit stop-or-escalate action when it fails.
+- Reference existing specs, rules, and code; never copy them in.
+Return only the Markdown brief body without YAML frontmatter.
+EOF
+) ;;
+esac
+
+prompt="$instructions
+
+Task:
+$task"
+
+for context in "${contexts[@]}"; do
+  # Preserve trailing newlines: they are part of the supplied context.
+  context_text="$(cat -- "$context"; printf '\034')"
+  context_text="${context_text%$'\034'}"
+  prompt+="
+
+Context file: $context
+---
+$context_text"
+done
+
+vendor_status=0
+case "$VENDOR" in
+  codex)
+    # Prompt on stdin, never argv: a brief-sized prompt with context files blows past the argv
+    # limit (AGENTS.md — argv dies over 130KB), and it failed silently as a Codex startup error.
+    if printf '%s' "$prompt" | codex exec \
+      -m "$MODEL" \
+      -c model_reasoning_effort="$EFFORT" \
+      --sandbox read-only \
+      --skip-git-repo-check \
+      - >"$stdout_path" 2>"$stderr_path"; then
+      vendor_status=0
+    else
+      vendor_status=$?
+    fi
+    ;;
+  kimi)
+    # Kimi takes the prompt as -p argv; refuse before invocation if it exceeds the kimi argv
+    # limit (same guard as KimiReviewer: 120000 UTF-8 bytes, proven safe in kimi probe evidence).
+    prompt_bytes=$(printf '%s' "$prompt" | wc -c)
+    if ((prompt_bytes > 120000)); then
+      printf 'codex-plan: kimi spec_author refused — prompt is %d UTF-8 bytes (limit 120000); use fewer context files or a stdin-capable vendor\n' \
+        "$prompt_bytes" >&2
+      exit 1
+    fi
+    if kimi -p "$prompt" -m "$CLI_ALIAS" --output-format stream-json \
+      >"$stdout_path" 2>"$stderr_path"; then
+      vendor_status=0
+    else
+      vendor_status=$?
+    fi
+    # Recover the last assistant message from the stream-json capture, reusing
+    # KimiWorker.recover_last_message from vendor_adapters.py.
+    if ((vendor_status == 0)); then
+      plan_body=$(python3 - "$stdout_path" "$SCRIPTS_DIR" <<'PY'
+import sys, tempfile, shutil
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from vendor_adapters import KimiWorker
+raw_dir = Path(tempfile.mkdtemp())
+try:
+    (raw_dir / "events.jsonl").write_bytes(Path(sys.argv[1]).read_bytes())
+    print(KimiWorker().recover_last_message(raw_dir, isolated=True), end="")
+finally:
+    shutil.rmtree(raw_dir, ignore_errors=True)
+PY
+      ) && printf '%s' "$plan_body" >"$stdout_path" \
+        || { printf 'codex-plan: kimi message extraction failed; raw output retained at %s\n' \
+               "$stdout_path" >&2; exit 1; }
+    fi
+    ;;
+esac
+
+if ((vendor_status != 0)); then
+  printf 'codex-plan: %s exited %d; provenance retained at %s and %s\n' \
+    "$VENDOR_LABEL" "$vendor_status" "$stdout_path" "$stderr_path" >&2
+  exit "$vendor_status"
+fi
+
+if ! grep -q '[^[:space:]]' "$stdout_path"; then
+  printf 'codex-plan: %s produced empty output; provenance retained at %s and %s\n' \
+    "$VENDOR_LABEL" "$stdout_path" "$stderr_path" >&2
+  exit 1
+fi
+
+# Hard size cap per tier: a runaway guard, not the binding constraint on good work. A plan past its
+# cap is doing the work instead of describing it (the pre-reset repo accumulated 2,200-line plans
+# re-emitted almost verbatim across review rounds); but the 235-line founding brief is the best
+# work this system ever did, so a program brief gets room. Raising a cap is a reviewed edit here.
+body_lines=$(awk 'END { print NR }' "$stdout_path")   # NR counts a final unterminated line; wc -l does not
+if ((body_lines > cap)); then
+  printf 'codex-plan: REFUSED — %s plan body is %d lines (cap %d). Split the task or drop a tier. Raw output retained at %s\n' \
+    "$tier" "$body_lines" "$cap" "$stdout_path" >&2
+  exit 1
+fi
+
+# A brief missing a section is refused: the missing one is exactly the section nobody thought about
+# (the founding brief's value came from having all of them). This checks STRUCTURE — real heading
+# lines, in order, each with content under it. Whether the content is any good is the reviewer's
+# job. A substring scan was the first attempt and it was worthless: one line holding all ten
+# heading strings passed it.
+if [[ "$tier" == "brief" ]]; then
+  if ! awk -v out="$stdout_path" '
+    BEGIN {
+      n = split("Outcome|Scope and non-goals|Frozen decisions|Assumptions|Earliest falsifiable proof|Slices|Gates|Verification|Rollback|Deferred|Definition of done", want, "|")
+      for (i = 1; i <= n; i++) required[tolower(want[i])] = 1
+      next_want = 1; fence = 0
+    }
+    /^```/ { fence = !fence; next }                 # headings inside a code fence are not headings
+    fence { if (next_want > 1) body[next_want - 1] += 1; next }
+    /^##[ \t]+/ {
+      heading = $0
+      sub(/^##[ \t]+/, "", heading); sub(/[ \t]+$/, "", heading); sub(/[ \t]*:[ \t]*$/, "", heading)
+      key = tolower(heading)
+      # A required heading may appear exactly ONCE: a second "## Outcome" means two answers to the
+      # same question, and a reader (or a later amendment) cannot tell which one binds.
+      # (an awk exit still runs END, so record the failure in bad, not only in the exit status)
+      if (key in required && key in used) {
+        printf "section appears twice: ## %s\n", heading > "/dev/stderr"; bad = 1; exit 1
+      }
+      if (next_want <= n && key == tolower(want[next_want])) {
+        seen[next_want] = 1; used[key] = 1; last = next_want; next_want++
+      }
+      next
+    }
+    /[^ \t]/ { if (last) body[last] += 1 }          # a non-blank line counts as content for the open section
+    END {
+      if (!bad) for (i = 1; i <= n; i++) {
+        if (!seen[i])      { printf "missing or out of order: ## %s\n", want[i] > "/dev/stderr"; bad = 1; break }
+        if (!body[i])      { printf "section has no content under it: ## %s\n", want[i] > "/dev/stderr"; bad = 1 }
+      }
+      exit bad ? 1 : 0
+    }
+  ' "$stdout_path" 2>"$stderr_path.sections"; then
+    printf 'codex-plan: REFUSED — brief structure: %s Raw output retained at %s\n' \
+      "$(tr '\n' ' ' < "$stderr_path.sections")" "$stdout_path" >&2
+    rm -f "$stderr_path.sections"
+    exit 1
+  fi
+  rm -f "$stderr_path.sections"
+fi
+
+created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+task_summary="${task:0:200}"
+# JSON strings are valid YAML scalars and preserve newlines and punctuation.
+task_yaml="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' \
+  "$task_summary")"
+temp_plan="$(mktemp "${TMPDIR:-/tmp}/codex-plan.XXXXXX")"
+trap 'rm -f "$temp_plan"' EXIT
+
+{
+  printf '%s\n' '---'
+  printf 'id: %s\n' "$plan_id"
+  printf 'created: %s\n' "$created"
+  printf 'author_model: %s\n' "$MODEL"
+  printf 'status: draft\n'
+  printf 'task: %s\n' "$task_yaml"
+  printf '%s\n' '---'
+  cat "$stdout_path"
+} >"$temp_plan"
+
+mv "$temp_plan" "$plan_path"
+trap - EXIT
+
+printf 'Plan: %s\n' "$plan_path"
+printf 'ID: %s\n' "$plan_id"
