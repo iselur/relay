@@ -1,7 +1,9 @@
 """Harbor custom agent for the R102 benchmark-only harness loop."""
 
 import asyncio
+import importlib
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -10,6 +12,14 @@ import time
 
 from harbor.agents.base import BaseAgent
 from harbor.models.agent.context import AgentContext
+
+
+HOST_HOME = Path(os.environ.get("R102_HOST_HOME", Path.home()))
+INSTALLED_AGENTS = {
+    "codex": ("harbor.agents.installed.codex", "Codex"),
+    "claude": ("harbor.agents.installed.claude_code", "ClaudeCode"),
+    "kimi": ("harbor.agents.installed.kimi_cli", "KimiCli"),
+}
 
 
 class RelayHarnessAgent(BaseAgent):
@@ -29,6 +39,7 @@ class RelayHarnessAgent(BaseAgent):
         self.logs_dir = Path(logs_dir)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.usage_path = self.logs_dir / "usage.jsonl"
+        self._claude_oauth_token = None
 
     @staticmethod
     def name():
@@ -39,7 +50,77 @@ class RelayHarnessAgent(BaseAgent):
         return "1"
 
     async def setup(self, environment):
-        return None
+        roles = ["worker"]
+        if self.row.get("worker_mode") == "subagent":
+            roles.append("orchestrator")
+        bindings = {}
+        for role in roles:
+            binding = self.row[role]
+            bindings.setdefault(binding["vendor"], binding)
+
+        for vendor, binding in bindings.items():
+            module_name, class_name = INSTALLED_AGENTS[vendor]
+            installed_class = getattr(importlib.import_module(module_name), class_name)
+            installed = installed_class(
+                self.logs_dir / ("installed-" + vendor), model_name=binding["model"]
+            )
+            await installed.setup(environment)
+
+        home = None
+        if "codex" in bindings or "kimi" in bindings:
+            result = environment.exec('printf %s "$HOME"')
+            if hasattr(result, "__await__"):
+                result = await result
+            stdout, _, code = self._result_text(result)
+            home = stdout.strip()
+            if code != 0 or not home:
+                raise RuntimeError("cannot resolve container user home")
+
+        if "codex" in bindings:
+            source = HOST_HOME / ".codex" / "auth.json"
+            if not source.is_file():
+                raise RuntimeError(f"missing codex credential: {source}")
+            target_dir = Path(home) / ".codex"
+            await self._exec_setup(environment, f"mkdir -p {shlex.quote(str(target_dir))}",
+                                   user="root")
+            await environment.upload_file(source, target_dir / "auth.json")
+            await self._chown(environment, target_dir)
+
+        if "kimi" in bindings:
+            source = HOST_HOME / ".kimi-code" / "credentials"
+            if not source.is_dir():
+                raise RuntimeError(f"missing kimi credential: {source}")
+            target = Path(home) / ".kimi-code" / "credentials"
+            await environment.upload_dir(source, target)
+            await self._chown(environment, target)
+
+        if "claude" in bindings:
+            token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+            source = HOST_HOME / ".claude" / ".credentials.json"
+            if not token:
+                try:
+                    value = json.loads(source.read_bytes())
+                    token = value["claudeAiOauth"]["accessToken"]
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+                    token = None
+            if not isinstance(token, str) or not token:
+                raise RuntimeError(f"missing claude credential: {source}")
+            self._claude_oauth_token = token
+
+    async def _exec_setup(self, environment, command, **kwargs):
+        result = environment.exec(command, **kwargs)
+        if hasattr(result, "__await__"):
+            result = await result
+        return result
+
+    async def _chown(self, environment, path):
+        user = getattr(environment, "default_user", None)
+        if user:
+            await self._exec_setup(
+                environment,
+                f"chown -R {shlex.quote(user)} {shlex.quote(str(path))}",
+                user="root",
+            )
 
     def _command(self, role, binding, prompt, session_id=None):
         vendor = binding["vendor"]
@@ -85,13 +166,21 @@ class RelayHarnessAgent(BaseAgent):
         return subprocess.run(command, input=prompt, text=True, capture_output=True,
                               check=False)
 
-    async def _environment_exec(self, environment, command, prompt):
+    async def _environment_exec(self, environment, command, prompt, env=None):
         shell_command = shlex.join(command)
         if prompt is not None:
             shell_command = f"printf %s {shlex.quote(prompt)} | {shell_command}"
-        result = environment.exec(shell_command)
-        if hasattr(result, "__await__"):
-            result = await result
+        try:
+            if env is None:
+                result = environment.exec(shell_command)
+            else:
+                result = environment.exec(shell_command, env=env)
+            if hasattr(result, "__await__"):
+                result = await result
+        except Exception:
+            if env is not None:
+                raise RuntimeError("in-container role invocation failed") from None
+            raise
         return result
 
     @staticmethod
@@ -194,7 +283,11 @@ class RelayHarnessAgent(BaseAgent):
         started = time.monotonic()
         if role == "worker" or use_environment:
             stdin_prompt = None if binding["vendor"] == "kimi" else prompt
-            result = await self._environment_exec(environment, command, stdin_prompt)
+            role_env = None
+            if binding["vendor"] == "claude" and self._claude_oauth_token is not None:
+                role_env = {"CLAUDE_CODE_OAUTH_TOKEN": self._claude_oauth_token}
+            result = await self._environment_exec(
+                environment, command, stdin_prompt, env=role_env)
         else:
             result = await asyncio.to_thread(self._subprocess_run, command, prompt)
         wall_s = time.monotonic() - started
