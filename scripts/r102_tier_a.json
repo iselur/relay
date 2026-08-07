@@ -1,0 +1,91 @@
+[
+  {
+    "name": "harness-opus-luna-opus",
+    "kind": "harness",
+    "harbor_agent": "scripts.r102_harness_agent:RelayHarnessAgent",
+    "model": "gpt-5.6-luna",
+    "orchestrator": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "worker": {"vendor": "codex", "model": "gpt-5.6-luna", "effort": "high"},
+    "reviewer": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "review_rounds_max": 5,
+    "quality_only_fallback": false
+  },
+  {
+    "name": "harness-opus-luna-none",
+    "kind": "harness",
+    "harbor_agent": "scripts.r102_harness_agent:RelayHarnessAgent",
+    "model": "gpt-5.6-luna",
+    "orchestrator": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "worker": {"vendor": "codex", "model": "gpt-5.6-luna", "effort": "high"},
+    "reviewer": null,
+    "review_rounds_max": 0,
+    "quality_only_fallback": false
+  },
+  {
+    "name": "harness-opus-sub-opus",
+    "kind": "harness",
+    "harbor_agent": "scripts.r102_harness_agent:RelayHarnessAgent",
+    "model": "claude-opus-4-8",
+    "orchestrator": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "worker": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "reviewer": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "review_rounds_max": 5,
+    "worker_mode": "subagent",
+    "quality_only_fallback": true
+  },
+  {
+    "name": "harness-opus-k3-k3",
+    "kind": "harness",
+    "harbor_agent": "scripts.r102_harness_agent:RelayHarnessAgent",
+    "model": "kimi-k3",
+    "orchestrator": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "worker": {"vendor": "kimi", "model": "kimi-k3", "effort": "default"},
+    "reviewer": {"vendor": "kimi", "model": "kimi-k3", "effort": "default"},
+    "review_rounds_max": 5,
+    "quality_only_fallback": false
+  },
+  {
+    "name": "harness-sol-luna-opus",
+    "kind": "harness",
+    "harbor_agent": "scripts.r102_harness_agent:RelayHarnessAgent",
+    "model": "gpt-5.6-luna",
+    "orchestrator": {"vendor": "codex", "model": "gpt-5.6-sol", "effort": "high"},
+    "worker": {"vendor": "codex", "model": "gpt-5.6-luna", "effort": "high"},
+    "reviewer": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "review_rounds_max": 5,
+    "quality_only_fallback": false
+  },
+  {
+    "name": "vanilla-codex",
+    "kind": "vanilla",
+    "harbor_agent": "codex",
+    "model": "gpt-5.6-luna",
+    "orchestrator": null,
+    "worker": null,
+    "reviewer": null,
+    "review_rounds_max": 0,
+    "quality_only_fallback": false
+  },
+  {
+    "name": "vanilla-claude",
+    "kind": "vanilla",
+    "harbor_agent": "claude-code",
+    "model": "claude-opus-4-8",
+    "orchestrator": null,
+    "worker": null,
+    "reviewer": null,
+    "review_rounds_max": 0,
+    "quality_only_fallback": false
+  },
+  {
+    "name": "vanilla-kimi",
+    "kind": "vanilla",
+    "harbor_agent": "kimi-cli",
+    "model": "kimi-k3",
+    "orchestrator": null,
+    "worker": null,
+    "reviewer": null,
+    "review_rounds_max": 0,
+    "quality_only_fallback": false
+  }
+]
