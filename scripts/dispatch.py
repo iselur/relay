@@ -94,23 +94,6 @@ def _load_vendor_adapters():
 VENDOR_ADAPTERS, VENDOR_ADAPTERS_ERR = _load_vendor_adapters()
 
 
-def _load_kimi_acp():
-    """Load scripts/kimi_acp.py ONCE, at dispatcher import — pinned alongside the dispatcher
-    so a mid-attempt file change cannot swap the ACP driver between launch and run (mirrors
-    _load_vendor_adapters). A load failure is recorded; the kimi ACP path fails closed."""
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "kimi_acp", ROOT / "scripts" / "kimi_acp.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod, None
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
-
-
-kimi_acp, _KIMI_ACP_ERR = _load_kimi_acp()
-
-
 def lc_frozen_vendor_fields(lc: dict) -> "dict | None":
     """Both frozen vendor fields from a launch record, the pre-freezing defaults when NEITHER
     is present, and None — refuse, fail closed — when exactly one is (corrupt record) or when
@@ -2852,7 +2835,7 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                       f"(registered mode {worker_adapter.mode!r}) together with "
                       f"worker_mode=external-cli — corrupt launch record; fail closed — "
                       f"no worker was invoked")
-    # events.jsonl is opened BINARY: kimi_acp.drive() writes raw frame bytes to it (a
+    # events.jsonl is opened BINARY: the Kimi adapter writes raw ACP frame bytes to it (a
     # text-mode sink killed the reader thread and hung SPEC-901 to its ceiling); every
     # other use is fd-level subprocess stdout, where the mode is irrelevant.
     with open(raw / "events.jsonl", "wb") as ev, open(raw / "worker-stderr.txt", "w") as er:
@@ -2908,9 +2891,6 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
             # ceiling. The alias is validated here with the same distinct-alias contract.
             # Codex and all other external-CLI vendors use the standard build_argv path.
             if vendors["worker_vendor"] == "kimi":
-                if kimi_acp is None:
-                    finish("failed_worker_error", ERR_WORKER,
-                           detail=f"kimi ACP driver failed to load: {_KIMI_ACP_ERR}")
                 cli_aliases = lc.get("cli_aliases") or {}
                 alias = (cli_aliases.get(lc["worker_model"])
                          if isinstance(cli_aliases, dict) else None)
@@ -2930,13 +2910,13 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                     private_network=False, ceiling_s=worker_ceiling_s,
                     binds=binds, slice_name=attempt_slice(attempt_id),
                     env_extra=worker_adapter.iso_env_extra(WORKER_HOME))
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=er)
-                res = kimi_acp.drive(proc, prompt_text=prompt, cwd=str(wt),
-                                     model_alias=alias, frame_sink=ev,
-                                     deadline_s=worker_ceiling_s)
-                worker_exit = res["effective_status"]
-                acp_message = res["final_message"]
+                envelope = VENDOR_ADAPTERS.BuildEnvelope(
+                    command=cmd, cwd=str(wt), env=None, stdout=None, stderr=er,
+                    deadline_seconds=worker_ceiling_s, isolated=True, runner=None,
+                    alias=alias, event_sink=ev)
+                result = worker_adapter.run_build(envelope, prompt)
+                worker_exit = result.exit_code
+                acp_message = result.last_message
             else:
                 # Non-kimi external-CLI vendors (codex): the frozen alias map rides to
                 # the worker adapter for any vendor that needs CLI alias translation; codex
