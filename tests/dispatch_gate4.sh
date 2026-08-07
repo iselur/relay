@@ -64,6 +64,31 @@ check("remediation ctx cites the LAST failure + findings",
       and ctx["findings"]["status"] == "failed_review"
       and ctx["findings"]["reviewer_reasons"] == ["helper misses empty-string case"])
 
+# failed_test findings carry the detail and any attestation-phase FAIL log — the spec's own
+# test.log can be all-PASS when the failure happened in a phase run (SPEC-036-1, 2026-08-07)
+att9 = d.ATTEMPTS / "SPEC-T09" / "1"; (att9 / "raw").mkdir(parents=True)
+(att9 / "test.log").write_text("ok everything\nsuite: PASS\n")
+(att9 / "raw" / "phase-t.log").write_text("FAIL t.sh: error wording did not name 'kimi'")
+secret = att9.parent.parent / "secret.txt"; secret.write_text("OPERATOR SECRET")
+(att9 / "test-attestation.json").write_text(json.dumps({"tests": {"tests/t.sh": {
+    "observations": [{"phase": "candidate-isolated", "status": "FAIL",
+                      "log": "raw/phase-t.log"}]},
+    "tests/abs.sh": {"observations": [{"phase": "candidate-isolated", "status": "FAIL",
+                      "log": str(secret)}]},
+    "tests/up.sh": {"observations": [{"phase": "candidate-isolated", "status": "FAIL",
+                      "log": "raw/../../../secret.txt"}]}}}))
+(att9 / "result.json").write_text(json.dumps(
+    {"status": "failed_test", "test_exit": 0, "detail": "required tests did not pass"}))
+st, ctx = preflight("SPEC-T09", "default", 2)
+check("failed_test findings carry detail + attestation-phase FAIL log",
+      st == "ok" and ctx["findings"]["detail"] == "required tests did not pass"
+      and ctx["findings"]["phase_failures"]["tests/t.sh"]
+          == "FAIL t.sh: error wording did not name 'kimi'"
+      and ctx["findings"]["test_log_tail"] == "ok everything\nsuite: PASS\n")
+check("phase log paths outside att/raw are omitted, not read",
+      list(ctx["findings"]["phase_failures"]) == ["tests/t.sh"]
+      and "OPERATOR SECRET" not in json.dumps(ctx["findings"]))
+
 # default risk: 4th merit failure (> limit 3) -> exhausted + escalation + failed state
 for i, stt in enumerate(["failed_test", "failed_scope", "failed_test", "failed_review"], 1):
     rev = {"reasons": [f"r{i}"], "criteria": []} if stt == "failed_review" else None
