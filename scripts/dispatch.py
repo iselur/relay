@@ -1089,10 +1089,25 @@ def findings_of(spec_id: str, n: int, result: dict) -> dict:
             except Exception:
                 f["reviewer_reasons"] = ["review.json unreadable"]
     elif status == "failed_test":
+        f["detail"] = result.get("detail")
         tl = att / "test.log"
         if tl.exists():
             f["test_log_tail"] = tl.read_text()[-2000:]
         f["test_exit"] = result.get("test_exit")
+        # An attestation-phase FAIL never reaches test.log (the spec's own command may have
+        # passed); without its log the remediation block shows only passing output.
+        ta = att / "test-attestation.json"
+        if ta.exists():
+            try:
+                for name, rec in json.loads(ta.read_text()).get("tests", {}).items():
+                    for ob in rec.get("observations", []):
+                        if ob.get("status") == "FAIL" and ob.get("log"):
+                            lp = att / ob["log"]
+                            if lp.exists():
+                                f.setdefault("phase_failures", {})[name] = \
+                                    lp.read_text()[-2000:]
+            except Exception:
+                pass
     elif status == "failed_scope":
         sc = att / "scope.json"
         if sc.exists():
