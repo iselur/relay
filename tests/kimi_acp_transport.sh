@@ -61,7 +61,9 @@ def patched(lc_extra=None, prompt_text=None, drive_res=None, grade_stub=None):
           "stage": "session/prompt", **(drive_res or {})}
     saved      = {k: getattr(d, k) for k in
                   ("worker_kimi_runtime", "isolated_cmd", "_grade_phase", "worker_prompt_text")}
-    saved_Popen = d.subprocess.Popen; saved_acp = d.kimi_acp
+    missing = object()
+    saved_Popen = d.subprocess.Popen; saved_acp = getattr(d, "kimi_acp", missing)
+    saved_adapter_acp = d.VENDOR_ADAPTERS.kimi_acp
 
     def _fake_icmd(unit, argv, cwd, rw_paths, private_network, ceiling_s,
                    binds=None, env_extra=None, slice_name=None):
@@ -79,14 +81,18 @@ def patched(lc_extra=None, prompt_text=None, drive_res=None, grade_stub=None):
     fake_acp.drive = _fake_drive
 
     d.worker_kimi_runtime = lambda: (FAKE_PREFIX, FAKE_BINDS, "/real/kimi")
-    d.isolated_cmd = _fake_icmd; d.subprocess.Popen = _fake_Popen; d.kimi_acp = fake_acp
+    d.isolated_cmd = _fake_icmd; d.subprocess.Popen = _fake_Popen
+    if saved_acp is not missing: d.kimi_acp = fake_acp
+    d.VENDOR_ADAPTERS.kimi_acp = fake_acp
     if prompt_text is not None: d.worker_prompt_text = lambda *_: prompt_text
     if grade_stub  is not None: d._grade_phase = grade_stub
     try:
         yield lc, cmd_cap, drv_cap, pop_cap
     finally:
         for k, v in saved.items(): setattr(d, k, v)
-        d.subprocess.Popen = saved_Popen; d.kimi_acp = saved_acp
+        d.subprocess.Popen = saved_Popen
+        if saved_acp is not missing: d.kimi_acp = saved_acp
+        d.VENDOR_ADAPTERS.kimi_acp = saved_adapter_acp
 
 def run(lc_extra=None, prompt_text=None, drive_res=None, grade_stub=None):
     with patched(lc_extra, prompt_text, drive_res, grade_stub) as (lc, c, drv, pop):
@@ -97,8 +103,10 @@ def run(lc_extra=None, prompt_text=None, drive_res=None, grade_stub=None):
     return rec, c, drv, pop
 
 # ---- kimi_acp present at import ----------------------------------------------
-check("kimi_acp present at dispatch import", hasattr(d, "kimi_acp") and d.kimi_acp is not None)
-check("d.kimi_acp.drive is callable",        callable(getattr(d.kimi_acp, "drive", None)))
+check("kimi_acp present at vendor adapter import", d.VENDOR_ADAPTERS.kimi_acp is not None)
+check("adapter kimi_acp.drive is callable; dispatch copy too when present",
+      callable(getattr(d.VENDOR_ADAPTERS.kimi_acp, "drive", None))
+      and (not hasattr(d, "kimi_acp") or callable(getattr(d.kimi_acp, "drive", None))))
 
 # ---- happy path: complete isolated_cmd call, Popen kwargs, driver, grading ---
 grade_cap = {}
