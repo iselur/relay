@@ -1102,8 +1102,10 @@ def findings_of(spec_id: str, n: int, result: dict) -> dict:
                 for name, rec in json.loads(ta.read_text()).get("tests", {}).items():
                     for ob in rec.get("observations", []):
                         if ob.get("status") == "FAIL" and ob.get("log"):
-                            lp = att / ob["log"]
-                            if lp.exists():
+                            # only regular files inside att/raw — a traversing or absolute
+                            # log path must not pull operator files into a worker prompt
+                            lp = (att / ob["log"]).resolve()
+                            if lp.is_file() and lp.is_relative_to((att / "raw").resolve()):
                                 f.setdefault("phase_failures", {})[name] = \
                                     lp.read_text()[-2000:]
             except Exception:
