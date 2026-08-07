@@ -78,6 +78,20 @@ for label, manifest in (
 ): print("policy_"+label,fixture(manifest)[0])
 print("policy_empty",fixture("",names=())[0])
 
+# EPERM fix (2026-08-07, SPEC-045-1): a required test the worker RECREATED is a worker-owned
+# inode and chmod is owner-only — restore must REPLACE the inode (unlink+write), never rewrite
+# in place. Cross-uid EPERM is not reproducible single-user, so assert the inode contract.
+r=pathlib.Path(tempfile.mkdtemp()); f=r/"t.sh"; f.write_bytes(b"#!/bin/sh\nworker\n")
+keep=f.open("rb")   # pin the old inode so a recycled inode number cannot false-pass
+before=f.stat().st_ino
+d._install_required_blob(f, b"#!/bin/sh\ninstalled\n")
+print("restore_new_inode", f.stat().st_ino != before)
+print("restore_bytes", f.read_bytes() == b"#!/bin/sh\ninstalled\n")
+print("restore_mode", oct(f.stat().st_mode & 0o777))
+keep.close()
+g=r/"sub"/"n.sh"; d._install_required_blob(g, b"#!/bin/sh\n")
+print("restore_absent", g.read_bytes() == b"#!/bin/sh\n")
+
 # spec_command_evidence: the reviewer-visible attestation of the spec-declared commands the
 # dispatcher itself ran (test_command + regression gate) — the only recorded execution a
 # candidate-NEW required test gets.
@@ -102,6 +116,10 @@ check "unlisted test defaults isolated" "default_isolated candidate-isolated" "$
 for c in missing malformed unknown duplicate nonexistent unsafe empty; do
   check "policy $c rejected" "policy_${c} rejected" "$(grep "^policy_${c}" <<<"$out")"
 done
+check "restore replaces the worker-owned inode" "restore_new_inode True" "$(grep '^restore_new_inode' <<<"$out")"
+check "restore installs the committed bytes" "restore_bytes True" "$(grep '^restore_bytes' <<<"$out")"
+check "restored blob is executable" "restore_mode 0o755" "$(grep '^restore_mode' <<<"$out")"
+check "restore materializes a missing required test" "restore_absent True" "$(grep '^restore_absent' <<<"$out")"
 check "spec command evidence carries the command" "sce_command bash tests/x.sh" "$(grep '^sce_command' <<<"$out")"
 check "spec command evidence carries the exit status" "sce_exit 0" "$(grep '^sce_exit' <<<"$out")"
 check "isolated run is labeled candidate-isolated" "sce_phase candidate-isolated" "$(grep '^sce_phase' <<<"$out")"
