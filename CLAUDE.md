@@ -13,7 +13,7 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
 1. **Intake:** one-line goal and checkable definition of done before any task; ask the owner if
    either is missing. `scripts/intake` before work, close with evidence, `scripts/intake stale` at
    session end — open rows raised to the owner, never dropped. Ledger private, not in this repo.
-2. **One workstream:** one active execution stream. New ideas go to `.orchestrator/BACKLOG.md`, never beside current work. Business ideas stay private.
+2. **One workstream:** one active execution stream. New ideas, and any unrequested improvement no evidenced failure or named invariant demands, go to `.orchestrator/BACKLOG.md`, never beside current work or into flight. Business ideas stay private.
 3. **Review cap:** a holistic senior-engineer review — correctness, security, simplicity, maintainability — framed by `.orchestrator/REVIEW-FRAMING.md`; comprehensive
    round one, and good code passes round one; up to five rounds, each answered by one revision. A finding blocks only when material and acceptance-relevant — a real
    defect, a significant gap against the brief, or over-engineering answered with a concretely sketched simpler version — the rest go to the backlog, never a forced
