@@ -3015,6 +3015,17 @@ def _run_pipeline(attempt_id, spec_id, n, att, lc, wt, raw, finish) -> None:
                  worker_adapter, worker_exit, stderr_txt, last_message)
 
 
+def _install_required_blob(worker_copy, committed_bytes) -> None:
+    # chmod is an owner-only syscall: a required test the worker RECREATED is a fresh inode owned
+    # by the worker uid, and the orchestrator's chmod on it EPERMs even though the ACL grants
+    # group write (SPEC-045-1). The orchestrator owns the directory, so unlink first and let
+    # write_bytes create a fresh orchestrator-owned inode.
+    worker_copy.parent.mkdir(parents=True, exist_ok=True)
+    worker_copy.unlink(missing_ok=True)
+    worker_copy.write_bytes(committed_bytes)
+    worker_copy.chmod(0o755)
+
+
 def _grade_phase(attempt_id, spec_id, n, att, lc, wt, raw, finish,
                  worker_adapter, worker_exit, stderr_txt, last_message) -> None:
     """Everything AFTER the worker ran: the ONE shared grading half (R73 Job 3). External-CLI
@@ -3168,9 +3179,7 @@ def _grade_phase(attempt_id, spec_id, n, att, lc, wt, raw, finish,
             if worker_copy.exists():
                 (att / "raw" / f"worker-{Path(rel).name}").write_bytes(worker_copy.read_bytes())
                 substituted.append(rel)
-            worker_copy.parent.mkdir(parents=True, exist_ok=True)
-            worker_copy.write_bytes(committed_bytes)
-            worker_copy.chmod(0o755)
+            _install_required_blob(worker_copy, committed_bytes)
 
     attestation = run_candidate_test_phases(lc, wt, worker_commit, att, deadline_ts, substituted)
     if not attestation["attested"]:
