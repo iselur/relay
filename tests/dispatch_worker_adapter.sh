@@ -33,6 +33,8 @@ def check(name, cond):
     if not cond: fails.append(name)
 
 w = va.get_worker_adapter("codex")
+check("dispatcher exposes no ACP transport loader or module copy",
+      not hasattr(d, "_load_kimi_acp") and not hasattr(d, "kimi_acp"))
 
 # ---- argv: FULL equality with the pre-refactor invocations -------------------------------
 WT = "/srv/codexwork/worktrees/SPEC-000-1"
@@ -255,6 +257,8 @@ for bad in ("main", "ready-for-main", "codex/SPEC-000-2", "codex/SPEC-000-1x",
 # Isolated worker uses kimi_acp.drive (PLAN-009 slice 2); run_build serves the unisolated
 # refusal only. All -p/stream-json worker tests removed in slice 3.
 kw = va.get_worker_adapter("kimi")
+check("worker adapters expose no public build_argv method",
+      not hasattr(type(w), "build_argv") and not hasattr(type(kw), "build_argv"))
 with tempfile.TemporaryFile(mode="w+") as kimi_stderr:
     kimi_uniso = kw.run_build(
         va.BuildEnvelope(command=[], cwd=WT, env={}, stdout=None, stderr=kimi_stderr,
@@ -310,6 +314,121 @@ check("kimi config.invalid classifies as generic worker error (probe E: exit 1)"
       == d.ERR_WORKER)
 check("kimi never classifies sandbox_denial (no inner sandbox exists)",
       kw.classify_error(1, "bwrap: operation not permitted", kraw) == d.ERR_WORKER)
+
+# The isolated Kimi dispatcher branch owns policy/envelope construction but delegates the
+# invocation to KimiWorker.run_build. Capture that exact boundary without launching a child.
+kimi_routes = []
+kimi_grades = []
+kimi_commands = []
+_dispatch_kimi_class = d.VENDOR_ADAPTERS.KimiWorker
+_orig_kimi_run_build = _dispatch_kimi_class.run_build
+_orig_kimi_runtime = d.worker_kimi_runtime
+_orig_isolated_cmd = d.isolated_cmd
+_orig_grade_phase = d._grade_phase
+def _capture_kimi_build(self, envelope, prompt):
+    kimi_routes.append((envelope, prompt))
+    return d.VENDOR_ADAPTERS.BuildResult(0, "KIMI-DISPATCH-FINAL")
+def _capture_kimi_grade(*args):
+    kimi_grades.append(args)
+def _capture_kimi_command(*args, **kwargs):
+    kimi_commands.append((args, kwargs))
+    return ["stub-isolated-kimi"]
+_dispatch_kimi_class.run_build = _capture_kimi_build
+d.worker_kimi_runtime = lambda: (["/opt/kimi/kimi"], [], pathlib.Path("/opt/kimi/kimi"))
+d.isolated_cmd = _capture_kimi_command
+d._grade_phase = _capture_kimi_grade
+route_att = pathlib.Path(tempfile.mkdtemp()); (route_att / "raw").mkdir()
+(route_att / "spec-snapshot.yaml").write_bytes(snap)
+route_lc = {"spec_digest": hashlib.sha256(snap).hexdigest(), "isolation": True,
+            "deadline_ts": 4102444800.0, "worker_unit": "kimi-SPEC-000-1",
+            "worker_vendor": "kimi", "reviewer_vendor": "claude",
+            "worker_model": "kimi-k3", "worker_effort": "max",
+            "cli_aliases": {"kimi-k3": "kimi-code/k3"}}
+try:
+    d._run_pipeline("SPEC-000-1", "SPEC-000", 1, route_att, route_lc,
+                    pathlib.Path(WT), route_att / "raw", lambda *args, **kwargs: None)
+finally:
+    _dispatch_kimi_class.run_build = _orig_kimi_run_build
+    d.worker_kimi_runtime = _orig_kimi_runtime
+    d.isolated_cmd = _orig_isolated_cmd
+    d._grade_phase = _orig_grade_phase
+check("isolated Kimi dispatch routes through adapter run_build exactly once",
+      len(kimi_routes) == 1 and len(kimi_grades) == 1 and len(kimi_commands) == 1)
+kimi_envelope = kimi_routes[0][0]
+command_args, command_kwargs = kimi_commands[0]
+check("dispatcher preserves the complete isolated_cmd Kimi policy call",
+      command_args == (route_lc["worker_unit"], ["/opt/kimi/kimi", "acp"])
+      and command_kwargs.get("cwd") == WT
+      and command_kwargs.get("rw_paths")
+          == [WT, str(d.WORKER_HOME / ".kimi-code")]
+      and command_kwargs.get("private_network") is False
+      and isinstance(command_kwargs.get("ceiling_s"), (int, float))
+      and command_kwargs.get("ceiling_s") > 0
+      and command_kwargs.get("binds") == []
+      and command_kwargs.get("slice_name") == d.attempt_slice("SPEC-000-1")
+      and command_kwargs.get("env_extra") == {})
+check("dispatcher builds the frozen Kimi envelope contract",
+      kimi_envelope.command == ["stub-isolated-kimi"]
+      and kimi_envelope.env is None and kimi_envelope.stdout is None
+      and kimi_envelope.runner is None and kimi_envelope.isolated is True
+      and kimi_envelope.cwd == WT and kimi_envelope.alias == "kimi-code/k3")
+check("dispatcher consumes the Kimi BuildResult fields",
+      kimi_grades[0][9] == 0 and kimi_grades[0][11] == "KIMI-DISPATCH-FINAL")
+
+# Adapter-owned ACP loading is fail-closed only at Kimi invocation. The dispatcher still
+# reaches run_build, no process starts, and shared grading records the exact terminal class.
+missing_att = pathlib.Path(tempfile.mkdtemp()); (missing_att / "raw").mkdir()
+(missing_att / "spec-snapshot.yaml").write_bytes(snap)
+missing_record = {}
+missing_children = []
+_orig_adapter_acp = d.VENDOR_ADAPTERS.kimi_acp
+_orig_adapter_acp_err = d.VENDOR_ADAPTERS._KIMI_ACP_ERR
+_orig_kimi_runtime = d.worker_kimi_runtime
+_orig_isolated_cmd = d.isolated_cmd
+_orig_popen = d.VENDOR_ADAPTERS.subprocess.Popen
+def _missing_finish(status, error_class, **kw):
+    missing_record.update({"status": status, "error_class": error_class, **kw})
+    raise _Stop()
+def _forbidden_popen(*args, **kwargs):
+    missing_children.append((args, kwargs))
+    raise AssertionError("ACP-unavailable Kimi route launched a child")
+d.VENDOR_ADAPTERS.kimi_acp = None
+d.VENDOR_ADAPTERS._KIMI_ACP_ERR = "test unavailable"
+d.worker_kimi_runtime = lambda: (["/opt/kimi/kimi"], [], pathlib.Path("/opt/kimi/kimi"))
+d.isolated_cmd = _capture_kimi_command
+d.VENDOR_ADAPTERS.subprocess.Popen = _forbidden_popen
+try:
+    d._run_pipeline("SPEC-000-1", "SPEC-000", 1, missing_att, route_lc,
+                    pathlib.Path(WT), missing_att / "raw", _missing_finish)
+except _Stop:
+    pass
+finally:
+    d.VENDOR_ADAPTERS.kimi_acp = _orig_adapter_acp
+    d.VENDOR_ADAPTERS._KIMI_ACP_ERR = _orig_adapter_acp_err
+    d.worker_kimi_runtime = _orig_kimi_runtime
+    d.isolated_cmd = _orig_isolated_cmd
+    d.VENDOR_ADAPTERS.subprocess.Popen = _orig_popen
+check("ACP-unavailable Kimi dispatch fails as a terminal worker error before Popen",
+      missing_record.get("status") == "failed_worker_error"
+      and missing_record.get("status") in d.TERMINAL
+      and missing_record.get("error_class") == d.ERR_WORKER
+      and not missing_children)
+
+_orig_adapter_acp = d.VENDOR_ADAPTERS.kimi_acp
+d.VENDOR_ADAPTERS.kimi_acp = None
+try:
+    with tempfile.NamedTemporaryFile(mode="wb+") as codex_events, \
+            tempfile.TemporaryFile(mode="w+") as codex_errors:
+        codex_result_without_acp = d.VENDOR_ADAPTERS.CodexWorker().run_build(
+            d.VENDOR_ADAPTERS.BuildEnvelope(
+                command=["codex"], cwd=WT, env={}, stdout=codex_events, stderr=codex_errors,
+                deadline_seconds=1, isolated=True,
+                runner=lambda envelope, prompt: 0, alias=None, event_sink=None),
+            PROMPT)
+finally:
+    d.VENDOR_ADAPTERS.kimi_acp = _orig_adapter_acp
+check("ACP unavailability leaves the Codex build route unaffected",
+      codex_result_without_acp.exit_code == 0)
 
 # Kimi slice 3 at the PIPELINE (deliberately flipping the slice-2 unclassifiable refusal):
 # a full kimi vendor record now classifies, routes to KimiWorker, and fails closed one gate

@@ -289,24 +289,6 @@ class CodexWorker:
         return ["codex", *args, "--sandbox", "workspace-write",
                 "--output-last-message", str(last_message_path), "-"]
 
-    def build_argv(self, model_id, effort, worktree, prompt, isolated,
-                   argv_prefix=None, last_message_path=None, cli_aliases=None):
-        args = ["exec", "--cd", str(worktree), "-m", model_id,
-                "-c", f"model_reasoning_effort={effort}",
-                "--skip-git-repo-check", "--json"]
-        if isolated:
-            # Codex's own sandbox is OFF (-s danger-full-access): it won't construct under the
-            # bind-mounted UID; the hardened service confines the worker instead (D5). The
-            # argv prefix is the runtime dispatch.py vetted and pinned at launch.
-            # --output-last-message is unavailable (the worker can't write the operator-side
-            # evidence dir); recover_last_message reads the --json event stream instead.
-            return [*(argv_prefix or []), *args, "-s", "danger-full-access", prompt]
-        # Unisolated fallback (fresh box / CI): Codex's bwrap sandbox stays ON and the final
-        # message lands straight in the evidence dir (same user, reachable). The deadline
-        # timeout prefix is role policy and stays in dispatch.py, prepended by the caller.
-        return ["codex", *args, "--sandbox", "workspace-write",
-                "--output-last-message", str(last_message_path), prompt]
-
     def worker_env(self, operator_home, operator_user):
         """Scrubbed environment for the UNISOLATED path only. The isolated service environment
         is role envelope and stays owned by dispatch.py's isolated_run."""
@@ -452,15 +434,6 @@ class KimiWorker:
 
     def recover_answer(self, stdout, fail_closed=False):
         return _kimi_answer(stdout, fail_closed)
-
-    def build_argv(self, model_id, effort, worktree, prompt, isolated,
-                   argv_prefix=None, last_message_path=None, cli_aliases=None):
-        if not isolated:
-            raise ValueError("kimi worker has no unisolated mode: the CLI cannot set its own "
-                             "working directory (no --cd) and has no inner sandbox (probes "
-                             "B/F); the hardened service is the only confinement — fail closed")
-        raise ValueError("kimi worker uses ACP transport for isolated runs (PLAN-009 slice 2); "
-                         "dispatch routes kimi through kimi_acp.drive, not build_argv")
 
     def worker_env(self, operator_home, operator_user):
         """Scrubbed environment for the UNISOLATED path, kept total because dispatch.py builds
