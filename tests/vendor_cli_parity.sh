@@ -36,6 +36,9 @@ mkdir -p "$tmp/review-base/scripts" "$tmp/review-cli/scripts"
 cp "$BASE"/{review,models_check.py,models.json} "$tmp/review-base/scripts/"
 cp scripts/{review,vendor_adapters.py,models_check.py,models.json} "$tmp/review-cli/scripts/"
 chmod +x "$tmp/review-base/scripts/review" "$tmp/review-cli/scripts/review"
+# Copies inherit source modes; the integrate gate runs this test from a write-stripped grader
+# tree, so restore user write or every later overwrite of a copied fixture dies with EACCES.
+chmod -R u+w "$tmp"
 printf 'plain claude review context\n' >"$tmp/review-context.txt"
 
 # This is the point where committed base bytes become executable oracle behavior. Both the
