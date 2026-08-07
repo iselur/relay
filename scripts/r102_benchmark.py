@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_CONFIG = ROOT / "scripts" / "r102_tier_a.json"
 TASK_COPY = "task-manifest.json"
 CONFIG_COPY = "config-manifest.json"
+HOST_HOME = Path(os.environ.get("R102_HOST_HOME", Path.home()))
 
 
 class EvidenceError(ValueError):
@@ -54,10 +55,10 @@ def _sha256(path):
         raise EvidenceError(f"cannot hash {path}: {exc}") from exc
 
 
-def _run_command(argv):
+def _run_command(argv, env=None):
     started = time.monotonic()
     try:
-        completed = subprocess.run(argv, text=True, capture_output=True, check=False)
+        completed = subprocess.run(argv, text=True, capture_output=True, check=False, env=env)
         return completed.returncode, completed.stdout, completed.stderr, time.monotonic() - started
     except OSError as exc:
         return 127, "", str(exc), time.monotonic() - started
@@ -289,6 +290,32 @@ def _relative(path, root):
     return path.resolve().relative_to(root.resolve()).as_posix()
 
 
+def _claude_oauth_token():
+    path = HOST_HOME / ".claude" / ".credentials.json"
+    try:
+        value = json.loads(path.read_bytes())
+        token = value["claudeAiOauth"]["accessToken"]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return token if isinstance(token, str) and token else None
+
+
+def _resolve_trial_dir(launch_dir):
+    directories = [launch_dir]
+    if launch_dir.is_dir():
+        directories.extend(path for path in launch_dir.rglob("*") if path.is_dir())
+    candidates = sorted(
+        path for path in directories
+        if (path / "result.json").is_file() and (path / "verifier").is_dir()
+    )
+    if len(candidates) != 1:
+        found = ", ".join(str(path) for path in candidates) or "none"
+        raise EvidenceError(
+            f"cannot resolve Harbor trial in {launch_dir}: candidates found: {found}"
+        )
+    return candidates[0]
+
+
 def kill_test(args):
     if os.environ.get("R102_BENCHMARK") != "1":
         print("kill-test refused: set R102_BENCHMARK=1 to enable paid benchmark runs", file=sys.stderr)
@@ -323,6 +350,13 @@ def kill_test(args):
         print(f"kill-test: cannot retain input manifests: {exc}", file=sys.stderr)
         return 2
 
+    harbor_env = os.environ.copy()
+    harbor_env["CODEX_FORCE_AUTH_JSON"] = "1"
+    if "CLAUDE_CODE_OAUTH_TOKEN" not in harbor_env:
+        token = _claude_oauth_token()
+        if token is not None:
+            harbor_env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+
     launch = {}
     for row in rows:
         for trial_number in range(1, args.trials + 1):
@@ -333,12 +367,24 @@ def kill_test(args):
             ]
             if row["kind"] == "harness":
                 argv.extend(["--ak", "row=" + json.dumps(row, separators=(",", ":"))])
-            code, stdout, stderr, wall_s = _run_command(argv)
+            code, stdout, stderr, wall_s = _run_command(argv, env=harbor_env)
+            claude_token = harbor_env.get("CLAUDE_CODE_OAUTH_TOKEN")
+            if claude_token:
+                stdout = stdout.replace(claude_token, "[REDACTED]")
+                stderr = stderr.replace(claude_token, "[REDACTED]")
+            try:
+                resolved_dir = _resolve_trial_dir(trial_dir)
+                resolution_error = None
+            except EvidenceError as exc:
+                resolved_dir = None
+                resolution_error = str(exc)
             launch[(row["name"], trial_number)] = {
                 "returncode": code,
                 "stdout": stdout,
                 "stderr": stderr,
                 "wall_s": wall_s,
+                "trial_dir": resolved_dir,
+                "resolution_error": resolution_error,
             }
 
     manifest_rows = []
@@ -352,13 +398,16 @@ def kill_test(args):
         trial_dirs = []
         wall_s = 0.0
         for trial_number in range(1, args.trials + 1):
-            trial_dir = evidence / "harbor" / row["name"] / f"trial-{trial_number}"
-            trial_dirs.append(_relative(trial_dir, evidence))
             run = launch[(row["name"], trial_number)]
             wall_s += run["wall_s"]
             if run["returncode"] != 0:
                 detail = (run["stderr"] or run["stdout"]).strip()
                 errors.append(f"trial-{trial_number} harbor exit {run['returncode']}: {detail}")
+            if run["resolution_error"] is not None:
+                errors.append(run["resolution_error"])
+                continue
+            trial_dir = run["trial_dir"]
+            trial_dirs.append(_relative(trial_dir, evidence))
             result_path = trial_dir / "result.json"
             try:
                 result = _read_json(result_path)
