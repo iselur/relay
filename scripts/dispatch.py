@@ -1089,10 +1089,27 @@ def findings_of(spec_id: str, n: int, result: dict) -> dict:
             except Exception:
                 f["reviewer_reasons"] = ["review.json unreadable"]
     elif status == "failed_test":
+        f["detail"] = result.get("detail")
         tl = att / "test.log"
         if tl.exists():
             f["test_log_tail"] = tl.read_text()[-2000:]
         f["test_exit"] = result.get("test_exit")
+        # An attestation-phase FAIL never reaches test.log (the spec's own command may have
+        # passed); without its log the remediation block shows only passing output.
+        ta = att / "test-attestation.json"
+        if ta.exists():
+            try:
+                for name, rec in json.loads(ta.read_text()).get("tests", {}).items():
+                    for ob in rec.get("observations", []):
+                        if ob.get("status") == "FAIL" and ob.get("log"):
+                            # only regular files inside att/raw — a traversing or absolute
+                            # log path must not pull operator files into a worker prompt
+                            lp = (att / ob["log"]).resolve()
+                            if lp.is_file() and lp.is_relative_to((att / "raw").resolve()):
+                                f.setdefault("phase_failures", {})[name] = \
+                                    lp.read_text()[-2000:]
+            except Exception:
+                pass
     elif status == "failed_scope":
         sc = att / "scope.json"
         if sc.exists():
@@ -1108,7 +1125,9 @@ def findings_of(spec_id: str, n: int, result: dict) -> dict:
 def _findings_key(f: dict) -> str:
     """Canonical form for the repeated-identical-findings stop-early check."""
     core = {k: f.get(k) for k in ("status", "reviewer_reasons", "unmet_criteria",
-                                  "out_of_scope_paths", "test_exit")}
+                                  "out_of_scope_paths", "test_exit", "detail")}
+    # phase log tails carry run-specific paths; the set of failing tests is the stable part
+    core["phase_failures"] = sorted(f.get("phase_failures") or {})
     return json.dumps(core, sort_keys=True)
 
 
