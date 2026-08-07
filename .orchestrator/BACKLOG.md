@@ -14,7 +14,12 @@ against this description: what matches, what doesn't, what is missing.
 
 ## Next up
 
-Nothing. (In-flight work lives in the private ledger, not here.)
+- C3 salvage (grill verdict, 2026-08-06): replace the six duplicated open/flock/try/finally blocks
+  in scripts/dispatch.py with one ~8-line `exclusive_lock` contextmanager (≈ −18 to −22 production
+  lines; the box site keeps materialize-then-acquire ordering). Sketch in
+  `.orchestrator/plans/C3-grill-verdict.md` §2.
+
+(Other in-flight work lives in the private ledger, not here.)
 
 The known security gaps are recorded in SECURITY.md and are deliberately NOT queued here: the owner
 knows them, accepts them, and does not want them built (2026-08-06). Do not re-add them.
