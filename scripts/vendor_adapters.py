@@ -26,11 +26,68 @@ Verified mechanics (R73 probe evidence, 2026-07-16, .orchestrator/evidence/r73-p
   .orchestrator/evidence/kimi-probes.md)
 """
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, IO, List, Mapping, Optional, Union
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    exit_code: int
+    last_message: Optional[str]
+
+
+@dataclass(frozen=True)
+class BuildEnvelope:
+    command: List[str]
+    cwd: Union[str, Path]
+    env: Mapping[str, str]
+    stdout: Optional[IO]
+    stderr: IO
+    deadline_seconds: Union[int, float]
+    isolated: bool
+    runner: Optional[Callable[["BuildEnvelope", str], int]]
+    alias: Optional[str]
+    event_sink: Optional[IO]
+
+
+def _load_kimi_acp():
+    """Pin the optional ACP driver at adapter import without blocking other vendors."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "vendor_adapter_kimi_acp", Path(__file__).with_name("kimi_acp.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod, None
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+kimi_acp, _KIMI_ACP_ERR = _load_kimi_acp()
+
+
+def _build_failure(stderr, message):
+    """Return the common fail-closed result after best-effort dispatcher-owned diagnostics."""
+    line = f"vendor_adapters: {message}\n"
+    try:
+        stderr.write(line)
+    except TypeError:
+        try:
+            stderr.write(line.encode())
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        stderr.flush()
+    except Exception:
+        pass
+    return BuildResult(1, None)
 
 
 def _strict_json_object(raw):
@@ -201,6 +258,23 @@ class CodexWorker:
 
     mode = "external-cli"   # detached CLI process under the worker role envelope (D5)
 
+    def run_build(self, envelope, prompt):
+        try:
+            if envelope.deadline_seconds <= 0:
+                return _build_failure(
+                    envelope.stderr, "codex worker deadline is exhausted; refusing to run")
+            if not callable(envelope.runner):
+                return _build_failure(
+                    envelope.stderr, "codex worker envelope has no callable runner; refusing")
+            exit_code = envelope.runner(envelope, prompt)
+            envelope.stdout.flush()
+            raw_dir = Path(envelope.stdout.name).parent
+            last_message = self.recover_last_message(raw_dir, envelope.isolated)
+            return BuildResult(exit_code, last_message)
+        except Exception as exc:
+            return _build_failure(
+                envelope.stderr, f"codex worker build failed: {type(exc).__name__}: {exc}")
+
     def build_answer_argv(self, model_id, effort, request, cli_aliases):
         return ["codex", "exec", "-m", model_id, "-c", f"model_reasoning_effort={effort}",
                 "--sandbox", "read-only", "--skip-git-repo-check", "-"]
@@ -330,6 +404,37 @@ class KimiWorker:
     cannot set its own working directory (no --cd) and has no inner sandbox."""
 
     mode = "external-cli"   # detached CLI process under the worker role envelope (D5)
+
+    def run_build(self, envelope, prompt):
+        try:
+            if envelope.deadline_seconds <= 0:
+                return _build_failure(
+                    envelope.stderr, "kimi worker deadline is exhausted; refusing to run")
+            if envelope.isolated is not True:
+                return _build_failure(
+                    envelope.stderr, "kimi worker requires an isolated envelope; refusing")
+            if not isinstance(envelope.alias, str) or not envelope.alias.strip():
+                return _build_failure(
+                    envelope.stderr, "kimi worker requires a non-empty CLI provider alias; "
+                                     "refusing")
+            if kimi_acp is None:
+                return _build_failure(
+                    envelope.stderr, f"kimi ACP driver failed to load: {_KIMI_ACP_ERR}")
+            proc = subprocess.Popen(envelope.command, env=envelope.env, stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=envelope.stderr)
+            try:
+                result = kimi_acp.drive(
+                    proc, prompt_text=prompt, cwd=envelope.cwd, model_alias=envelope.alias,
+                    frame_sink=envelope.event_sink, deadline_s=envelope.deadline_seconds)
+            except Exception:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+                raise
+            return BuildResult(result["effective_status"], result["final_message"])
+        except Exception as exc:
+            return _build_failure(
+                envelope.stderr, f"kimi worker build failed: {type(exc).__name__}: {exc}")
 
     def build_answer_argv(self, model_id, effort, request, cli_aliases):
         return KimiReviewer().build_argv(model_id, effort, None, cli_aliases, None,
