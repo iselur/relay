@@ -2766,8 +2766,11 @@ def worker_prompt_text(att: Path, lc: dict, n: int) -> str:
         prompt += (
             f"\n\n=== REMEDIATION (attempt {n}; remediation #{rem['remediation_number']} of "
             f"max {rem['limit']}) ===\n"
-            f"A previous attempt (#{rem['of_attempt']}) FAILED. Your job is to address these "
-            f"specific findings — nothing else. Stay strictly within the approved scope. If the "
+            f"A previous attempt (#{rem['of_attempt']}) FAILED. This attempt's worktree is "
+            f"checked out at the base branch and contains none of the previous attempt's changes; "
+            f"no previous work has been carried over. You must therefore deliver the whole spec "
+            f"again in this attempt, including its tests, with the listed findings fixed. Stay "
+            f"strictly within the approved scope. If the "
             f"findings cannot be addressed within the spec and scope, report SPEC_BLOCKED.\n"
             + json.dumps(rem["findings"], indent=2)
         )
