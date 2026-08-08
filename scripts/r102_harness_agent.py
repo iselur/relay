@@ -42,6 +42,7 @@ class RelayHarnessAgent(BaseAgent):
         self.logs_dir = Path(logs_dir)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.usage_path = self.logs_dir / "usage.jsonl"
+        self._usage_events = []
         self._claude_oauth_token = None
         self._container_home = None
 
@@ -377,6 +378,7 @@ class RelayHarnessAgent(BaseAgent):
         }
         with self.usage_path.open("a") as sink:
             sink.write(json.dumps(event, separators=(",", ":")) + "\n")
+        self._usage_events.append(event)
         return event
 
     async def _invoke_role(self, role, prompt, environment, round_number,
@@ -445,17 +447,15 @@ class RelayHarnessAgent(BaseAgent):
         return totals
 
     async def run(self, instruction, environment, context):
-        events = []
         orchestrator_prompt = (
             "Produce a concise worker brief for this benchmark task. Preserve the task's "
             "requirements and limit the brief to implementation inside the task environment.\n\n"
             + instruction
         )
         subagent_mode = self.row.get("worker_mode") == "subagent"
-        worker_brief, event, orchestrator_log, session_id = await self._invoke_role(
+        worker_brief, _, orchestrator_log, session_id = await self._invoke_role(
             "orchestrator", orchestrator_prompt, environment, 0,
             use_environment=subagent_mode)
-        events.append(event)
 
         worker_prompt = worker_brief
         if subagent_mode:
@@ -463,9 +463,8 @@ class RelayHarnessAgent(BaseAgent):
                 "Delegate the brief below to the r102-worker subagent and return its outcome.\n\n"
                 + worker_brief
             )
-        worker_outcome, event, _, _ = await self._invoke_role(
+        worker_outcome, _, _, _ = await self._invoke_role(
             "worker", worker_prompt, environment, 0, session_id=session_id)
-        events.append(event)
 
         review_rounds = 0
         reviewer = self.row.get("reviewer")
@@ -476,9 +475,8 @@ class RelayHarnessAgent(BaseAgent):
                     "PASS or REVISE, then give only material findings.\n\nTASK:\n"
                     + instruction + "\n\nWORKER OUTCOME:\n" + worker_outcome
                 )
-                review, event, _, _ = await self._invoke_role(
+                review, _, _, _ = await self._invoke_role(
                     "reviewer", review_prompt, environment, round_number)
-                events.append(event)
                 review_rounds = round_number
                 if self._review_verdict(review) == "PASS":
                     break
@@ -486,14 +484,13 @@ class RelayHarnessAgent(BaseAgent):
                     "Remediate the review findings in the benchmark task environment.\n\n"
                     "WORKER BRIEF:\n" + worker_brief + "\n\nFINDINGS:\n" + review
                 )
-                worker_outcome, event, _, _ = await self._invoke_role(
+                worker_outcome, _, _, _ = await self._invoke_role(
                     "worker", remediation_prompt, environment, round_number,
                     session_id=session_id)
-                events.append(event)
 
-        input_total = sum(event["input_tokens"] for event in events
+        input_total = sum(event["input_tokens"] for event in self._usage_events
                           if isinstance(event["input_tokens"], int))
-        output_total = sum(event["output_tokens"] for event in events
+        output_total = sum(event["output_tokens"] for event in self._usage_events
                            if isinstance(event["output_tokens"], int))
         context.n_input_tokens = input_total
         context.n_output_tokens = output_total
@@ -501,7 +498,7 @@ class RelayHarnessAgent(BaseAgent):
         r102 = {
             "config": self.row["name"],
             "review_rounds": review_rounds,
-            "per_role": self._per_role(events),
+            "per_role": self._per_role(self._usage_events),
             "quality_only": quality_only,
             "orchestrator_evidence": {
                 "vendor": self.row["orchestrator"]["vendor"],

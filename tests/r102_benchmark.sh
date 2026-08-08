@@ -963,6 +963,42 @@ if trial_dir.is_dir():
           len(retry_success_usage) == 2 and
           [(event["input_tokens"], event["output_tokens"]) for event in retry_success_usage] ==
           [(11, 2), (13, 3)])
+
+    retry_run_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-claude-retry-run", row=json.dumps(canonical[0]))
+    retry_run_calls = []
+    retry_run_reviewer_calls = []
+
+    def retry_run_cli(command, prompt):
+        retry_run_calls.append((command, prompt))
+        if "Review the benchmark" not in prompt:
+            return subprocess.CompletedProcess(command, 0, json.dumps({
+                "result": "worker brief", "session_id": "retry-run-session",
+                "usage": {"input_tokens": 12, "output_tokens": 6},
+            }), "")
+        retry_run_reviewer_calls.append((command, prompt))
+        if len(retry_run_reviewer_calls) == 1:
+            return subprocess.CompletedProcess(
+                command, 1, malformed_envelope("malformed", 4, 2203), "")
+        return subprocess.CompletedProcess(command, 0, json.dumps({
+            "result": "PASS after retry", "session_id": "retry-run-session",
+            "usage": {"input_tokens": 2, "output_tokens": 4011},
+        }), "")
+
+    retry_run_agent._subprocess_run = retry_run_cli
+    retry_run_context = agent_module.AgentContext()
+    asyncio.run(retry_run_agent.run("implement task", Environment([], True),
+                                    retry_run_context))
+    retry_run_usage = [json.loads(line) for line in
+                       retry_run_agent.usage_path.read_text().splitlines()]
+    expected_retry_run_input = sum(event["input_tokens"] for event in retry_run_usage)
+    expected_retry_run_output = sum(event["output_tokens"] for event in retry_run_usage)
+    check("agent totals include usage from retried attempts",
+          len(retry_run_reviewer_calls) == 2 and
+          retry_run_context.n_input_tokens == expected_retry_run_input and
+          retry_run_context.n_output_tokens == expected_retry_run_output and
+          retry_run_context.metadata["r102"]["per_role"] ==
+          agent_module.RelayHarnessAgent._per_role(retry_run_usage))
     exhaust_usage = [json.loads(line) for line in exhaust_agent.usage_path.read_text().splitlines()]
     check("Claude malformed retry exhausts after three attempts",
           isinstance(retry_outcomes["retry exhaustion"], RuntimeError) and
