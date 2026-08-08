@@ -37,10 +37,10 @@
     "name": "harness-opus-k3-k3",
     "kind": "harness",
     "harbor_agent": "scripts.r102_harness_agent:RelayHarnessAgent",
-    "model": "kimi-k3",
+    "model": "kimi-code/k3",
     "orchestrator": {"vendor": "claude", "model": "claude-opus-4-8", "effort": "high"},
-    "worker": {"vendor": "kimi", "model": "kimi-k3", "effort": "default"},
-    "reviewer": {"vendor": "kimi", "model": "kimi-k3", "effort": "default"},
+    "worker": {"vendor": "kimi", "model": "kimi-code/k3", "effort": "default"},
+    "reviewer": {"vendor": "kimi", "model": "kimi-code/k3", "effort": "default"},
     "review_rounds_max": 5,
     "quality_only_fallback": false
   },
