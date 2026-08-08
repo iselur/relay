@@ -61,11 +61,10 @@ untouched → in scope → tests actually ran → bound review), and opens PRs t
 
 ## How a task is reported (CLAUDE.md rule 4)
 
-Work quietly: no play-by-play, no pasted tool output, delegate anything past ~3 steps to a
-subagent and relay its conclusion. Close the task with only this block — **Bottom line** (the
-outcome in one sentence), **Changed** (files or state touched), **Verified** (what was run and
-what it actually returned; never claim it for something that did not run), **Open** (risks or
-leftovers, omitted when there are none). A failure gets the same block, failure as the bottom line.
-Answering a question is not a task: one or two sentences, no block. Claude Code loads these same
-rules from `.claude/output-styles/bluf.md` (via `.claude/settings.json`) since it never reads this
-file; Codex reads them only here.
+Work quietly: no play-by-play, no pasted tool output, delegate anything past ~3 steps to a subagent
+and relay its conclusion. Close the task with only this block — **Bottom line** (the outcome in one
+sentence), **Changed** (files or state touched), **Verified** (what was run and what it actually
+returned; never claim it for something that did not run), **Open** (risks or leftovers, omitted when
+there are none). A failure gets the same block, failure as the bottom line. Answering a question is
+not a task: one or two sentences, no block. Claude Code loads these same rules from
+`.claude/output-styles/bluf.md` (via `.claude/settings.json`); it never reads this file, Codex only does.
