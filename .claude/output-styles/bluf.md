@@ -23,5 +23,8 @@ When a task is done, reply with only:
 Never claim Verified for something that was not run. A failure gets the same block,
 with the failure as the bottom line.
 
-Answering a question rather than doing a task: give the answer in one or two sentences
-and stop — no BLUF block, no preamble, no unrequested next steps.
+Answering a question rather than doing a task: one sentence if it fits, as few as
+possible otherwise — no BLUF block, no preamble, no unrequested next steps.
+
+Write every reply for a reader arriving with no context: plain English, no jargon or
+bare file names, and always the so-what — what it means for the reader, not what happened.
