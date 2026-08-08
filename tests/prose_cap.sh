@@ -63,9 +63,12 @@ fi
 #    is a reviewed decision: add it here AND give it a cap, in the same PR.
 declare -A cap=(
   [CLAUDE.md]=80  # 70→80 on 2026-07-18, owner-approved: rule 5 probe-first (dated probe for external-tool assumptions)
-  [AGENTS.md]=60   # raised from 45 with the role→vendor table: the rulebook now speaks in roles,
+  [AGENTS.md]=70   # raised from 45 with the role→vendor table: the rulebook now speaks in roles,
                    # and this is the one place a model name may appear, so swapping a vendor is an
-                   # edit here and nowhere else.
+                   # edit here and nowhere else. 60→70 on 2026-08-08, owner-requested: the report
+                   # format, which Codex can only read here.
+  [.claude/output-styles/bluf.md]=30  # added 2026-08-08, owner-requested: the only always-on lever
+                   # over what Claude Code writes. Prose that REPLACES transcript prose, not adds.
   [README.md]=100
   [BOOTSTRAP.md]=80
   [SECURITY.md]=110
@@ -92,12 +95,12 @@ for f in "${md_files[@]}"; do
   fi
 done
 
-# 2. Totals: 500 lines AND 60,000 bytes — the byte cap stops one-line walls of text that a line
+# 2. Totals: 540 lines AND 60,000 bytes — the byte cap stops one-line walls of text that a line
 #    count cannot see. A zero total means the counting broke (this exact check once passed
 #    vacuously with "0/600" because awk was invoked wrong) — zero is a failure, not a clean repo.
 [ "$total_lines" -gt 0 ] || bad "total tracked markdown counted as 0 lines — the count is broken, not the repo empty"
-[ "$total_lines" -le 500 ]   && ok "total tracked markdown: $total_lines/500 lines" \
-  || bad "total tracked markdown is $total_lines lines — cap is 500. Delete before you add."
+[ "$total_lines" -le 540 ]   && ok "total tracked markdown: $total_lines/540 lines" \
+  || bad "total tracked markdown is $total_lines lines — cap is 540. Delete before you add."
 [ "$total_bytes" -le 60000 ] && ok "total tracked markdown: $total_bytes/60000 bytes" \
   || bad "total tracked markdown is $total_bytes bytes — cap is 60000. Delete before you add."
 

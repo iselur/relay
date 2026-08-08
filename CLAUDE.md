@@ -19,8 +19,9 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
    defect, a significant gap against the brief, or over-engineering answered with a concretely sketched simpler version — the rest go to the backlog, never a forced
    revision. If material findings persist past round two or three, or a spec fails its second worker attempt, never just stop or re-dispatch harder: step back as the
    owner would and weigh simplifying, another approach, splitting smaller, or another route to the goal; a re-scope restarts as a fresh brief and intake row, telling the owner. Trust-critical work with an unresolved material finding stays BLOCKED: escalate, never ship on a spent cap.
-4. **Communication:** bottom line first, stay brief. Past one step, keep a live to-do list, never
-   back-filled. Coin a term only for code that exists in this repo.
+4. **Communication:** bottom line first, stay brief — never narrate steps or paste tool output; the
+   to-do list past one step is the tool panel, never prose, and never back-filled. Close a task with
+   the `## BLUF` block AGENTS.md defines. Coin a term only for code that exists in this repo.
 5. **Every program gets ONE brief, capped at 400 lines** (`scripts/codex-plan` enforces the cap and
    required sections). A one-change, reversible task nothing else depends on needs only the intake
    gate; everything else is written to the brief. It says: the owner's request, verbatim; what exists at the end that does not now;
