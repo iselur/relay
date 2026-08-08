@@ -19,6 +19,14 @@ against this description: what matches, what doesn't, what is missing.
   lines; the box site keeps materialize-then-acquire ordering). Sketch in
   `.orchestrator/plans/C3-grill-verdict.md` §2.
 
+- A test that pins production output byte-for-byte is a ratchet against its own subject, and the
+  cost lands on whoever next changes that output. The candidate-isolated phase restores each
+  required test from the INSTALLED commit and runs it against the candidate, so the installed pin
+  fails the new text by construction: SPEC-055 attempt 2 passed its own `test_command` (exit 0) and
+  attestation still refused it. Shipping the change took two dispatches — SPEC-056 replaced the pin
+  with named per-promise checks true of both texts, then SPEC-057 changed the text. Worth a
+  rulebook line, but a new rule REPLACES one and that is the owner's call: raised 2026-08-08.
+
 (Other in-flight work lives in the private ledger, not here.)
 
 The known security gaps are recorded in SECURITY.md and are deliberately NOT queued here: the owner
@@ -32,6 +40,28 @@ knows them, accepts them, and does not want them built (2026-08-06). Do not re-a
   lifecycle-falsifier branch.
 - Measure whether review catches bugs: plant three known defects, count catches, size review scope from the result.
 - External benchmark score and cost reporting — after a real product exists.
+- R102 benchmark, STOPPED 2026-08-08 at the owner's word. One task, 1 trial per row
+  (`terminal-bench/fix-git`, `.orchestrator/evidence/R102/kill-test/`), costs reconstructed from the
+  retained raw role logs: vanilla Codex PASS $0.0101, vanilla Claude PASS $0.2253, harness with
+  review OFF PASS $0.0354, production pairing FAIL $0.3799.
+  - The production FAIL is a rig artifact, not a result. `scripts/r102_harness_agent.py:384` runs
+    every role but the worker through `_subprocess_run` on the host, so the reviewer never reached
+    the task container, and `_command` denies it every tool — one turn, zero tool calls, each round.
+    Asked to judge a container it could not see from the worker's prose alone, it never emitted PASS
+    (`_review_verdict` defaults to REVISE when neither token appears, and matches either anywhere in
+    the text), so five rounds of blind remediation churned the worktree until both graded hashes
+    missed. PASS was unreachable for that row. No trust-boundary breach: tools were denied and
+    `permission_denials` is empty in all five rounds. Before any rerun, put the reviewer in the
+    container or hand it the diff and test output. The same file also grades a never-reviewed
+    post-cap artifact; both bugs are benchmark-only — production dispatch and review do not share it.
+  - harness `usage.jsonl` keeps only plain input/output tokens, so Claude roles read as 1–7 input
+    tokens; cache tokens and vendor cost survive in the per-role logs, which is where the figures
+    above come from. Price from those, never from the manifest totals.
+  - vanilla-kimi never started: `scripts/r102_tier_a.json:84` sends `kimi-k3` where Harbor's
+    kimi-cli wants `provider/model_name`, and `kimi-code/k3` is already the alias in
+    `scripts/models.json`. The owner does not need Kimi now (2026-08-08); one line restores it.
+  `scripts/r102_benchmark.py` (preflight/kill-test/verify) is shipped and stays, default-off behind
+  `R102_BENCHMARK=1`. PLAN-014, PLAN-015 and SPEC-054 are retired unmerged.
 - Test the rendered reviewer EVIDENCE section (incl. spec-declared commands) directly instead of
   relying partly on a source-marker grep (harness-spec-command-evidence round 1, PASS backlog note).
 - Relax scripts/review's model-level self-review refusal to instance/context level to match
