@@ -19,15 +19,13 @@ against this description: what matches, what doesn't, what is missing.
   lines; the box site keeps materialize-then-acquire ordering). Sketch in
   `.orchestrator/plans/C3-grill-verdict.md` §2.
 
-- Remediation prompt vs. base reset (evidenced 2026-08-08, SPEC-054 attempt 4): a remediation
-  attempt's worktree resets to `origin/ready-for-main`, but its prompt says "address these
-  specific findings — nothing else". The worker re-implemented the script and shipped
-  `tests/r102_benchmark.sh` byte-identical to base — 404 lines of the prior attempt's tests
-  silently dropped — so the regression gate correctly refused a vacuous proof and the attempt
-  burned. The prompt tells the worker it is editing a delta; the tree says it is starting over.
-  Either hand the remediation attempt the prior attempt's commit as its base, or say plainly in
-  the prompt that the tree is at base and the whole spec must be re-delivered with the findings
-  fixed. Do not just re-word "nothing else" — the two halves have to agree.
+- A test that pins production output byte-for-byte is a ratchet against its own subject, and the
+  cost lands on whoever next changes that output. The candidate-isolated phase restores each
+  required test from the INSTALLED commit and runs it against the candidate, so the installed pin
+  fails the new text by construction: SPEC-055 attempt 2 passed its own `test_command` (exit 0) and
+  attestation still refused it. Shipping the change took two dispatches — SPEC-056 replaced the pin
+  with named per-promise checks true of both texts, then SPEC-057 changed the text. Worth a
+  rulebook line, but a new rule REPLACES one and that is the owner's call: raised 2026-08-08.
 
 (Other in-flight work lives in the private ledger, not here.)
 
