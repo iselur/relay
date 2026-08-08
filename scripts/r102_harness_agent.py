@@ -96,6 +96,11 @@ class RelayHarnessAgent(BaseAgent):
             target = Path(home) / ".kimi-code" / "credentials"
             await environment.upload_dir(source, target)
             await self._chown(environment, target)
+            config = HOST_HOME / ".kimi-code" / "config.toml"
+            if config.is_file():
+                config_target = Path(home) / ".kimi-code" / "config.toml"
+                await environment.upload_file(config, config_target)
+                await self._chown(environment, config_target)
 
         if "claude" in bindings:
             token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
@@ -173,6 +178,12 @@ class RelayHarnessAgent(BaseAgent):
         shell_command = shlex.join(command)
         if prompt is not None:
             shell_command = f"printf %s {shlex.quote(prompt)} | {shell_command}"
+        locator = {
+            "codex": "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; ",
+            "claude": 'export PATH="$HOME/.local/bin:$PATH"; ',
+            "kimi": 'export PATH="$HOME/.local/bin:$PATH"; ',
+        }[command[0]]
+        shell_command = locator + shell_command
         try:
             if env is None:
                 result = environment.exec(shell_command)

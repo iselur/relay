@@ -64,6 +64,11 @@ try:
     check("canonical harness agents", all(
         row["harbor_agent"] == "scripts.r102_harness_agent:RelayHarnessAgent" and
         row["model"] == row["worker"]["model"] for row in canonical[:5]))
+    k3_row = next(row for row in canonical if row["name"] == "harness-opus-k3-k3")
+    check("Kimi harness bindings use configured model",
+          k3_row["model"] == k3_row["worker"]["model"] ==
+          k3_row["reviewer"]["model"] == "kimi-code/k3" and
+          canonical[-1]["model"] == "kimi-k3")
     check("canonical vanilla role bindings", all(
         row["orchestrator"] is None and row["worker"] is None and row["reviewer"] is None
         for row in canonical[5:]))
@@ -576,6 +581,14 @@ if trial_dir.is_dir():
             for key in ("vendor", "model", "effort")) for event in events))
     check("agent orchestrator evidence", context.metadata["r102"]["orchestrator_evidence"] == {
         "vendor": "claude", "model": "claude-opus-4-8", "log": "orchestrator-round-0.log"})
+    codex_locator = "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
+    check("in-container Codex worker uses the nvm locator",
+          all(isinstance(command, str) and command.startswith(codex_locator) and
+              "codex exec" in command and " | codex exec " in command
+              for role, command in order if role == "worker"))
+    check("host-side role invocations have no locator prefix",
+          all(isinstance(command, list) and command[0] in {"claude", "kimi"}
+              for role, command in order if role in {"orchestrator", "reviewer"}))
 
     setup_home = tmp / "setup-host-home"
     codex_auth = setup_home / ".codex" / "auth.json"
@@ -623,13 +636,34 @@ if trial_dir.is_dir():
           [("kimi", canonical[3]["worker"]["model"])] and
           all(Path(logs).is_relative_to(kimi_agent.logs_dir)
               for _, logs, _ in kimi_environment.installs))
-    check("setup uploads Kimi OAuth credentials directory",
+    check("setup without Kimi config uploads credentials only",
+          not (setup_home / ".kimi-code" / "config.toml").exists() and
           kimi_environment.uploads == [
               ("dir", kimi_credentials, Path("/home/benchmark/.kimi-code/credentials"))])
     check("setup chowns Kimi credentials to the container user",
           any(command ==
               "chown -R benchmark /home/benchmark/.kimi-code/credentials" and user == "root"
               for command, _, user in kimi_environment.exec_calls))
+
+    kimi_config = setup_home / ".kimi-code" / "config.toml"
+    kimi_config.write_text("[models]\n")
+    _, kimi_config_environment = asyncio.run(prepare(canonical[3], "kimi-config"))
+    check("setup uploads Kimi config when present",
+          kimi_config_environment.uploads == [
+              ("dir", kimi_credentials, Path("/home/benchmark/.kimi-code/credentials")),
+              ("file", kimi_config, Path("/home/benchmark/.kimi-code/config.toml"))])
+    check("setup chowns Kimi config when present",
+          any(command == "chown -R benchmark /home/benchmark/.kimi-code/config.toml" and
+              user == "root" for command, _, user in kimi_config_environment.exec_calls))
+
+    kimi_order, _, _ = asyncio.run(exercise(canonical[3], ["PASS"]))
+    kimi_locator = 'export PATH="$HOME/.local/bin:$PATH"; '
+    check("in-container Kimi worker uses the local-bin locator",
+          all(isinstance(command, str) and command.startswith(kimi_locator) and
+              "kimi -p" in command for role, command in kimi_order if role == "worker"))
+    check("host-side Kimi reviewer has no locator prefix",
+          all(isinstance(command, list) and command[0] == "kimi"
+              for role, command in kimi_order if role == "reviewer"))
 
     async def exercise_prepared_subagent():
         agent, environment = await prepare(canonical[2], "subagent")
@@ -649,6 +683,9 @@ if trial_dir.is_dir():
           len(claude_execs) == 2 and all(
               env == {"CLAUDE_CODE_OAUTH_TOKEN": setup_token}
               for _, env, _ in claude_execs))
+    check("every in-container Claude role uses the local-bin locator",
+          all(command.startswith('export PATH="$HOME/.local/bin:$PATH"; ')
+              for command, _, _ in claude_execs))
     retained_role_evidence = "".join(
         path.read_text() for path in subagent.logs_dir.rglob("*") if path.is_file())
     check("Claude OAuth token is absent from role evidence",
