@@ -547,8 +547,7 @@ finally:
 
 # ---- codex worker prompt is byte-identical through the factoring -----------------------------
 lc_prompt = {"spec_digest": digest, "spec_snapshot_digest": digest,
-             "remediation": {"remediation_number": 1, "limit": 2, "of_attempt": 1,
-                             "findings": {"f": ["x"]}}}
+             "remediation": None}
 expected = (
     "Implement this spec. Modify only in-scope paths. Run the test command until it exits 0. "
     "Leave your changes in the working tree; do NOT commit or push — the orchestrator commits "
@@ -570,13 +569,28 @@ expected = (
     "test command, inadequate scope), stop and report SPEC_BLOCKED on its own line followed by "
     "the reason — never improvise beyond the spec."
     + "\n\n=== SPEC ===\n" + snap.decode()
-    + "\n\n=== REMEDIATION (attempt 2; remediation #1 of max 2) ===\n"
-    + "A previous attempt (#1) FAILED. Your job is to address these specific findings — "
-    + "nothing else. Stay strictly within the approved scope. If the findings cannot be "
-    + "addressed within the spec and scope, report SPEC_BLOCKED.\n"
-    + json.dumps({"f": ["x"]}, indent=2))
-check("worker prompt is byte-identical to the canonical builder (incl. remediation block)",
-      d.worker_prompt_text(att, lc_prompt, 2) == expected)
+)
+prompt_without_remediation = d.worker_prompt_text(att, lc_prompt, 2)
+check("worker prompt without remediation is byte-identical to the preamble and spec assembly",
+      prompt_without_remediation == expected)
+check("non-remediation worker prompt has no remediation section",
+      "=== REMEDIATION" not in prompt_without_remediation)
+
+findings = {"failed_attempt": 1, "status": "failed_review",
+            "details": {"missing": ["scope", "tests"], "counts": {"major": 1}}}
+lc_prompt["remediation"] = {"remediation_number": 1, "limit": 2, "of_attempt": 1,
+                             "findings": findings}
+prompt_with_remediation = d.worker_prompt_text(att, lc_prompt, 2)
+check("remediation header names attempt, remediation number, and limit",
+      "=== REMEDIATION (attempt 2; remediation #1 of max 2) ===" in prompt_with_remediation)
+check("remediation prompt names the previous failed attempt",
+      "A previous attempt (#1) FAILED." in prompt_with_remediation)
+check("remediation prompt embeds the complete findings rendering",
+      json.dumps(findings, indent=2) in prompt_with_remediation)
+check("remediation prompt requires the approved scope",
+      "Stay strictly within the approved scope." in prompt_with_remediation)
+check("remediation prompt offers the SPEC_BLOCKED escape",
+      "report SPEC_BLOCKED." in prompt_with_remediation)
 
 sys.exit(1 if fails else 0)
 PY
