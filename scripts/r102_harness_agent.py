@@ -43,6 +43,7 @@ class RelayHarnessAgent(BaseAgent):
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.usage_path = self.logs_dir / "usage.jsonl"
         self._claude_oauth_token = None
+        self._container_home = None
 
     @staticmethod
     def name():
@@ -61,7 +62,11 @@ class RelayHarnessAgent(BaseAgent):
             binding = self.row[role]
             bindings.setdefault(binding["vendor"], binding)
 
+        kimi_binary = HOST_HOME / ".kimi-code" / "bin" / "kimi"
+        native_kimi = kimi_binary.is_file()
         for vendor, binding in bindings.items():
+            if vendor == "kimi" and native_kimi:
+                continue
             module_name, class_name = INSTALLED_AGENTS[vendor]
             installed_class = getattr(importlib.import_module(module_name), class_name)
             installed = installed_class(
@@ -78,6 +83,7 @@ class RelayHarnessAgent(BaseAgent):
             home = stdout.strip()
             if code != 0 or not home:
                 raise RuntimeError("cannot resolve container user home")
+            self._container_home = Path(home)
 
         if "codex" in bindings:
             source = HOST_HOME / ".codex" / "auth.json"
@@ -90,6 +96,15 @@ class RelayHarnessAgent(BaseAgent):
             await self._chown(environment, target_dir)
 
         if "kimi" in bindings:
+            if native_kimi:
+                binary_target = Path(home) / ".local" / "bin" / "kimi"
+                await self._exec_setup(
+                    environment, f"mkdir -p {shlex.quote(str(binary_target.parent))}",
+                    user="root")
+                await environment.upload_file(kimi_binary, binary_target)
+                await self._exec_setup(
+                    environment, f"chmod +x {shlex.quote(str(binary_target))}", user="root")
+                await self._chown(environment, binary_target)
             source = HOST_HOME / ".kimi-code" / "credentials"
             if not source.is_dir():
                 raise RuntimeError(f"missing kimi credential: {source}")
@@ -101,6 +116,17 @@ class RelayHarnessAgent(BaseAgent):
                 config_target = Path(home) / ".kimi-code" / "config.toml"
                 await environment.upload_file(config, config_target)
                 await self._chown(environment, config_target)
+            if native_kimi:
+                oauth = HOST_HOME / ".kimi-code" / "oauth"
+                if oauth.is_dir():
+                    oauth_target = Path(home) / ".kimi-code" / "oauth"
+                    await environment.upload_dir(oauth, oauth_target)
+                    await self._chown(environment, oauth_target)
+                device_id = HOST_HOME / ".kimi-code" / "device_id"
+                if device_id.is_file():
+                    device_target = Path(home) / ".kimi-code" / "device_id"
+                    await environment.upload_file(device_id, device_target)
+                    await self._chown(environment, device_target)
 
         if "claude" in bindings:
             token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
@@ -180,7 +206,7 @@ class RelayHarnessAgent(BaseAgent):
             shell_command = f"printf %s {shlex.quote(prompt)} | {shell_command}"
         locator = {
             "codex": "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; ",
-            "claude": 'export PATH="$HOME/.local/bin:$PATH"; ',
+            "claude": 'export PATH="$HOME/.local/bin:$PATH"; export IS_SANDBOX=1; ',
             "kimi": 'export PATH="$HOME/.local/bin:$PATH"; ',
         }[command[0]]
         shell_command = locator + shell_command
@@ -267,13 +293,77 @@ class RelayHarnessAgent(BaseAgent):
         return answer if answer is not None else output
 
     @staticmethod
-    def _session_id(output):
+    def _session_id(output, vendor=None):
+        if vendor == "kimi":
+            for line in reversed(output.splitlines()):
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(event, dict) and event.get("role") == "meta" and
+                        event.get("type") == "session.resume_hint"):
+                    value = event.get("session_id")
+                    return value if isinstance(value, str) and value else None
+            return None
         try:
             envelope = json.loads(output)
         except json.JSONDecodeError:
             return None
         value = envelope.get("session_id") if isinstance(envelope, dict) else None
         return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _kimi_tokens(text):
+        input_tokens = 0
+        output_tokens = 0
+        found = False
+        for line in text.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                return None, None
+            if not isinstance(event, dict) or event.get("type") != "usage.record":
+                continue
+            usage = event.get("usage")
+            if not isinstance(usage, dict):
+                return None, None
+            fields = [usage.get(key) for key in
+                      ("inputOther", "inputCacheRead", "inputCacheCreation", "output")]
+            if any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+                   for value in fields):
+                return None, None
+            input_tokens += sum(fields[:3])
+            output_tokens += fields[3]
+            found = True
+        return (input_tokens, output_tokens) if found else (None, None)
+
+    async def _kimi_usage(self, environment, session_id, in_container):
+        if not session_id:
+            return None, None
+        if in_container:
+            if self._container_home is None:
+                return None, None
+            sessions = self._container_home / ".kimi-code" / "sessions"
+            command = (f"cat -- {shlex.quote(str(sessions))}/*/"
+                       f"{shlex.quote(session_id)}/agents/main/wire.jsonl")
+            result = await self._exec_setup(environment, command)
+            stdout, _, code = self._result_text(result)
+            if code != 0:
+                return None, None
+            return self._kimi_tokens(stdout)
+        sessions = HOST_HOME / ".kimi-code" / "sessions"
+        contents = []
+        try:
+            workdirs = sessions.iterdir()
+            for workdir in workdirs:
+                path = workdir / session_id / "agents" / "main" / "wire.jsonl"
+                if path.is_file():
+                    contents.append(path.read_text())
+        except OSError:
+            return None, None
+        if not contents:
+            return None, None
+        return self._kimi_tokens("\n".join(contents))
 
     def _append_usage(self, role, binding, input_tokens, output_tokens, wall_s, round_number):
         event = {
@@ -308,13 +398,18 @@ class RelayHarnessAgent(BaseAgent):
         stdout, stderr, code = self._result_text(result)
         log_path = self.logs_dir / f"{role}-round-{round_number}.log"
         log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""))
-        input_tokens, output_tokens = self._tokens(stdout + "\n" + stderr)
+        session_id = self._session_id(stdout, binding["vendor"])
+        if binding["vendor"] == "kimi":
+            input_tokens, output_tokens = await self._kimi_usage(
+                environment, session_id, role == "worker" or use_environment)
+        else:
+            input_tokens, output_tokens = self._tokens(stdout + "\n" + stderr)
         event = self._append_usage(role, binding, input_tokens, output_tokens, wall_s,
                                    round_number)
         if code != 0:
             raise RuntimeError(f"{role} invocation exited {code}; see {log_path.name}")
         return (self._answer(binding["vendor"], stdout), event, log_path,
-                self._session_id(stdout))
+                session_id)
 
     @staticmethod
     def _review_verdict(output):

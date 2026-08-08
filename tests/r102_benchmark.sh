@@ -587,7 +587,8 @@ if trial_dir.is_dir():
               "codex exec" in command and " | codex exec " in command
               for role, command in order if role == "worker"))
     check("host-side role invocations have no locator prefix",
-          all(isinstance(command, list) and command[0] in {"claude", "kimi"}
+          all(isinstance(command, list) and command[0] in {"claude", "kimi"} and
+              "IS_SANDBOX" not in " ".join(command)
               for role, command in order if role in {"orchestrator", "reviewer"}))
 
     setup_home = tmp / "setup-host-home"
@@ -656,6 +657,56 @@ if trial_dir.is_dir():
           any(command == "chown -R benchmark /home/benchmark/.kimi-code/config.toml" and
               user == "root" for command, _, user in kimi_config_environment.exec_calls))
 
+    kimi_binary = setup_home / ".kimi-code" / "bin" / "kimi"
+    kimi_binary.parent.mkdir(parents=True)
+    kimi_binary.write_text("kimi-code fixture\n")
+    kimi_binary.chmod(0o755)
+    kimi_oauth = setup_home / ".kimi-code" / "oauth"
+    kimi_oauth.mkdir()
+    (kimi_oauth / "device.json").write_text("fixture\n")
+    kimi_device_id = setup_home / ".kimi-code" / "device_id"
+    kimi_device_id.write_text("device-fixture\n")
+    _, native_kimi_environment = asyncio.run(prepare(canonical[3], "kimi-native"))
+    native_binary_target = Path("/home/benchmark/.local/bin/kimi")
+    native_oauth_target = Path("/home/benchmark/.kimi-code/oauth")
+    native_device_target = Path("/home/benchmark/.kimi-code/device_id")
+    check("native Kimi setup skips the installed Kimi vendor",
+          not any(vendor == "kimi" for vendor, _, _ in native_kimi_environment.installs))
+    check("native Kimi setup uploads binary and auth paths",
+          native_kimi_environment.uploads == [
+              ("file", kimi_binary, native_binary_target),
+              ("dir", kimi_credentials, Path("/home/benchmark/.kimi-code/credentials")),
+              ("file", kimi_config, Path("/home/benchmark/.kimi-code/config.toml")),
+              ("dir", kimi_oauth, native_oauth_target),
+              ("file", kimi_device_id, native_device_target)])
+    native_execs = {(command, user) for command, _, user in native_kimi_environment.exec_calls}
+    check("native Kimi setup marks the binary executable",
+          ("chmod +x /home/benchmark/.local/bin/kimi", "root") in native_execs)
+    check("native Kimi setup chowns every uploaded path",
+          all((f"chown -R benchmark {path}", "root") in native_execs for path in (
+              "/home/benchmark/.local/bin/kimi",
+              "/home/benchmark/.kimi-code/credentials",
+              "/home/benchmark/.kimi-code/config.toml",
+              "/home/benchmark/.kimi-code/oauth",
+              "/home/benchmark/.kimi-code/device_id")))
+
+    fallback_home = tmp / "setup-host-home-kimi-fallback"
+    fallback_credentials = fallback_home / ".kimi-code" / "credentials"
+    fallback_credentials.mkdir(parents=True)
+    (fallback_credentials / "oauth.json").write_text('{"oauth":"fixture"}\n')
+    fallback_config = fallback_home / ".kimi-code" / "config.toml"
+    fallback_config.write_text("[models]\n")
+    (fallback_home / ".kimi-code" / "oauth").mkdir()
+    (fallback_home / ".kimi-code" / "device_id").write_text("device-fixture\n")
+    agent_module.HOST_HOME = fallback_home
+    _, fallback_kimi_environment = asyncio.run(prepare(canonical[3], "kimi-fallback"))
+    check("Kimi fallback keeps native auth out without the binary",
+          any(vendor == "kimi" for vendor, _, _ in fallback_kimi_environment.installs) and
+          fallback_kimi_environment.uploads == [
+              ("dir", fallback_credentials, Path("/home/benchmark/.kimi-code/credentials")),
+              ("file", fallback_config, Path("/home/benchmark/.kimi-code/config.toml"))])
+    agent_module.HOST_HOME = setup_home
+
     kimi_order, _, _ = asyncio.run(exercise(canonical[3], ["PASS"]))
     kimi_locator = 'export PATH="$HOME/.local/bin:$PATH"; '
     check("in-container Kimi worker uses the local-bin locator",
@@ -664,6 +715,65 @@ if trial_dir.is_dir():
     check("host-side Kimi reviewer has no locator prefix",
           all(isinstance(command, list) and command[0] == "kimi"
               for role, command in kimi_order if role == "reviewer"))
+
+    wire_home = tmp / "kimi-wire-home"
+    wire_path = (wire_home / ".kimi-code" / "sessions" / "workdir-slug" /
+                 "session-host" / "agents" / "main" / "wire.jsonl")
+    wire_path.parent.mkdir(parents=True)
+    wire_events = [
+        {"type": "usage.record", "usage": {
+            "inputOther": 100, "inputCacheRead": 200, "inputCacheCreation": 300,
+            "output": 7}},
+        {"type": "usage.record", "usage": {
+            "inputOther": 4, "inputCacheRead": 5, "inputCacheCreation": 6,
+            "output": 8}},
+    ]
+    wire_text = "".join(json.dumps(event) + "\n" for event in wire_events)
+    wire_path.write_text(wire_text)
+    kimi_output = (json.dumps({"role": "assistant", "content": "answer"}) + "\n" +
+                   json.dumps({"role": "meta", "type": "session.resume_hint",
+                               "session_id": "session-host"}) + "\n")
+    agent_module.HOST_HOME = wire_home
+    host_wire_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-kimi-host-wire", row=json.dumps(canonical[3]))
+    host_wire_agent._subprocess_run = lambda command, prompt: subprocess.CompletedProcess(
+        command, 0, kimi_output, "")
+    _, host_wire_event, _, _ = asyncio.run(host_wire_agent._invoke_role(
+        "reviewer", "review", SetupEnvironment(), 1))
+
+    class KimiWireEnvironment(SetupEnvironment):
+        async def exec(self, command, env=None, user=None):
+            self.exec_calls.append((command, env, user))
+            if command.startswith("cat -- "):
+                return {"stdout": wire_text, "stderr": "", "returncode": 0}
+            if command.startswith('export PATH="$HOME/.local/bin:$PATH"; kimi '):
+                return {"stdout": kimi_output, "stderr": "", "returncode": 0}
+            return await super().exec(command, env=env, user=user)
+
+    container_wire_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-kimi-container-wire", row=json.dumps(canonical[3]))
+    container_wire_agent._container_home = Path("/home/benchmark")
+    container_wire_environment = KimiWireEnvironment()
+    _, container_wire_event, _, _ = asyncio.run(container_wire_agent._invoke_role(
+        "worker", "work", container_wire_environment, 0))
+    check("host Kimi usage comes from summed wire records",
+          host_wire_event["input_tokens"] == 615 and host_wire_event["output_tokens"] == 15)
+    check("in-container Kimi usage comes from summed wire records",
+          container_wire_event["input_tokens"] == 615 and
+          container_wire_event["output_tokens"] == 15 and any(
+              command.startswith("cat -- /home/benchmark/.kimi-code/sessions/*/")
+              for command, _, _ in container_wire_environment.exec_calls))
+
+    missing_wire_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-kimi-missing-wire", row=json.dumps(canonical[3]))
+    missing_wire_agent._subprocess_run = lambda command, prompt: subprocess.CompletedProcess(
+        command, 0, json.dumps({"role": "assistant", "content": "answer"}), "")
+    _, missing_wire_event, _, _ = asyncio.run(missing_wire_agent._invoke_role(
+        "reviewer", "review", SetupEnvironment(), 1))
+    check("Kimi usage stays null without a resume hint",
+          missing_wire_event["input_tokens"] is None and
+          missing_wire_event["output_tokens"] is None)
+    agent_module.HOST_HOME = setup_home
 
     async def exercise_prepared_subagent():
         agent, environment = await prepare(canonical[2], "subagent")
@@ -683,8 +793,8 @@ if trial_dir.is_dir():
           len(claude_execs) == 2 and all(
               env == {"CLAUDE_CODE_OAUTH_TOKEN": setup_token}
               for _, env, _ in claude_execs))
-    check("every in-container Claude role uses the local-bin locator",
-          all(command.startswith('export PATH="$HOME/.local/bin:$PATH"; ')
+    check("every in-container Claude role uses the sandbox local-bin locator",
+          all(command.startswith('export PATH="$HOME/.local/bin:$PATH"; export IS_SANDBOX=1; ')
               for command, _, _ in claude_execs))
     retained_role_evidence = "".join(
         path.read_text() for path in subagent.logs_dir.rglob("*") if path.is_file())
