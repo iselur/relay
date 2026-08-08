@@ -865,6 +865,114 @@ if trial_dir.is_dir():
     check("agent invokes no publishing mechanics", not any(
         any(term in (" " + (command if isinstance(command, str) else " ".join(command)) +
              " ").lower() for term in forbidden) for _, command in all_agent_orders))
+
+    kimi_command_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-kimi-command", row=json.dumps(canonical[3]))
+    kimi_prompt = "benchmark prompt"
+    expected_kimi_command = ["kimi", "-p", kimi_prompt, "-m",
+                             canonical[3]["worker"]["model"], "--output-format", "stream-json"]
+    check("Kimi role argv has no dash-y", all(
+        kimi_command_agent._command(role, canonical[3][role], kimi_prompt) ==
+        expected_kimi_command for role in ("worker", "reviewer")))
+
+    retry_outcomes = {}
+
+    def malformed_envelope(result, input_tokens, output_tokens, session_id=None):
+        value = {
+            "result": result,
+            "terminal_reason": "malformed_tool_use_exhausted",
+            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+        }
+        if session_id is not None:
+            value["session_id"] = session_id
+        return json.dumps(value)
+
+    retry_success_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-claude-retry-success", row=json.dumps(canonical[0]))
+    retry_success_calls = []
+
+    def retry_success_cli(command, prompt):
+        retry_success_calls.append((command, prompt))
+        if len(retry_success_calls) == 1:
+            return subprocess.CompletedProcess(
+                command, 1, malformed_envelope("malformed", 11, 2), "")
+        return subprocess.CompletedProcess(command, 0, json.dumps({
+            "result": "second attempt answer", "session_id": "retry-session-2",
+            "usage": {"input_tokens": 13, "output_tokens": 3},
+        }), "")
+
+    retry_success_agent._subprocess_run = retry_success_cli
+    try:
+        retry_outcomes["retry success"] = asyncio.run(retry_success_agent._invoke_role(
+            "reviewer", "review", SetupEnvironment(), 1))
+    except Exception as exc:
+        retry_outcomes["retry success"] = exc
+
+    retry_success_usage = []
+    if retry_success_agent.usage_path.is_file():
+        retry_success_usage = [json.loads(line) for line in
+                               retry_success_agent.usage_path.read_text().splitlines()]
+    retry_success_failed_log = retry_success_agent.logs_dir / "reviewer-round-1-attempt1.log"
+    retry_success_final_log = retry_success_agent.logs_dir / "reviewer-round-1.log"
+
+    exhaust_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-claude-retry-exhausted", row=json.dumps(canonical[0]))
+    exhaust_calls = []
+
+    def exhaust_cli(command, prompt):
+        exhaust_calls.append((command, prompt))
+        return subprocess.CompletedProcess(
+            command, 1, malformed_envelope("malformed", 17, 4), "")
+
+    exhaust_agent._subprocess_run = exhaust_cli
+    try:
+        asyncio.run(exhaust_agent._invoke_role("reviewer", "review", SetupEnvironment(), 2))
+    except Exception as exc:
+        retry_outcomes["retry exhaustion"] = exc
+    else:
+        retry_outcomes["retry exhaustion"] = None
+
+    nonmalformed_agent = agent_module.RelayHarnessAgent(
+        tmp / "agent-claude-nonmalformed", row=json.dumps(canonical[0]))
+    nonmalformed_calls = []
+
+    def nonmalformed_cli(command, prompt):
+        nonmalformed_calls.append((command, prompt))
+        return subprocess.CompletedProcess(command, 1, json.dumps({
+            "result": "ordinary failure",
+            "usage": {"input_tokens": 19, "output_tokens": 5},
+        }), "")
+
+    nonmalformed_agent._subprocess_run = nonmalformed_cli
+    try:
+        asyncio.run(nonmalformed_agent._invoke_role(
+            "reviewer", "review", SetupEnvironment(), 3))
+    except Exception as exc:
+        retry_outcomes["non-malformed failure"] = exc
+    else:
+        retry_outcomes["non-malformed failure"] = None
+
+    check("Claude malformed retry returns second answer and session",
+          not isinstance(retry_outcomes["retry success"], Exception) and
+          retry_outcomes["retry success"][0] == "second attempt answer" and
+          retry_outcomes["retry success"][3] == "retry-session-2" and
+          retry_outcomes["retry success"][2].name == "reviewer-round-1.log")
+    check("Claude malformed retry retains failed log and usage",
+          retry_success_failed_log.is_file() and retry_success_final_log.is_file() and
+          "malformed_tool_use_exhausted" in retry_success_failed_log.read_text() and
+          len(retry_success_usage) == 2 and
+          [(event["input_tokens"], event["output_tokens"]) for event in retry_success_usage] ==
+          [(11, 2), (13, 3)])
+    exhaust_usage = [json.loads(line) for line in exhaust_agent.usage_path.read_text().splitlines()]
+    check("Claude malformed retry exhausts after three attempts",
+          isinstance(retry_outcomes["retry exhaustion"], RuntimeError) and
+          len(exhaust_calls) == 3 and len(exhaust_usage) == 3 and
+          (exhaust_agent.logs_dir / "reviewer-round-2-attempt1.log").is_file() and
+          (exhaust_agent.logs_dir / "reviewer-round-2-attempt2.log").is_file() and
+          (exhaust_agent.logs_dir / "reviewer-round-2.log").is_file())
+    check("Claude ordinary failure is not retried",
+          isinstance(retry_outcomes["non-malformed failure"], RuntimeError) and
+          len(nonmalformed_calls) == 1)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 

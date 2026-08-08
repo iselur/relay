@@ -192,8 +192,7 @@ class RelayHarnessAgent(BaseAgent):
                 safe_command.append("--no-session-persistence")
             return safe_command
         if vendor == "kimi":
-            command = ["kimi", "-p", prompt, "-m", model, "--output-format", "stream-json"]
-            return command + (["-y"] if role == "worker" else [])
+            return ["kimi", "-p", prompt, "-m", model, "--output-format", "stream-json"]
         raise ValueError(f"unsupported R102 vendor: {vendor}")
 
     def _subprocess_run(self, command, prompt):
@@ -384,32 +383,49 @@ class RelayHarnessAgent(BaseAgent):
                            use_environment=False, session_id=None):
         binding = self.row[role]
         command = self._command(role, binding, prompt, session_id=session_id)
-        started = time.monotonic()
-        if role == "worker" or use_environment:
-            stdin_prompt = None if binding["vendor"] == "kimi" else prompt
-            role_env = None
-            if binding["vendor"] == "claude" and self._claude_oauth_token is not None:
-                role_env = {"CLAUDE_CODE_OAUTH_TOKEN": self._claude_oauth_token}
-            result = await self._environment_exec(
-                environment, command, stdin_prompt, env=role_env)
-        else:
-            result = await asyncio.to_thread(self._subprocess_run, command, prompt)
-        wall_s = time.monotonic() - started
-        stdout, stderr, code = self._result_text(result)
-        log_path = self.logs_dir / f"{role}-round-{round_number}.log"
-        log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""))
-        session_id = self._session_id(stdout, binding["vendor"])
-        if binding["vendor"] == "kimi":
-            input_tokens, output_tokens = await self._kimi_usage(
-                environment, session_id, role == "worker" or use_environment)
-        else:
-            input_tokens, output_tokens = self._tokens(stdout + "\n" + stderr)
-        event = self._append_usage(role, binding, input_tokens, output_tokens, wall_s,
-                                   round_number)
-        if code != 0:
-            raise RuntimeError(f"{role} invocation exited {code}; see {log_path.name}")
-        return (self._answer(binding["vendor"], stdout), event, log_path,
-                session_id)
+        attempt = 0
+        while True:
+            started = time.monotonic()
+            if role == "worker" or use_environment:
+                stdin_prompt = None if binding["vendor"] == "kimi" else prompt
+                role_env = None
+                if binding["vendor"] == "claude" and self._claude_oauth_token is not None:
+                    role_env = {"CLAUDE_CODE_OAUTH_TOKEN": self._claude_oauth_token}
+                result = await self._environment_exec(
+                    environment, command, stdin_prompt, env=role_env)
+            else:
+                result = await asyncio.to_thread(self._subprocess_run, command, prompt)
+            wall_s = time.monotonic() - started
+            stdout, stderr, code = self._result_text(result)
+            malformed_tool_use = False
+            if binding["vendor"] == "claude" and code != 0:
+                try:
+                    envelope = json.loads(stdout)
+                except json.JSONDecodeError:
+                    envelope = None
+                malformed_tool_use = (isinstance(envelope, dict) and
+                                      envelope.get("terminal_reason") ==
+                                      "malformed_tool_use_exhausted")
+            final_attempt = not (malformed_tool_use and attempt < 2)
+            log_name = (f"{role}-round-{round_number}.log" if final_attempt else
+                        f"{role}-round-{round_number}-attempt{attempt + 1}.log")
+            log_path = self.logs_dir / log_name
+            log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""))
+            session_id = self._session_id(stdout, binding["vendor"])
+            if binding["vendor"] == "kimi":
+                input_tokens, output_tokens = await self._kimi_usage(
+                    environment, session_id, role == "worker" or use_environment)
+            else:
+                input_tokens, output_tokens = self._tokens(stdout + "\n" + stderr)
+            event = self._append_usage(role, binding, input_tokens, output_tokens, wall_s,
+                                       round_number)
+            if code != 0:
+                if final_attempt:
+                    raise RuntimeError(f"{role} invocation exited {code}; see {log_path.name}")
+                attempt += 1
+                continue
+            return (self._answer(binding["vendor"], stdout), event, log_path,
+                    session_id)
 
     @staticmethod
     def _review_verdict(output):
