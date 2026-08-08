@@ -19,6 +19,16 @@ against this description: what matches, what doesn't, what is missing.
   lines; the box site keeps materialize-then-acquire ordering). Sketch in
   `.orchestrator/plans/C3-grill-verdict.md` §2.
 
+- Remediation prompt vs. base reset (evidenced 2026-08-08, SPEC-054 attempt 4): a remediation
+  attempt's worktree resets to `origin/ready-for-main`, but its prompt says "address these
+  specific findings — nothing else". The worker re-implemented the script and shipped
+  `tests/r102_benchmark.sh` byte-identical to base — 404 lines of the prior attempt's tests
+  silently dropped — so the regression gate correctly refused a vacuous proof and the attempt
+  burned. The prompt tells the worker it is editing a delta; the tree says it is starting over.
+  Either hand the remediation attempt the prior attempt's commit as its base, or say plainly in
+  the prompt that the tree is at base and the whole spec must be re-delivered with the findings
+  fixed. Do not just re-word "nothing else" — the two halves have to agree.
+
 (Other in-flight work lives in the private ledger, not here.)
 
 The known security gaps are recorded in SECURITY.md and are deliberately NOT queued here: the owner
@@ -32,6 +42,24 @@ knows them, accepts them, and does not want them built (2026-08-06). Do not re-a
   lifecycle-falsifier branch.
 - Measure whether review catches bugs: plant three known defects, count catches, size review scope from the result.
 - External benchmark score and cost reporting — after a real product exists.
+- R102 benchmark, STOPPED 2026-08-08 at the owner's word, unanswered. What one task actually showed
+  (`terminal-bench/fix-git`, 1 trial per row, `.orchestrator/evidence/R102/kill-test/`): vanilla
+  Codex passed for $0.0101 and vanilla Claude for $0.2253, the production pairing FAILED after five
+  review rounds and ~1.3M input tokens, and the same pairing with the review loop OFF passed in
+  149s. That is n=1 on one easy task; it is a reason to ask again, not an answer. Three things make
+  today's numbers unusable, and a rerun that skips them proves nothing:
+  - `scripts/r102_harness_agent.py` runs one more remediation after the last allowed REVISE and
+    hands that never-reviewed state to the grader, so the harness row is graded on an artifact the
+    real harness would block. Benchmark-only — production dispatch and review do not share it.
+  - harness `usage.jsonl` drops cache-creation and cache-read tokens and vendor cost, and Claude
+    roles record 1–7 input tokens. 90–96% of the vanilla prompt tokens are cache reads, so a dollar
+    comparison built on these fields is wrong, not noisy. Both vanilla totals reconstruct exactly
+    from retained evidence, so the missing rate sheet needs no paid probe.
+  - vanilla-kimi never started: `scripts/r102_tier_a.json:84` sends `kimi-k3` where Harbor's
+    kimi-cli wants `provider/model_name`, and `kimi-code/k3` is already the alias in
+    `scripts/models.json`. The owner does not need Kimi now (2026-08-08); one line restores it.
+  `scripts/r102_benchmark.py` (preflight/kill-test/verify) is shipped and stays, default-off behind
+  `R102_BENCHMARK=1`. PLAN-014, PLAN-015 and SPEC-054 are retired unmerged.
 - Test the rendered reviewer EVIDENCE section (incl. spec-declared commands) directly instead of
   relying partly on a source-marker grep (harness-spec-command-evidence round 1, PASS backlog note).
 - Relax scripts/review's model-level self-review refusal to instance/context level to match
