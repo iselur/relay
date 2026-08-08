@@ -677,17 +677,24 @@ def atomic_write(path: Path, data) -> None:
             os.unlink(tmp)
 
 
-def write_state(spec_id: str, state: dict) -> None:
-    """Atomic, flock-guarded state write. .orchestrator/state/<id>.json (gitignored)."""
-    STATE.mkdir(parents=True, exist_ok=True)
-    lock = STATE / ".lock"
+@contextlib.contextmanager
+def exclusive_lock(lock: Path):
+    """NON-REENTRANT: code inside it must not call anything that acquires the same lock (in particular
+    write_state()) and must keep using the unlocked writer (atomic_write)."""
+    lock.parent.mkdir(parents=True, exist_ok=True)
     with open(lock, "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
-            state = {**state, "updated": now()}
-            atomic_write(STATE / f"{spec_id}.json", json.dumps(state, indent=2))
+            yield
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def write_state(spec_id: str, state: dict) -> None:
+    """Atomic, flock-guarded state write. .orchestrator/state/<id>.json (gitignored)."""
+    with exclusive_lock(STATE / ".lock"):
+        state = {**state, "updated": now()}
+        atomic_write(STATE / f"{spec_id}.json", json.dumps(state, indent=2))
 
 
 def read_state(spec_id: str) -> dict | None:
@@ -998,40 +1005,34 @@ def claim_slot(spec_id: str, launching_state: dict) -> None:
       2. At most MAX_PARALLEL live attempts across all specs.
     Dies with exit 8 if either is violated. On success the durable 'launching' record exists
     before any unit starts (Appendix A: no untraceable launches)."""
-    STATE.mkdir(parents=True, exist_ok=True)
-    lock = STATE / ".lock"
-    with open(lock, "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            states = []
-            for p in STATE.glob("*.json"):
-                if p.name.endswith(".health.json"):
-                    continue  # advisory health snapshot, never attempt state (B10 round-2)
-                try:
-                    parsed = json.loads(p.read_text())
-                except Exception as e:
-                    # B10: a malformed canonical state file may BE a live attempt (truncated
-                    # write, mid-crash). Silently skipping it removes that attempt from the
-                    # same-spec and MAX_PARALLEL checks — fail the claim instead of guessing.
-                    die(f"state file {p} is unreadable ({e}); run `dispatch reconcile` — it "
-                        f"reports malformed state — and resolve it before launching (a "
-                        f"malformed live attempt must not vanish from concurrency checks).", 8)
-                if not isinstance(parsed, dict):
-                    die(f"state file {p} holds a non-object JSON value; run `dispatch "
-                        f"reconcile` and resolve it before launching (B10).", 8)
-                states.append(parsed)
-            live = [s for s in states if s.get("status") in LIVE]
-            same = [s.get("attempt_id") for s in live if s.get("spec_id") == spec_id]
-            if same:
-                die(f"{spec_id} already has a live attempt {same}; attempts of one spec are "
-                    f"sequential (its state file is per-spec).", 8)
-            if len(live) >= MAX_PARALLEL:
-                die(f"MAX_PARALLEL={MAX_PARALLEL} reached; live attempt(s): "
-                    f"{[s.get('attempt_id') for s in live]}.", 8)
-            atomic_write(STATE / f"{spec_id}.json",
-                         json.dumps({**launching_state, "updated": now()}, indent=2))
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    with exclusive_lock(STATE / ".lock"):
+        states = []
+        for p in STATE.glob("*.json"):
+            if p.name.endswith(".health.json"):
+                continue  # advisory health snapshot, never attempt state (B10 round-2)
+            try:
+                parsed = json.loads(p.read_text())
+            except Exception as e:
+                # B10: a malformed canonical state file may BE a live attempt (truncated
+                # write, mid-crash). Silently skipping it removes that attempt from the
+                # same-spec and MAX_PARALLEL checks — fail the claim instead of guessing.
+                die(f"state file {p} is unreadable ({e}); run `dispatch reconcile` — it "
+                    f"reports malformed state — and resolve it before launching (a "
+                    f"malformed live attempt must not vanish from concurrency checks).", 8)
+            if not isinstance(parsed, dict):
+                die(f"state file {p} holds a non-object JSON value; run `dispatch "
+                    f"reconcile` and resolve it before launching (B10).", 8)
+            states.append(parsed)
+        live = [s for s in states if s.get("status") in LIVE]
+        same = [s.get("attempt_id") for s in live if s.get("spec_id") == spec_id]
+        if same:
+            die(f"{spec_id} already has a live attempt {same}; attempts of one spec are "
+                f"sequential (its state file is per-spec).", 8)
+        if len(live) >= MAX_PARALLEL:
+            die(f"MAX_PARALLEL={MAX_PARALLEL} reached; live attempt(s): "
+                f"{[s.get('attempt_id') for s in live]}.", 8)
+        atomic_write(STATE / f"{spec_id}.json",
+                     json.dumps({**launching_state, "updated": now()}, indent=2))
 
 
 # ------------------------------------------------------- remediation (G4) ----
@@ -1901,7 +1902,6 @@ def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
     box_tests = [rel for rel in policy["required"]
                  if policy["modes"][rel] == "box-precondition"]
     lock = STATE / ".box-preconditions.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
     installed_commit = policy["installed_commit"]
     host_id = Path("/etc/machine-id").read_text().strip() if Path("/etc/machine-id").exists() else "unknown"
     boot_id = (Path("/proc/sys/kernel/random/boot_id").read_text().strip()
@@ -1910,8 +1910,7 @@ def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
     # (codex_runtime.sh) must get the root-owned runtime explicitly; absent runtime -> unset,
     # and the drill's own SKIP fails the gate closed exactly as before.
     test_rt = trusted_test_runtime()
-    with open(lock, "w") as lf, materialized_grader_tree(installed_commit, ROOT) as gtree:
-        fcntl.flock(lf, fcntl.LOCK_EX)
+    with materialized_grader_tree(installed_commit, ROOT) as gtree, exclusive_lock(lock):
         for rel in box_tests:
             before_commit = git("rev-parse", "HEAD", cwd=ROOT)
             before_manifest = hashlib.sha256(git_show_bytes(
@@ -1957,7 +1956,6 @@ def run_box_preconditions(att: Path, policy: dict) -> dict[str, list[dict]]:
             })
             atomic_write(att / "test-attestation.json",
                          json.dumps(attestation_record(policy, observations), indent=2))
-        fcntl.flock(lf, fcntl.LOCK_UN)
     return observations
 
 
@@ -2505,56 +2503,51 @@ def cmd_continue(attempt_id: str) -> None:
     # awaiting_build nothing can relabel the attempt terminal before the grading unit exists;
     # conversely a cancel that got the lock first already flipped the status and our verify
     # refuses. systemd-run under flock is milliseconds; correctness beats the stall.
-    STATE.mkdir(parents=True, exist_ok=True)
-    with open(STATE / ".lock", "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            st = read_state(spec_id) or {}
-            if st.get("attempt_id") != attempt_id or st.get("status") != "awaiting_build":
-                die(f"{attempt_id} is not awaiting a BUILD (state: "
-                    f"{st.get('status') if st.get('attempt_id') == attempt_id else 'foreign/absent'}); "
-                    f"continue grades exactly one finished subagent BUILD.", 8)
-            # B6: the grading unit's RuntimeMaxSec is the REMAINING time to the launch-frozen
-            # absolute deadline — the BUILD already spent its share. Exhausted ⇒ the addendum's
-            # terminal error_timeout (durable, TERMINAL), never a zero-ceiling unit.
-            outer_ceiling_s = remaining_ceiling_s(deadline_ts)
-            if outer_ceiling_s <= 0:
-                atomic_write(STATE / f"{spec_id}.json",
-                             json.dumps({**st, "status": "error_timeout",
-                                         "error_class": ERR_TIMEOUT,
-                                         "detail": "attempt deadline exhausted during the "
-                                                   "subagent BUILD (single absolute ceiling, "
-                                                   "B6); re-launch as a fresh attempt",
-                                         "updated": now()}, indent=2))
-                die("attempt deadline already exhausted before grading could start (B6)", 10)
-            # 'running' lands BEFORE the unit starts (the started _grade reads its own state and
-            # must see the claim, not race it); a failed start rolls the claim to error_launch —
-            # all under the same lock hold, so no observer sees a half-made claim.
+    with exclusive_lock(STATE / ".lock"):
+        st = read_state(spec_id) or {}
+        if st.get("attempt_id") != attempt_id or st.get("status") != "awaiting_build":
+            die(f"{attempt_id} is not awaiting a BUILD (state: "
+                f"{st.get('status') if st.get('attempt_id') == attempt_id else 'foreign/absent'}); "
+                f"continue grades exactly one finished subagent BUILD.", 8)
+        # B6: the grading unit's RuntimeMaxSec is the REMAINING time to the launch-frozen
+        # absolute deadline — the BUILD already spent its share. Exhausted ⇒ the addendum's
+        # terminal error_timeout (durable, TERMINAL), never a zero-ceiling unit.
+        outer_ceiling_s = remaining_ceiling_s(deadline_ts)
+        if outer_ceiling_s <= 0:
             atomic_write(STATE / f"{spec_id}.json",
-                         json.dumps({**st, "status": "running",
-                                     "detail": "grading (dispatch continue)",
+                         json.dumps({**st, "status": "error_timeout",
+                                     "error_class": ERR_TIMEOUT,
+                                     "detail": "attempt deadline exhausted during the "
+                                               "subagent BUILD (single absolute ceiling, "
+                                               "B6); re-launch as a fresh attempt",
                                      "updated": now()}, indent=2))
-            cmd = [
-                "systemd-run", "--user", f"--unit={unit}", "--collect",
-                f"--property=Description=Grade subagent attempt {attempt_id}",
-                f"--property=RuntimeMaxSec={outer_ceiling_s}",
-                f"--property=ExecStopPost={dispatch_bin} timeout {attempt_id}",
-                "--setenv=HOME=" + os.environ.get("HOME", str(OPERATOR_HOME)),
-                "--setenv=PATH=" + os.environ.get("PATH", "/usr/bin:/bin"),
-                "--setenv=XDG_RUNTIME_DIR=" + os.environ.get("XDG_RUNTIME_DIR", ""),
-                dispatch_bin, "_grade", attempt_id,
-            ]
-            cp = run(cmd)
-            if cp.returncode != 0:
-                atomic_write(STATE / f"{spec_id}.json",
-                             json.dumps({**st, "status": "error_launch",
-                                         "error_class": ERR_LAUNCH,
-                                         "detail": f"systemd-run failed starting the grading "
-                                                   f"unit: {cp.stderr.strip()}",
-                                         "updated": now()}, indent=2))
-                die(f"failed to start grading unit: {cp.stderr.strip()}", 10)
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+            die("attempt deadline already exhausted before grading could start (B6)", 10)
+        # 'running' lands BEFORE the unit starts (the started _grade reads its own state and
+        # must see the claim, not race it); a failed start rolls the claim to error_launch —
+        # all under the same lock hold, so no observer sees a half-made claim.
+        atomic_write(STATE / f"{spec_id}.json",
+                     json.dumps({**st, "status": "running",
+                                 "detail": "grading (dispatch continue)",
+                                 "updated": now()}, indent=2))
+        cmd = [
+            "systemd-run", "--user", f"--unit={unit}", "--collect",
+            f"--property=Description=Grade subagent attempt {attempt_id}",
+            f"--property=RuntimeMaxSec={outer_ceiling_s}",
+            f"--property=ExecStopPost={dispatch_bin} timeout {attempt_id}",
+            "--setenv=HOME=" + os.environ.get("HOME", str(OPERATOR_HOME)),
+            "--setenv=PATH=" + os.environ.get("PATH", "/usr/bin:/bin"),
+            "--setenv=XDG_RUNTIME_DIR=" + os.environ.get("XDG_RUNTIME_DIR", ""),
+            dispatch_bin, "_grade", attempt_id,
+        ]
+        cp = run(cmd)
+        if cp.returncode != 0:
+            atomic_write(STATE / f"{spec_id}.json",
+                         json.dumps({**st, "status": "error_launch",
+                                     "error_class": ERR_LAUNCH,
+                                     "detail": f"systemd-run failed starting the grading "
+                                               f"unit: {cp.stderr.strip()}",
+                                     "updated": now()}, indent=2))
+            die(f"failed to start grading unit: {cp.stderr.strip()}", 10)
     print(attempt_id)
 
 
@@ -3906,20 +3899,15 @@ def cmd_cancel(attempt_id: str) -> None:
     # first (continue then refuses; no unit ever existed — skip the outer-unit stop so the
     # teardown verifies clean) or continue won (we see 'running' and tear down normally).
     was_awaiting = False
-    STATE.mkdir(parents=True, exist_ok=True)
-    with open(STATE / ".lock", "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            st = read_state(spec_id) or {}
-            if st.get("attempt_id") == attempt_id and st.get("status") in LIVE:
-                was_awaiting = st.get("status") == "awaiting_build"
-                atomic_write(STATE / f"{spec_id}.json",
-                             json.dumps({**st, "status": "interrupted",
-                                         "error_class": "cancelled",
-                                         "detail": "cancelled by operator",
-                                         "updated": now()}, indent=2))
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    with exclusive_lock(STATE / ".lock"):
+        st = read_state(spec_id) or {}
+        if st.get("attempt_id") == attempt_id and st.get("status") in LIVE:
+            was_awaiting = st.get("status") == "awaiting_build"
+            atomic_write(STATE / f"{spec_id}.json",
+                         json.dumps({**st, "status": "interrupted",
+                                     "error_class": "cancelled",
+                                     "detail": "cancelled by operator",
+                                     "updated": now()}, indent=2))
     # B6: producer first, then slice, then verify. An awaiting_build attempt HAS no producer
     # unit by design — stopping the nonexistent unit would read as an unverifiable teardown
     # (round-3 rule: a failed outer stop gates verification), so the ordinary cancellation of a
@@ -4100,24 +4088,19 @@ def _locked_relabel(spec_id: str, snapshot: dict, new_fields: dict, recheck=None
     the unit is STILL gone), and only then write. `dispatch continue` holds this same lock across
     its claim-and-unit-start and cancel labels under it — so a reconcile relabel can no longer
     land on top of a claim or a cancellation it never saw; it skips and reports instead."""
-    STATE.mkdir(parents=True, exist_ok=True)
-    with open(STATE / ".lock", "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            cur = read_state(spec_id) or {}
-            if (cur.get("attempt_id") != snapshot.get("attempt_id")
-                    or cur.get("status") != snapshot.get("status")):
-                return False
-            if recheck is not None and not recheck():
-                return False
-            # Fields may be computed FROM the in-lock state (round-3 blocking 1: a detail
-            # append must concatenate onto what is canonical NOW, not a pre-lock capture).
-            fields = new_fields(cur) if callable(new_fields) else new_fields
-            atomic_write(STATE / f"{spec_id}.json",
-                         json.dumps({**cur, **fields, "updated": now()}, indent=2))
-            return True
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    with exclusive_lock(STATE / ".lock"):
+        cur = read_state(spec_id) or {}
+        if (cur.get("attempt_id") != snapshot.get("attempt_id")
+                or cur.get("status") != snapshot.get("status")):
+            return False
+        if recheck is not None and not recheck():
+            return False
+        # Fields may be computed FROM the in-lock state (round-3 blocking 1: a detail
+        # append must concatenate onto what is canonical NOW, not a pre-lock capture).
+        fields = new_fields(cur) if callable(new_fields) else new_fields
+        atomic_write(STATE / f"{spec_id}.json",
+                     json.dumps({**cur, **fields, "updated": now()}, indent=2))
+        return True
 
 
 def cmd_reconcile() -> None:
