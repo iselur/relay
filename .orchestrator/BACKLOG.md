@@ -42,19 +42,23 @@ knows them, accepts them, and does not want them built (2026-08-06). Do not re-a
   lifecycle-falsifier branch.
 - Measure whether review catches bugs: plant three known defects, count catches, size review scope from the result.
 - External benchmark score and cost reporting — after a real product exists.
-- R102 benchmark, STOPPED 2026-08-08 at the owner's word, unanswered. What one task actually showed
-  (`terminal-bench/fix-git`, 1 trial per row, `.orchestrator/evidence/R102/kill-test/`): vanilla
-  Codex passed for $0.0101 and vanilla Claude for $0.2253, the production pairing FAILED after five
-  review rounds and ~1.3M input tokens, and the same pairing with the review loop OFF passed in
-  149s. That is n=1 on one easy task; it is a reason to ask again, not an answer. Three things make
-  today's numbers unusable, and a rerun that skips them proves nothing:
-  - `scripts/r102_harness_agent.py` runs one more remediation after the last allowed REVISE and
-    hands that never-reviewed state to the grader, so the harness row is graded on an artifact the
-    real harness would block. Benchmark-only — production dispatch and review do not share it.
-  - harness `usage.jsonl` drops cache-creation and cache-read tokens and vendor cost, and Claude
-    roles record 1–7 input tokens. 90–96% of the vanilla prompt tokens are cache reads, so a dollar
-    comparison built on these fields is wrong, not noisy. Both vanilla totals reconstruct exactly
-    from retained evidence, so the missing rate sheet needs no paid probe.
+- R102 benchmark, STOPPED 2026-08-08 at the owner's word. One task, 1 trial per row
+  (`terminal-bench/fix-git`, `.orchestrator/evidence/R102/kill-test/`), costs reconstructed from the
+  retained raw role logs: vanilla Codex PASS $0.0101, vanilla Claude PASS $0.2253, harness with
+  review OFF PASS $0.0354, production pairing FAIL $0.3799.
+  - The production FAIL is a rig artifact, not a result. `scripts/r102_harness_agent.py:384` runs
+    every role but the worker through `_subprocess_run` on the host, so the reviewer never reached
+    the task container, and `_command` denies it every tool — one turn, zero tool calls, each round.
+    Asked to judge a container it could not see from the worker's prose alone, it never emitted PASS
+    (`_review_verdict` defaults to REVISE when neither token appears, and matches either anywhere in
+    the text), so five rounds of blind remediation churned the worktree until both graded hashes
+    missed. PASS was unreachable for that row. No trust-boundary breach: tools were denied and
+    `permission_denials` is empty in all five rounds. Before any rerun, put the reviewer in the
+    container or hand it the diff and test output. The same file also grades a never-reviewed
+    post-cap artifact; both bugs are benchmark-only — production dispatch and review do not share it.
+  - harness `usage.jsonl` keeps only plain input/output tokens, so Claude roles read as 1–7 input
+    tokens; cache tokens and vendor cost survive in the per-role logs, which is where the figures
+    above come from. Price from those, never from the manifest totals.
   - vanilla-kimi never started: `scripts/r102_tier_a.json:84` sends `kimi-k3` where Harbor's
     kimi-cli wants `provider/model_name`, and `kimi-code/k3` is already the alias in
     `scripts/models.json`. The owner does not need Kimi now (2026-08-08); one line restores it.
