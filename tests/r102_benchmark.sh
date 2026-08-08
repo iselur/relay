@@ -210,15 +210,24 @@ if trial_dir.is_dir():
     check("preflight embeds canonical rows", preflight_value["tier_a"] == canonical)
     check("preflight digest", Path(str(preflight) + ".sha256").read_text().strip() == digest(preflight))
 
+    decoy_dir = tmp / "decoy-bin"
+    decoy_dir.mkdir()
+    decoy_kimi = decoy_dir / "kimi"
+    decoy_kimi.write_text("#!/bin/sh\nprintf '%s\\n' 'kimi-decoy 0'\n")
+    decoy_kimi.chmod(0o755)
     kimi = bin_dir / "kimi"
     kimi_saved = kimi.read_bytes()
-    kimi.unlink()
+    kimi_mode = kimi.stat().st_mode & 0o7777
+    kimi.write_text("#!/bin/sh\nexit 127\n")
+    kimi.chmod(kimi_mode)
     missing_preflight = tmp / "preflight-missing.json"
-    result = run_cli("preflight", "--out", missing_preflight, env=test_env)
+    failed_probe_env = {**test_env, "PATH": os.pathsep.join(
+        (str(bin_dir), str(decoy_dir), os.environ["PATH"]))}
+    result = run_cli("preflight", "--out", missing_preflight, env=failed_probe_env)
     check("preflight records missing probe", result.returncode != 0 and
           json.loads(missing_preflight.read_text())["cli_versions"]["kimi"]["ok"] is False)
     kimi.write_bytes(kimi_saved)
-    kimi.chmod(0o755)
+    kimi.chmod(kimi_mode)
 
     task_manifest = tmp / "task.json"
     task_manifest.write_text(json.dumps({
