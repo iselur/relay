@@ -591,6 +591,14 @@ check("remediation prompt requires the approved scope",
       "Stay strictly within the approved scope." in prompt_with_remediation)
 check("remediation prompt offers the SPEC_BLOCKED escape",
       "report SPEC_BLOCKED." in prompt_with_remediation)
+check("remediation prompt says the worktree is at base with no previous changes",
+      "This attempt's worktree is checked out at the base branch and contains none of the previous attempt's changes;"
+      in prompt_with_remediation)
+check("remediation prompt requires the whole spec and its tests in this attempt",
+      "You must therefore deliver the whole spec again in this attempt, including its tests, with the listed findings fixed."
+      in prompt_with_remediation)
+check("remediation prompt removes the contradictory nothing-else restriction",
+      "nothing else" not in prompt_with_remediation)
 
 sys.exit(1 if fails else 0)
 PY
