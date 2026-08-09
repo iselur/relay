@@ -71,7 +71,7 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
   was shown; moved code means a fresh review.
 - Owner credentials stay inside the orchestrator trust domain; external-CLI workers cannot reach
   the owner's home. Known gaps are in SECURITY.md. Never claim more protection than tests prove.
-- Sessions run `vigil check` on start and `vigil claim <id>` on taking a ledger entry; the hourly vigil watchdog (R123) alerts the owner and auto-resumes dead owning sessions — two strikes, then quarantine.
+- Sessions run `vigil check` on start and `vigil claim <id>` on taking a ledger entry; the hourly vigil watchdog (R123) alerts the owner and auto-resumes dead owning sessions — two strikes, then quarantine. A session blocked on an owner decision runs `vigil blocked <id> "<ask>" --recommend <answer> --by <time>` and, if unanswered by the deadline, proceeds with its stated recommendation (owner grant 2026-08-09).
 - Stop a job with `dispatch cancel`, never by killing a process number — that once killed the
   wrong thing. Interrupted work restarts as a fresh attempt; never finish it by hand.
 - Under an autonomy grant the orchestrator finishes the job itself instead of pausing for owner
