@@ -1,8 +1,7 @@
 # AGENTS.md — conventions and commands
 
-**Before any work read and follow [CLAUDE.md](CLAUDE.md): the whole operating rulebook, binding on you,
-and no CLI loads it for you.** Its rules are in ROLES; humans read the role table here, machines read
-`scripts/models.json` — a model swap is one edit there, never the rulebook, plus its vendor_map line.
+**Before any work read and follow [CLAUDE.md](CLAUDE.md): the whole operating rulebook, binding on you, and no
+CLI loads it for you.** Humans read the role table here; machines read `scripts/models.json` — a model swap is one edit there (plus its vendor_map line), never the rulebook.
 
 ## Who plays which role (today)
 
@@ -13,18 +12,15 @@ and no CLI loads it for you.** Its rules are in ROLES; humans read the role tabl
 | worker | per `scripts/models.json`: Codex CLI (`gpt-5.6-luna`) detached, or a Claude subagent in-session | BUILD phase; a subagent BUILD is graded by `dispatch continue` |
 | reviewer | per `scripts/models.json` (bound reviewer) | never reviews its own work |
 
-Bound reviewer retirement: a retired reviewer model fails its review fail-closed; the owner flips
-`scripts/models.json` by hand (owner decision 2026-07-17 — no automated failover).
+Bound reviewer retirement: reviews fail closed; the owner flips `scripts/models.json` by hand (owner decision 2026-07-17 — no automated failover).
 
 ## What this repo is
 
-An orchestrator that dispatches worker jobs from schema-validated specs, checks the output (work
-untouched → in scope → tests actually ran → bound review), and opens PRs the owner merges.
+An orchestrator that dispatches worker jobs from schema-validated specs, checks the output (work untouched → in scope → tests actually ran → bound review), and opens PRs the owner merges.
 
 ## Stack
 
-- **Dispatcher:** Python 3 (`scripts/dispatch.py`), venv in `.venv/` (gitignored), deps pinned in
-  `scripts/requirements.txt`. Thin bash wrapper `scripts/dispatch`.
+- **Dispatcher:** Python 3 (`scripts/dispatch.py`), venv in `.venv/` (gitignored), deps pinned in `scripts/requirements.txt`; thin bash wrapper `scripts/dispatch`.
 - **Repo tests / CI:** bash. The test command is `./scripts/test` (runs `tests/*.sh`); the CI job
   is named exactly `ci` (required check on `main` and `ready-for-main` — never rename or add a matrix).
 
@@ -70,6 +66,5 @@ block. Write for a reader with no context: plain English, no bare file names, al
 Claude Code loads these rules from `.claude/output-styles/bluf.md` via `.claude/settings.json`; it never reads this file, Codex only does.
 
 ## When idle (owner grant 2026-08-09)
-No open ledger work → check `.orchestrator/BACKLOG.md`; parked items stay parked (owner's word).
-Send one `vigil ask` naming the parked items and up to three proposed builds, then stop: an idle
-agent asks for work — it does not invent authority.
+No open ledger work → check `.orchestrator/BACKLOG.md`; parked items stay parked (owner's word). Send one
+`vigil ask` naming the parked items and up to three proposed builds, then stop: an idle agent asks for work — it does not invent authority.
