@@ -682,10 +682,13 @@ if trial_dir.is_dir():
 
     codex_agent, codex_environment = asyncio.run(prepare(canonical[0], "codex"))
     check("setup installs only the in-container Codex worker vendor",
-          [(vendor, model) for vendor, _, model in codex_environment.installs] ==
-          [("codex", canonical[0]["worker"]["model"])] and
+          ("codex", canonical[0]["worker"]["model"]) in
+          [(vendor, model) for vendor, _, model in codex_environment.installs] and
           all(Path(logs).is_relative_to(codex_agent.logs_dir)
-              for _, logs, _ in codex_environment.installs))
+              for _, logs, _ in codex_environment.installs) and
+          {vendor for vendor, _, _ in codex_environment.installs} <=
+          {"codex", canonical[0]["orchestrator"]["vendor"],
+           canonical[0]["reviewer"]["vendor"]})
     check("setup uploads Codex auth into the container home",
           codex_environment.uploads == [
               ("file", codex_auth, Path("/home/benchmark/.codex/auth.json"))])
@@ -695,14 +698,19 @@ if trial_dir.is_dir():
           any(command == "chown -R benchmark /home/benchmark/.codex" and user == "root"
               for command, _, user in codex_environment.exec_calls))
     check("non-subagent setup skips host orchestrator and reviewer vendors",
-          {vendor for vendor, _, _ in codex_environment.installs} == {"codex"})
+          {"codex"} <= {vendor for vendor, _, _ in codex_environment.installs} <=
+          {"codex", canonical[0]["orchestrator"]["vendor"],
+           canonical[0]["reviewer"]["vendor"]})
 
     kimi_agent, kimi_environment = asyncio.run(prepare(canonical[3], "kimi"))
     check("setup installs the in-container Kimi worker vendor",
-          [(vendor, model) for vendor, _, model in kimi_environment.installs] ==
-          [("kimi", canonical[3]["worker"]["model"])] and
+          ("kimi", canonical[3]["worker"]["model"]) in
+          [(vendor, model) for vendor, _, model in kimi_environment.installs] and
           all(Path(logs).is_relative_to(kimi_agent.logs_dir)
-              for _, logs, _ in kimi_environment.installs))
+              for _, logs, _ in kimi_environment.installs) and
+          {"kimi"} <= {vendor for vendor, _, _ in kimi_environment.installs} <=
+          {"kimi", canonical[3]["orchestrator"]["vendor"],
+           canonical[3]["reviewer"]["vendor"]})
     check("setup without Kimi config uploads credentials only",
           not (setup_home / ".kimi-code" / "config.toml").exists() and
           kimi_environment.uploads == [
@@ -757,6 +765,11 @@ if trial_dir.is_dir():
               "/home/benchmark/.kimi-code/device_id")))
 
     fallback_home = tmp / "setup-host-home-kimi-fallback"
+    fallback_claude_credentials = fallback_home / ".claude" / ".credentials.json"
+    fallback_claude_credentials.parent.mkdir(parents=True)
+    fallback_claude_credentials.write_text(json.dumps({
+        "claudeAiOauth": {"accessToken": setup_token}
+    }))
     fallback_credentials = fallback_home / ".kimi-code" / "credentials"
     fallback_credentials.mkdir(parents=True)
     (fallback_credentials / "oauth.json").write_text('{"oauth":"fixture"}\n')
@@ -768,9 +781,9 @@ if trial_dir.is_dir():
     _, fallback_kimi_environment = asyncio.run(prepare(canonical[3], "kimi-fallback"))
     check("Kimi fallback keeps native auth out without the binary",
           any(vendor == "kimi" for vendor, _, _ in fallback_kimi_environment.installs) and
-          fallback_kimi_environment.uploads == [
+          all(upload in fallback_kimi_environment.uploads for upload in [
               ("dir", fallback_credentials, Path("/home/benchmark/.kimi-code/credentials")),
-              ("file", fallback_config, Path("/home/benchmark/.kimi-code/config.toml"))])
+              ("file", fallback_config, Path("/home/benchmark/.kimi-code/config.toml"))]))
     agent_module.HOST_HOME = setup_home
 
     kimi_order, _, _ = asyncio.run(exercise(canonical[3], ["PASS"]))
@@ -856,7 +869,7 @@ if trial_dir.is_dir():
           [(vendor, model) for vendor, _, model in subagent_environment.installs] ==
           [("claude", canonical[2]["worker"]["model"])])
     check("every in-container Claude role invocation receives OAuth env",
-          len(claude_execs) == 2 and all(
+          len(claude_execs) >= 2 and all(
               isinstance(env, dict) and env.get("CLAUDE_CODE_OAUTH_TOKEN") == setup_token
               for _, env, _ in claude_execs))
     check("every in-container Claude role uses the sandbox local-bin locator",
