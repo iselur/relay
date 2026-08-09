@@ -258,10 +258,10 @@ assert_file "$run_dir/PLAN-012.stdout"   # the refused oversized default retaine
 # under it. Every fixture below is a way the first (substring-scan) version of this check was
 # fooled. Each valid brief fixture is padded to an exact line count so the 400/401 boundary is
 # tested for real — the earlier version tested 399 and called it 400.
-sections=(Outcome "Scope and non-goals" "Frozen decisions" Assumptions "Earliest falsifiable proof" \
-          Slices Gates Verification Rollback Deferred "Definition of done")
-valid_brief() { # $1 = total line count (>= 22: eleven headings + one content line each)
-  local n=$1 filler=$(( $1 - 22 )) out=""
+sections=(Outcome "Scope and non-goals" "Frozen decisions" Assumptions "Minimal existing path" \
+          "Earliest falsifiable proof" Slices Gates Verification Rollback Deferred "Definition of done")
+valid_brief() { # $1 = total line count (>= 24: twelve headings + one content line each)
+  local n=$1 filler=$(( $1 - 24 )) out=""
   for s in "${sections[@]}"; do out+="## $s"$'\n'"content for $s"$'\n'; done
   ((filler > 0)) && out+="$(body "$filler")"$'\n'
   printf '%s' "${out%$'\n'}"
@@ -277,9 +277,9 @@ for suffix in '' $'\n'; do
   [ "$(try_brief "$(valid_brief 401)$suffix")" = refused ] || fail "a 401-line brief was accepted (cap is 400)"
 done
 
-# Structure, not substrings: each of these contains all eleven heading strings and must still fail.
+# Structure, not substrings: each of these contains all twelve heading strings and must still fail.
 all_on_one_line=""; for s in "${sections[@]}"; do all_on_one_line+="## $s "; done
-[ "$(try_brief "$all_on_one_line")" = refused ] || fail "eleven headings crammed on ONE line were accepted as a brief"
+[ "$(try_brief "$all_on_one_line")" = refused ] || fail "twelve headings crammed on ONE line were accepted as a brief"
 
 fenced=$'```\n'"$(valid_brief 30)"$'\n```\nprose'
 [ "$(try_brief "$fenced")" = refused ] || fail "headings inside a code fence were accepted as real sections"
@@ -290,7 +290,8 @@ done
 [ "$(try_brief "$empty_section")" = refused ] || fail "a brief with an EMPTY '## Gates' section was accepted"
 
 out_of_order=""; for s in "Scope and non-goals" Outcome "Frozen decisions" Assumptions \
-    "Earliest falsifiable proof" Slices Gates Verification Rollback Deferred "Definition of done"; do
+    "Minimal existing path" "Earliest falsifiable proof" Slices Gates Verification Rollback Deferred \
+    "Definition of done"; do
   out_of_order+="## $s"$'\n'"content"$'\n'
 done
 [ "$(try_brief "$out_of_order")" = refused ] || fail "out-of-order sections were accepted"
@@ -307,6 +308,12 @@ duplicated="$(valid_brief 30)"$'\n## Outcome\na second, contradictory outcome'
 
 # The brief prompt must actually ask for the anatomy — the cap alone does not make a brief a brief.
 grep -qi 'earliest falsifiable' "$prompt_file" || fail "brief prompt missing the falsifiable-proof section"
+# The minimal-existing-path gate is worthless as a bare heading: the prompt must demand the run's
+# own evidence, or an author can assert insufficiency with nothing a reviewer can re-run.
+grep -qi 'minimal existing path' "$prompt_file" || fail "brief prompt missing the minimal-existing-path section"
+for demanded in argv 'installed commit' digest 'exit status'; do
+  grep -qi "$demanded" "$prompt_file" || fail "brief prompt does not demand $demanded for the minimal existing path"
+done
 grep -qi 'independently shippable' "$prompt_file" || fail "brief prompt missing the slices section"
 
 # --- the regression the stdin fix exists for ----------------------------------------------------

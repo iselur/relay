@@ -152,6 +152,7 @@ and put real content under each — a heading with filler is worse than none:
 ## Scope and non-goals
 ## Frozen decisions
 ## Assumptions
+## Minimal existing path
 ## Earliest falsifiable proof
 ## Slices
 ## Gates
@@ -167,6 +168,12 @@ Rules for the content:
   condition under which it may be reopened. A technical assumption is never
   frozen — it goes under Assumptions with the evidence for it, or into a step
   that verifies it.
+- Minimal existing path: the command built from installed code that comes closest
+  to the Definition of done, run for real, recorded as its exact argv, the
+  installed commit it ran at, a digest of every input it consumed, its exit status,
+  and its COMPLETE output — then the one thing that output does not give you. If it
+  gives you everything, no build is authorized: say so and stop. An authentication
+  or environment failure is not an insufficiency; fix it and re-run.
 - Earliest falsifiable proof: the smallest end-to-end run that would prove this
   whole approach wrong, done FIRST, before anything is built around it.
 - Slices: an ordered list of independently shippable increments — one PR each —

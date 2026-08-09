@@ -41,10 +41,10 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
 7. **Maximal delegation:** the orchestrator delegates every delegable task to a worker by default; what a worker cannot take for architectural reasons (it needs the
    orchestrator's harness) goes to parallel subagents in isolated worktrees, several at once when the pieces are independent; the orchestrator works directly only on
    its own tasks (dispatch, review, the trust boundary). Nothing reviews its own context's work — separate instances, even of the same model, may review each other (owner, 2026-08-06); the owner sets worker and reviewer models and vendors in scripts/models.json.
-8. **Code discipline:** the simplest, cleanest solution that works, held to a deletion test at brief and
-   diff review: anything the approved outcome, existing external contracts, and named safety invariants
-   can be met at least as simply without is omitted — tests, symmetry, or hypothetical future consumers
-   never establish need. Diffs are surgical: touch no adjacent code, comments, or formatting; match existing style; remove only what your change orphaned.
+8. **Code discipline:** the simplest, cleanest solution that works, held to a deletion test before a spec exists — name what the definition of done
+   needs that installed code cannot do; nothing means no spec — and again at brief and diff review: anything the approved outcome, existing external
+   contracts, and named safety invariants can be met at least as simply without is omitted — tests, symmetry, or hypothetical future consumers never
+   establish need. Diffs are surgical: touch no adjacent code, comments, or formatting; match existing style; remove only what your change orphaned.
 9. **Failure discipline:** on a failure, search the web with the literal error text — secrets,
    tokens, and personal data redacted first — before the first retry; read the whole error and
    log it under the same redaction; change one variable, and never queue work behind a blocked

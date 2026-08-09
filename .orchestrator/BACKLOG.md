@@ -66,3 +66,10 @@ knows them, accepts them, and does not want them built (2026-08-06). Do not re-a
   relying partly on a source-marker grep (harness-spec-command-evidence round 1, PASS backlog note).
 - Relax scripts/review's model-level self-review refusal to instance/context level to match
   CLAUDE.md rule 7 (owner, 2026-08-06) — stricter-than-rule today, safe to keep until needed.
+- Reviewer-driven scope growth burned ~6 R122 attempts (SPEC-067 rounds 2/3 demanded a state-gated
+  grading contract; 074-3 test-rigor maximalism). First step is evidence, not machinery: read those
+  review texts against the REVIEW-FRAMING REVISE bar and decide whether the reviewer overreached or
+  the orchestrator over-complied (R127, 2026-08-09).
+- Launch-time fence against concurrent HEAD moves: 3 R122 attempts died this way and the personal
+  rule written for it was broken by its author the same day. Deferred because R127's M3 turns the
+  failure into a re-run, not a dead spec (R127, 2026-08-09).
