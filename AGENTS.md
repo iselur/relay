@@ -35,6 +35,8 @@ An orchestrator that dispatches worker jobs from schema-validated specs, checks 
   Proof: `tests/worker_isolation.sh`, `tests/worker_userns.sh`. Subagent workers: SECURITY.md.
 - Evidence: per-attempt under `.orchestrator/attempts/<id>/<n>/`, untracked (gitignored). It is
   an on-box audit record (see SECURITY.md), not immutable and not repo content.
+- Idle (owner grant 2026-08-09): no open ledger work → check `.orchestrator/BACKLOG.md`; parked items stay
+  parked. Send one `vigil ask` naming the parked items and up to three proposed builds, then stop — an idle agent asks for work, it does not invent authority.
 
 ## Codex on this box
 
@@ -65,6 +67,3 @@ none). A failure gets the same block, failure as the bottom line. A question is 
 block. Write for a reader with no context: plain English, no bare file names, always the so-what.
 Claude Code loads these rules from `.claude/output-styles/bluf.md` via `.claude/settings.json`; it never reads this file, Codex only does.
 
-## When idle (owner grant 2026-08-09)
-No open ledger work → check `.orchestrator/BACKLOG.md`; parked items stay parked (owner's word). Send one
-`vigil ask` naming the parked items and up to three proposed builds, then stop: an idle agent asks for work — it does not invent authority.
