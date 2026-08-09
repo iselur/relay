@@ -5,9 +5,10 @@
 # loop. Only round-N.md files are rounds: sibling artifacts (dispositions, notes) never count.
 #
 # The reviewer this script invokes is the orchestrator_artifact_reviewer model in models.json; it
-# may review anything its own model did not author (see the model-level rule below).
+# may review anything with a RECORDED author model — its own model included, since every invocation
+# is a fresh instance (rule 7) — and refuses the whole vendor where no author model is on record.
 # B18: --author is NOT trusted as an assertion — a caller could mislabel a Codex-authored artifact
-# as --author claude and get it routed to a Codex reviewer, which is exactly self-review. So
+# as --author claude and get it routed past the vendor refusal on the caller's word alone. So
 # authorship is DERIVED from provenance this repo's dispatcher (scripts/dispatch.py) and
 # scripts/codex-plan already record on disk, which a CLI flag cannot forge:
 #   - a --context file under .orchestrator/attempts/<spec>/<n>/ is classified from THAT attempt's
