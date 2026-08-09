@@ -97,12 +97,12 @@ proves them), **configured assumptions** (set up outside this repo, verified man
    mount is accepted for sources proven writable only by root/operator.
 
 8. **`scripts/review`'s self-review refusal rests on a DERIVED author, not an authenticated one.**
-   Three fail-OPEN holes: a worker worktree is classified `codex` by path alone, so a Claude or Kimi
-   reviewer can be handed an artifact of its own vendor; the refusal is model-level, so `codex-plan`'s
-   `author_model:` stamp — the author's own word — is what lets one vendor hold both roles; and an
-   artifact with no recorded provenance falls back to the `--author` flag, so an orchestrator of any
-   vendor can understate its own draft (a fallback carries no model, so the asserted vendor is
-   refused whole). All three close with a digest-bound receipt written at dispatch, not by the author.
+   The rule is instance-level (rule 7; owner 2026-08-09): a fresh reviewer instance may share the
+   author's model, so a forged `author_model:` stamp no longer changes who may review — the residual
+   holes are classification, not pairing: a worker worktree is classified `codex` by path alone, and
+   an artifact with no recorded provenance falls back to the `--author` flag, so an orchestrator of
+   any vendor can understate its own draft (a fallback carries no model, so the asserted vendor is
+   refused whole). Both close with a digest-bound receipt written at dispatch, not by the author.
 
 ## Scope
 
