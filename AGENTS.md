@@ -66,4 +66,3 @@ the task with only this block — **Bottom line** (one sentence), **Changed** (f
 none). A failure gets the same block, failure as the bottom line. A question is not a task: one sentence, no
 block. Write for a reader with no context: plain English, no bare file names, always the so-what.
 Claude Code loads these rules from `.claude/output-styles/bluf.md` via `.claude/settings.json`; it never reads this file, Codex only does.
-
