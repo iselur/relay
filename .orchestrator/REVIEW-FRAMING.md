@@ -41,4 +41,4 @@ the simpler version; a vague "could be simpler" goes to the backlog. Every block
 must name the affected code, a credible consequence, and the needed change.
 Backlog: stylistic preferences, optional refactors, speculative peer behavior, defense
 against implausible conditions, low-impact edge cases.
-For plan reviews: a Minimal existing path with no command, or one whose command has no pasted argv, commit, input digests, exit status and complete output, is a FAIL.
+For plan reviews: the Minimal existing path must name a command and paste its argv, installed commit, input digests, exit status and complete output — any one of those missing is a FAIL.

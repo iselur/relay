@@ -302,6 +302,14 @@ near_miss="$(valid_brief 30)"; near_miss="${near_miss/'## Outcome'/'## Outcomes'
 missing="$(valid_brief 30)"; missing="${missing/'## Earliest falsifiable proof'/'## Notes'}"
 [ "$(try_brief "$missing")" = refused ] || fail "a brief with no 'Earliest falsifiable proof' section was accepted"
 
+# The gate that exists to stop a program being built over installed code must itself be refused when
+# absent — a heading the parser does not require is advice, not a gate (slice1-diff review round 1).
+no_mep="$(valid_brief 30)"; no_mep="${no_mep/'## Minimal existing path'/'## Notes'}"
+[ "$(try_brief "$no_mep")" = refused ] || fail "a brief with no 'Minimal existing path' section was accepted"
+empty_mep="${no_mep/'## Notes'$'\n'/'## Minimal existing path'$'\n'}"
+empty_mep="${empty_mep/'content for Minimal existing path'/}"
+[ "$(try_brief "$empty_mep")" = refused ] || fail "an EMPTY '## Minimal existing path' section was accepted"
+
 # A required heading twice = two answers to the same question, and nothing says which one binds.
 duplicated="$(valid_brief 30)"$'\n## Outcome\na second, contradictory outcome'
 [ "$(try_brief "$duplicated")" = refused ] || fail "a brief with TWO '## Outcome' sections was accepted"
@@ -311,7 +319,7 @@ grep -qi 'earliest falsifiable' "$prompt_file" || fail "brief prompt missing the
 # The minimal-existing-path gate is worthless as a bare heading: the prompt must demand the run's
 # own evidence, or an author can assert insufficiency with nothing a reviewer can re-run.
 grep -qi 'minimal existing path' "$prompt_file" || fail "brief prompt missing the minimal-existing-path section"
-for demanded in argv 'installed commit' digest 'exit status'; do
+for demanded in argv 'installed commit' digest 'exit status' 'COMPLETE output'; do
   grep -qi "$demanded" "$prompt_file" || fail "brief prompt does not demand $demanded for the minimal existing path"
 done
 grep -qi 'independently shippable' "$prompt_file" || fail "brief prompt missing the slices section"

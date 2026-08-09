@@ -70,6 +70,3 @@ knows them, accepts them, and does not want them built (2026-08-06). Do not re-a
   grading contract; 074-3 test-rigor maximalism). First step is evidence, not machinery: read those
   review texts against the REVIEW-FRAMING REVISE bar and decide whether the reviewer overreached or
   the orchestrator over-complied (R127, 2026-08-09).
-- Launch-time fence against concurrent HEAD moves: 3 R122 attempts died this way and the personal
-  rule written for it was broken by its author the same day. Deferred because R127's M3 turns the
-  failure into a re-run, not a dead spec (R127, 2026-08-09).

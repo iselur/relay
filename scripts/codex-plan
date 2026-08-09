@@ -18,8 +18,9 @@ no flag is given.
               trust-boundary/high-risk work, a migration, or
               an architecture decision across components
 A full brief must contain every anatomy section (checked below): outcome, scope
-and non-goals, frozen decisions, assumptions, the earliest falsifiable proof,
-slices, gates, verification, rollback, deferred, definition of done.
+and non-goals, frozen decisions, assumptions, the minimal existing path, the
+earliest falsifiable proof, slices, gates, verification, rollback, deferred,
+definition of done.
 
 Supply TASK as arguments or, when no task argument is given, on standard input.
 EOF
@@ -270,7 +271,7 @@ fi
 if [[ "$tier" == "brief" ]]; then
   if ! awk -v out="$stdout_path" '
     BEGIN {
-      n = split("Outcome|Scope and non-goals|Frozen decisions|Assumptions|Earliest falsifiable proof|Slices|Gates|Verification|Rollback|Deferred|Definition of done", want, "|")
+      n = split("Outcome|Scope and non-goals|Frozen decisions|Assumptions|Minimal existing path|Earliest falsifiable proof|Slices|Gates|Verification|Rollback|Deferred|Definition of done", want, "|")
       for (i = 1; i <= n; i++) required[tolower(want[i])] = 1
       next_want = 1; fence = 0
     }
