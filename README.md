@@ -23,7 +23,9 @@ answered by exactly one revision.
 ## The machinery that makes it hold
 
 **Specs bind.** A spec is schema-validated and digest-bound, and high-risk work needs an approval
-file the orchestrator cannot write for itself. Editing the spec voids the approval.
+file the orchestrator is forbidden to write for itself. Editing the spec voids the approval. That
+prohibition is a rule with an audit trail, not something the filesystem enforces: software running
+in the owner's own context can write one, and `SECURITY.md` says so.
 
 **Workers are isolated, and how much depends on which kind.** Every worker builds in its own git
 worktree, never your working tree. A worker driven through an external CLI runs as a separate
@@ -35,13 +37,17 @@ which guarantee applies where, and what is still open.
 failed: grading runs the tests as the repository has them, against the worker's exact commit, and
 refuses to grade at all if the tree it is grading has drifted.
 
-**Verdicts are structured, validated, and narrow.** A review returns JSON checked against a
-pinned schema — a reviewer that emits prose and no verdict is not a pass. The verdict binds only
-the exact code it was shown; moved code means a fresh review.
+**The review that gates a worker's diff is structured and narrow.** It returns JSON checked
+against a pinned schema, so a reviewer that emits prose and no verdict cannot pass anything, and
+the verdict binds only the exact code it was shown — moved code means a fresh review. Reviews of
+plans and other artefacts are prose by design and carry no such validation; they inform a
+decision rather than gate a merge.
 
-**Nothing reviews its own work.** Review is routed to a different instance, and by default a
-different vendor, from the one that produced the artifact. The rule is enforced by the review
-tool, not by convention.
+**Nothing reviews its own work.** A review always runs in a fresh instance, never the one that
+produced the work, and the review tool refuses outright any artefact its own model is recorded as
+having authored. Whether the reviewer is a different vendor from the worker is your configuration
+choice in `scripts/models.json`, not a property of the harness; instance separation rests on that
+fresh invocation rather than on a per-artefact proof.
 
 **Failure has a budget.** Attempts against one spec are capped. A spec that fails structurally
 stops rather than looping, and an escalation carries the finding rather than the symptom. Review
