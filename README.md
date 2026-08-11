@@ -40,14 +40,16 @@ refuses to grade at all if the tree it is grading has drifted.
 **The review that gates a worker's diff is structured and narrow.** It returns JSON checked
 against a pinned schema, so a reviewer that emits prose and no verdict cannot pass anything, and
 the verdict binds only the exact code it was shown — moved code means a fresh review. Reviews of
-plans and other artefacts are prose by design and carry no such validation; they inform a
-decision rather than gate a merge.
+plans and of a promotion are prose and carry no such validation, even though the rules do gate on
+them: a plan leaves plan mode only after its review is answered, and promotion to `main` requires
+a binding PASS on that exact diff.
 
 **Nothing reviews its own work.** A review always runs in a fresh instance, never the one that
-produced the work, and the review tool refuses outright any artefact its own model is recorded as
-having authored. Whether the reviewer is a different vendor from the worker is your configuration
-choice in `scripts/models.json`, not a property of the harness; instance separation rests on that
-fresh invocation rather than on a per-artefact proof.
+produced the work. Where the author's model is on record, that fresh instance may share it — the
+separation is between instances, not between models. What the tool refuses outright is the case it
+cannot decide: an artefact whose provenance shows only the reviewer's own vendor with no author
+model recorded. Whether reviewer and worker are different vendors at all is your configuration
+choice in `scripts/models.json`, not a property of the harness.
 
 **Failure has a budget.** Attempts against one spec are capped. A spec that fails structurally
 stops rather than looping, and an escalation carries the finding rather than the symptom. Review
