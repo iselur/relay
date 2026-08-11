@@ -29,9 +29,12 @@ in the owner's own context can write one, and `SECURITY.md` says so.
 
 **Workers are isolated, and how much depends on which kind.** Every worker builds in its own git
 worktree, never your working tree. A worker driven through an external CLI runs as a separate
-operating-system identity that cannot reach the owner's home directory or credentials; a subagent
-worker runs inside the orchestrator's own session and shares its trust domain. `SECURITY.md` says
-which guarantee applies where, and what is still open.
+operating-system identity, and a test asserts it cannot traverse the owner's home directory or
+read the credential files there. That is narrower than "workers have no credentials", which is
+not true and is not claimed: one vendor's setup stages a copy of a login inside the worker's own
+home. A subagent worker is outside all of this by design — it runs inside the orchestrator's own
+session and shares its trust domain. `SECURITY.md` says which guarantee applies where, and what
+is still open.
 
 **The grader restores the installed tests.** A worker cannot pass by rewriting the assertion it
 failed: grading runs the tests as the repository has them, against the worker's exact commit, and
