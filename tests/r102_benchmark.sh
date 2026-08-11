@@ -641,7 +641,7 @@ if trial_dir.is_dir():
     orchestrator_evidence = context.metadata["r102"]["orchestrator_evidence"]
     check("agent orchestrator evidence", isinstance(orchestrator_evidence, dict) and
           orchestrator_evidence.get("vendor") == "claude" and
-          orchestrator_evidence.get("model") == "claude-opus-4-8" and
+          orchestrator_evidence.get("model") == "claude-opus-5" and
           orchestrator_evidence.get("log") == "orchestrator-round-0.log")
     codex_locator = "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
     check("in-container Codex worker uses the nvm locator",
