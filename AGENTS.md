@@ -40,7 +40,7 @@ An orchestrator that dispatches worker jobs from schema-validated specs, checks 
 
 ## Codex on this box
 
-- Model split (`scripts/models.json`): worker BUILD `gpt-5.6-luna`; plans `gpt-5.6-sol`; artifact reviews `gpt-5.6-luna` — never the plan author's model, or every plan is refused.
+- Model split (`scripts/models.json`): worker BUILD `gpt-5.6-luna`; plans `gpt-5.6-sol`; artifact reviews `gpt-5.6-sol` — same model as the plan author is allowed: a review is always a fresh instance (rule 7; owner 2026-08-09).
 - Invocation: `codex exec -m <model per split above> -c model_reasoning_effort=high
   --sandbox read-only --skip-git-repo-check - <prompt.txt` — prompt on stdin always (argv dies
   over 130KB). Web search: `-c tools.web_search=true`. Standard tier: never set `service_tier` (owner cost decision 2026-07-16).
@@ -50,10 +50,10 @@ An orchestrator that dispatches worker jobs from schema-validated specs, checks 
   `bwrap: loopback: Failed RTM_NEWADDR`; proof: `tests/worker_userns.sh`). Inlining context is a
   choice now, not a requirement — the bound reviewer still gets spec + diff + evidence only, never
   a live checkout. The final answer is recoverable from the `--json` stream (last `agent_message`).
-- **Orchestrator artifacts** go through `scripts/review`: it refuses the reviewer's own recorded author
-  model, and the whole vendor where none is recorded — there `--author` IS that unauthenticated vendor,
-  elsewhere only a cross-check (SECURITY.md gap 8). Worker diffs go to the bound reviewer in
-  `scripts/models.json`; both are model-level. Five rounds each; a sixth is refused.
+- **Orchestrator artifacts** go through `scripts/review`: a recorded author model may match the
+  reviewer's (fresh instance, rule 7); the whole vendor is refused where none is recorded — there
+  `--author` IS that unauthenticated vendor, elsewhere only a cross-check (SECURITY.md gap 8). Worker
+  diffs go to the bound reviewer in `scripts/models.json` (model-level). Five rounds each; a sixth is refused.
 - Plans go through `scripts/codex-plan --brief` (cap 400; refuses a brief missing any required
   section); the no-flag standard tier remains usable. Trigger: CLAUDE.md rule 5.
 

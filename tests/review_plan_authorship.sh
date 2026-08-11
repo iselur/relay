@@ -5,9 +5,9 @@
 # (1) Plan authorship derives from the .md frontmatter's author_model via the models.json
 #     vendor_map — spec_author is a ROLE, not a vendor, so the old unconditional-codex namespace
 #     rule would misclassify the moment the owner flips roles.spec_author in models.json. A
-#     Claude-authored plan proceeds to Codex review; a Sol-authored plan is still refused as
-#     self-review (exit 4); broken provenance (missing sibling .md, missing frontmatter, an
-#     unmapped model) is refused outright, never guessed.
+#     Claude-authored plan proceeds to Codex review; a Sol-authored plan runs under a Sol reviewer
+#     (instance-level rule 7, owner 2026-08-09); broken provenance (missing sibling .md, missing
+#     frontmatter, an unmapped model) is refused outright, never guessed.
 # (2) Review round dirs BIND to the artifact identity: a PLAN-NNN context forces --topic plan-nnn,
 #     so a renamed topic can no longer mint a fresh directory and reset the 5-round cap.
 set -uo pipefail
@@ -25,8 +25,8 @@ cp -p scripts/vendor_adapters.py "$tmp/repo/scripts/vendor_adapters.py"
 cp -p scripts/models.json "$tmp/repo/scripts/models.json"
 cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
 chmod u+w "$tmp/repo/scripts/models.json"
-# The self-review gate compares author MODEL with reviewer model, so the sol fixtures below only
-# exercise it while the reviewer IS the sol model. Pin it rather than inherit the owner's config.
+# The sol fixtures below prove the same-model PROCEED arm, which only means anything while the
+# reviewer IS the sol model. Pin it rather than inherit the owner's config.
 python3 - "$tmp/repo/scripts/models.json" <<'PIN'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
@@ -138,11 +138,13 @@ for wrong in plan-102 fresh-slug-reset; do
     || ok "renamed topic '$wrong' writes nothing"
 done
 
-# 3. Legacy Sol-authored plan: derivation says codex. Matching --author codex hits the self-review
-#    vendor gate (exit 4); forged --author claude hits the mismatch gate (exit 6).
+# 3. Legacy Sol-authored plan under a Sol reviewer: the recorded author_model proves instance
+#    separation is decidable, so the same-model review RUNS (rule 7; owner 2026-08-09 — Sol may
+#    review Sol); forged --author claude still hits the mismatch gate (exit 6).
 scripts/review --topic plan-001 --author codex --context .orchestrator/plans/PLAN-001.md "review" >/dev/null 2>&1
 rc=$?
-[ "$rc" = 4 ] && ok "sol-authored plan refused as self-review (exit 4)" || bad "sol-authored plan gave exit $rc, expected 4"
+[ "$rc" = 0 ] && ok "sol-authored plan runs under a sol reviewer (exit 0, rule 7)" || bad "sol plan under sol reviewer gave exit $rc, expected 0"
+[ -s .orchestrator/reviews/plan-001/round-1.md ] && ok "same-model plan review wrote round-1.md" || bad "no round-1.md for the same-model plan review"
 scripts/review --topic plan-001 --author claude --context .orchestrator/plans/PLAN-001.md "review" >/dev/null 2>&1
 rc=$?
 [ "$rc" = 6 ] && ok "forged --author claude on a sol plan refused (exit 6)" || bad "forged claude on sol plan gave exit $rc, expected 6"
@@ -295,11 +297,12 @@ scripts/review --topic codex-attempt-reslug --author codex --context .orchestrat
 rc=$?
 [ "$rc" = 6 ] && ok "in-attempt codex plan under a renamed topic refuses via binding (exit 6, not 4)" \
   || bad "in-attempt codex plan renamed topic gave exit $rc, expected 6"
-#       ...and under its CORRECT bound topic it is the self-review gate (exit 4): derivation held.
+#       ...and under its CORRECT bound topic the recorded author_model runs under a fresh same-model
+#       instance (rule 7; owner 2026-08-09) — derivation held, and the binding gate ran first.
 scripts/review --topic plan-402 --author codex --context .orchestrator/attempts/SPEC-402/1/PLAN-402.md "review" >/dev/null 2>&1
 rc=$?
-[ "$rc" = 4 ] && ok "in-attempt codex plan under its bound topic is self-review (exit 4)" \
-  || bad "in-attempt codex plan bound topic gave exit $rc, expected 4"
+[ "$rc" = 0 ] && ok "in-attempt codex plan under its bound topic runs (exit 0, rule 7)" \
+  || bad "in-attempt codex plan bound topic gave exit $rc, expected 0"
 #   (c) CONFLICT: a Claude attempt hosting a Sol-authored plan — the attempt's worker_model vendor and
 #       the plan's frontmatter author_model vendor disagree. Ambiguous provenance refuses (exit 2),
 #       so an attempt cannot host a foreign-vendor plan to launder its authorship.

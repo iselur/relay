@@ -18,7 +18,7 @@ proves them), **configured assumptions** (set up outside this repo, verified man
 | Worker changes outside the spec's declared scope are rejected | `tests/dispatch_gate4.sh`, `tests/scope_glob.sh` |
 | A verdict is bound to the exact diff and base; a stale base is refused | `tests/dispatch_gate4.sh` |
 | The rulebook and repo prose cannot silently grow back | `tests/rulebook_cap.sh`, `tests/prose_cap.sh`, `tests/plain_language.sh` |
-| Review rounds are capped at five per topic, in code (and only round-N.md files count as rounds), and the reviewer refuses any artifact its own MODEL is recorded as authoring — and the whole author vendor wherever no author model is on record | `tests/review_cap.sh`, `tests/review_authorship.sh` |
+| Review rounds are capped at five per topic, in code (and only round-N.md files count as rounds), and the reviewer refuses the whole author vendor wherever no author model is on record; a RECORDED author model runs even when it matches the reviewer (instance-level rule 7, owner 2026-08-09) — that record is an unauthenticated stamp, see gap 8 | `tests/review_cap.sh`, `tests/review_authorship.sh` |
 
 ## Configured assumptions (outside this repo; verify during bootstrap and after any GitHub change)
 
@@ -97,12 +97,12 @@ proves them), **configured assumptions** (set up outside this repo, verified man
    mount is accepted for sources proven writable only by root/operator.
 
 8. **`scripts/review`'s self-review refusal rests on a DERIVED author, not an authenticated one.**
-   Three fail-OPEN holes: a worker worktree is classified `codex` by path alone, so a Claude or Kimi
-   reviewer can be handed an artifact of its own vendor; the refusal is model-level, so `codex-plan`'s
-   `author_model:` stamp — the author's own word — is what lets one vendor hold both roles; and an
-   artifact with no recorded provenance falls back to the `--author` flag, so an orchestrator of any
-   vendor can understate its own draft (a fallback carries no model, so the asserted vendor is
-   refused whole). All three close with a digest-bound receipt written at dispatch, not by the author.
+   The rule is instance-level (rule 7; owner 2026-08-09), and no artifact carries instance identity,
+   so rule 7 is HELD BY CONSTRUCTION (every invocation spawns a fresh reviewer), never proven per
+   artifact. Two consequences: any known `author_model:` stamp — the author's own unauthenticated
+   word — flips the derivation off `-` and suppresses the vendor refusal entirely; and an unstamped
+   artifact asserting `--author` of another vendor routes to this vendor's reviewer unrefused. Both
+   close with a digest-bound receipt written at dispatch, not by the author.
 
 ## Scope
 

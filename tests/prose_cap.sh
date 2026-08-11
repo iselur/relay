@@ -95,12 +95,16 @@ for f in "${md_files[@]}"; do
   fi
 done
 
-# 2. Totals: 540 lines AND 60,000 bytes — the byte cap stops one-line walls of text that a line
+# 2. Totals: 580 lines AND 60,000 bytes — the byte cap stops one-line walls of text that a line
 #    count cannot see. A zero total means the counting broke (this exact check once passed
 #    vacuously with "0/600" because awk was invoked wrong) — zero is a failure, not a clean repo.
+#    Raised 540 -> 580 on 2026-08-11, deliberately and under review, to buy the README the room to
+#    describe the machinery instead of gesturing at it: the owner read the 540-era README and said
+#    it "sounds stupid". The cap exists to stop PROCESS prose accreting, and the README is the only
+#    external explanation this repo has. Per-file caps are untouched, so the room is not general.
 [ "$total_lines" -gt 0 ] || bad "total tracked markdown counted as 0 lines — the count is broken, not the repo empty"
-[ "$total_lines" -le 540 ]   && ok "total tracked markdown: $total_lines/540 lines" \
-  || bad "total tracked markdown is $total_lines lines — cap is 540. Delete before you add."
+[ "$total_lines" -le 580 ]   && ok "total tracked markdown: $total_lines/580 lines" \
+  || bad "total tracked markdown is $total_lines lines — cap is 580. Delete before you add."
 [ "$total_bytes" -le 60000 ] && ok "total tracked markdown: $total_bytes/60000 bytes" \
   || bad "total tracked markdown is $total_bytes bytes — cap is 60000. Delete before you add."
 

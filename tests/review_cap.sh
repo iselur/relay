@@ -2,7 +2,7 @@
 # The review-round cap must live in code: a prose cap already lost once to a ten-round review loop
 # (~10,000 lines of revisions later replaced by a ~50-line hand fix). scripts/review allows five
 # rounds per topic, refuses the sixth, counts ONLY round-N.md files as rounds (a sibling artifact
-# once consumed a phantom round), refuses Codex-authored artifacts (its reviewer is Codex), and
+# once consumed a phantom round), refuses Codex-vendor artifacts with no author model on record, and
 # must hold the cap under concurrent invocations. Codex is always a local stub here.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -55,12 +55,15 @@ if scripts/review --topic 'Bad Slug!' --author claude --context claude-note.md x
 if scripts/review --topic demo-topic --context claude-note.md x 2>/dev/null; then bad "accepted a review with no --author"; else ok "refuses a missing --author"; fi
 if scripts/review --topic demo-topic --author gemini --context claude-note.md x 2>/dev/null; then bad "accepted an unknown author"; else ok "refuses an unknown author"; fi
 
-# 2. Artifacts authored by the reviewer's own model are refused — nothing grades its own work.
-# (--author here MATCHES the derived provenance, so this exercises the vendor refusal, not B18's
-# mismatch refusal — see tests/review_authorship.sh for the mismatch/no-provenance cases.)
-scripts/review --topic demo-topic --author codex --context .orchestrator/attempts/SPEC-900/1/diff.patch "review this codex plan" >/dev/null 2>&1
+# 2. Vendor-only provenance under a same-vendor reviewer is refused — with no author model on
+# record, instance separation is undecidable (rule 7), so the whole vendor fails closed. A worker
+# worktree derives 'codex' by path with no model. (--author MATCHES the derived provenance, so this
+# exercises the vendor refusal, not B18's mismatch — see tests/review_authorship.sh for the rest.)
+mkdir -p .worktrees/SPEC-900-1
+printf 'worker worktree note, no recorded model\n' > .worktrees/SPEC-900-1/notes.txt
+scripts/review --topic demo-topic --author codex --context .worktrees/SPEC-900-1/notes.txt "review this codex artifact" >/dev/null 2>&1
 rc=$?
-[ "$rc" = 4 ] && ok "Codex-authored artifact refused (exit 4)" || bad "Codex-on-Codex not refused (exit $rc)"
+[ "$rc" = 4 ] && ok "vendor-only codex provenance refused under codex reviewer (exit 4)" || bad "vendor-only Codex-on-Codex not refused (exit $rc)"
 [ -e .orchestrator/reviews/demo-topic ] && bad "refused author still created state" || ok "author refusal writes nothing"
 
 # 3. Rounds 1-5 run and are recorded; sibling artifacts in the topic dir do NOT consume rounds.
