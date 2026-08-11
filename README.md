@@ -1,53 +1,58 @@
 # Relay
 
-Relay is a reusable oversight approach for coding agents. It gives an agent a checked path from
-a request to a pull request: a worker produces the change, the harness verifies it, and a
-configured separate reviewer checks the exact diff before it moves forward.
+Relay lets coding agents put changes into a real repository without you reading every one.
 
-The approach can be reused in any repository where coding agents need oversight. This repository
-is a ready-to-run reference implementation for Linux, GitHub, and subscription CLIs; those
-implementation choices belong to this reference, not to the approach itself.
+One agent writes the code. A different agent, usually from a different vendor, reviews the exact
+diff that agent produced. The tests run against exactly that code, not against a description of
+it. Only then does a pull request open.
 
-## The workflow
+The whole design comes down to one sentence: an agent saying it worked is not evidence that it
+worked.
 
-`request` → `approved spec` → `worker build` → `harness checks` → `bound review` → `pull request`
+## How a change travels
 
-The harness owns the authoritative commit, evidence, and release decision. Worker prose alone is
-not proof: tests and checks must run against the exact candidate. Passing work targets
-`ready-for-main`; promotion to `main` remains separately protected.
+You approve a short spec — what should be true when the work is done.
 
-## What Relay provides
+A worker agent gets its own isolated copy of the repository and builds it. It never touches your
+working tree, and it runs as a separate account that cannot reach your home directory or your
+credentials.
 
-- Structured owner, orchestrator, worker, and reviewer roles.
-- Exact-candidate scope, test, and review checks.
-- A repeatable path from an approved request to a reviewable pull request.
+The harness, not the worker, runs the tests and records what actually happened. A worker's own
+account of its work counts for nothing.
 
-Relay has been used across more than 500 production pull requests. Its worker/reviewer loop
-repeatedly surfaced concrete issues and improvements before merge.
+A reviewer agent that did not write the code reads the exact diff and returns a verdict. That
+verdict binds. If it says revise, the work goes back, up to a fixed number of rounds — then it
+stops and asks you rather than grinding.
 
-## See the system
+Work that passes opens a pull request against `ready-for-main`. Moving anything to `main` stays
+yours.
 
-[How Relay works](how-it-works.html) gives a visual overview of the flow and roles.
+## What this asks of you
 
-[BOOTSTRAP.md](BOOTSTRAP.md) is the setup path for making this repository yours. It walks through
-the toolchain, GitHub, CLI access, worker isolation, and the first job.
+Approve the spec at the start. Approve the promotion at the end. In between it runs unattended,
+and when something is genuinely unclear it stops and says so instead of guessing.
 
-[SECURITY.md](SECURITY.md) describes what repository tests prove, what depends on deployment
-configuration, and the known gaps. Relay's guarantees are deliberately scoped.
+Relay has run more than 500 production pull requests this way. The review step catches real
+defects before merge often enough to be the reason the rest is safe to leave alone.
 
-[CLAUDE.md](CLAUDE.md) is the operating rulebook. [AGENTS.md](AGENTS.md) records the role
-assignments and repository commands.
+## What it does not claim
 
-## Roles
+Relay is a reference implementation, not a product: Linux, GitHub, and the vendor CLIs you
+already have. The isolation is real but bounded, and the boundaries are written down rather than
+implied — [SECURITY.md](SECURITY.md) says what the tests actually prove, what depends on how you
+deploy it, and what is still open.
 
-The owner approves specs and protects the final promotion. The orchestrator coordinates the work
-and applies the harness gates. The worker implements the approved spec. The bound reviewer checks
-the exact candidate diff.
+## Where to look next
 
-Worker and reviewer configuration lives in `scripts/models.json`; the orchestrator is whichever
-supported CLI runs the process.
+[How Relay works](how-it-works.html) — the same flow, drawn.
 
-Relay keeps the implementation focused on evidence, scope, tests, and review so a repository can
-use the same oversight pattern repeatedly.
+[BOOTSTRAP.md](BOOTSTRAP.md) — setup, from toolchain and GitHub access through worker isolation
+to the first job.
+
+[CLAUDE.md](CLAUDE.md) — the operating rulebook the agents follow.
+[AGENTS.md](AGENTS.md) — the commands and role assignments.
+
+Model choices live in `scripts/models.json`; the orchestrator is whichever supported CLI is
+running the session.
 
 MIT — see [LICENSE](LICENSE).
