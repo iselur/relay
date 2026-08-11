@@ -91,15 +91,17 @@ cfg["roles"]["orchestrator_artifact_reviewer"] = {"model": "kimi-k3", "effort": 
 json.dump(cfg, open(sys.argv[1], "w"))
 GUT
 
-# ---- (c) self-review guard: kimi reviewer refuses kimi-authored artifact (exit 4, B18) -------
+# ---- (c) same-model kimi review RUNS: recorded worker_model=kimi-k3 equals the reviewer, and the
+#      self-review rule is instance-level (rule 7; owner 2026-08-09) — a fresh instance may share
+#      the author's model. Vendor-only provenance staying refused is proven in review_authorship.sh.
 scripts/review --topic kimi-self-review --author kimi \
   --context .orchestrator/attempts/SPEC-501/1/diff.patch "please review" >/dev/null 2>&1
 rc=$?
-[ "$rc" = 4 ] && ok "kimi-authored artifact refused as self-review under kimi reviewer (exit 4, B18)" \
-  || bad "kimi self-review not refused: got exit $rc, expected 4"
-[ -e .orchestrator/reviews/kimi-self-review ] \
-  && bad "self-review refusal still created review state" \
-  || ok "self-review refusal writes nothing"
+[ "$rc" = 0 ] && ok "kimi-authored artifact runs under a fresh kimi reviewer instance (exit 0)" \
+  || bad "same-model kimi review gave exit $rc, expected 0 (instance-level rule 7)"
+grep -q 'stub kimi verdict' .orchestrator/reviews/kimi-self-review/round-1.md 2>/dev/null \
+  && ok "same-model kimi round came from the stub kimi reviewer" \
+  || bad "no stub kimi verdict recorded for the same-model kimi round"
 
 # ---- (d) kimi dispatch: claude-authored artifact invokes stub kimi and recovers content ------
 scripts/review --topic kimi-dispatch-claude --author claude \
