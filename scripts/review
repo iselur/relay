@@ -430,7 +430,7 @@ done
 # id comes from the artifact's own frontmatter (derived above), not its filename, so a rename cannot
 # change it. For a PLAN artifact the topic is DERIVED, not chosen: it must be exactly plan-nnn (id
 # lowercased, digits verbatim), which already satisfies the slug regex above. These checks run
-# BEFORE the author-mismatch and codex self-review refusals so the exit code names the REAL reason:
+# BEFORE the author-mismatch and vendor-provenance refusals so the exit code names the REAL reason:
 # multiple distinct plans is exit 2 (not merely self-review 4), and a single plan under a renamed
 # topic is a cap-reset attempt (exit 6) even for a Sol plan that would otherwise exit 4.
 # Non-PLAN contexts keep caller-chosen topics: they have no durable artifact id to bind to.

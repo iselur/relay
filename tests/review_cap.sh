@@ -2,7 +2,7 @@
 # The review-round cap must live in code: a prose cap already lost once to a ten-round review loop
 # (~10,000 lines of revisions later replaced by a ~50-line hand fix). scripts/review allows five
 # rounds per topic, refuses the sixth, counts ONLY round-N.md files as rounds (a sibling artifact
-# once consumed a phantom round), refuses Codex-authored artifacts (its reviewer is Codex), and
+# once consumed a phantom round), refuses Codex-vendor artifacts with no author model on record, and
 # must hold the cap under concurrent invocations. Codex is always a local stub here.
 set -uo pipefail
 cd "$(dirname "$0")/.."

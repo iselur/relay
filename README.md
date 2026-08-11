@@ -59,9 +59,9 @@ stops rather than looping, and an escalation carries the finding rather than the
 rounds are capped in code, because a cap written only in prose already lost once to a ten-round
 loop.
 
-**Every attempt leaves replayable evidence.** The launch record, the result record, the raw
-transcripts and the review that bound it are all on disk, so any claim about what happened can be
-checked afterwards rather than believed.
+**Every attempt leaves replayable evidence.** Its launch and result records and raw evidence stay
+on disk; attempts that reach review also retain that binding review. What happened can be checked
+afterwards rather than believed.
 
 **Autonomy is a file, not a mood.** A grant names its scope, its gates and its risk classes, and
 deleting the file revokes it. A watchdog notices a session that has died or is blocked on your
