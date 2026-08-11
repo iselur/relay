@@ -5,7 +5,8 @@
 #   (b) a kimi-authored artifact (attempt worker_model=kimi-k3) derives 'kimi' and routes
 #       normally when the reviewer is codex (cross-vendor, not self-review);
 #   (c) when the reviewer IS kimi (orchestrator_artifact_reviewer=kimi-k3 in models.json),
-#       a kimi-authored artifact is REFUSED as self-review (exit 4, B18 security gate);
+#       a kimi-vendor artifact with NO author model on record is REFUSED (exit 4): instance
+#       separation cannot be shown, so it fails closed (R128 relaxed this to instance level);
 #   (d) when the reviewer is kimi, a claude-authored artifact runs through the kimi dispatch
 #       path and the adapter recovers the stub kimi's stream-json output as the round output;
 #   (e) a prompt exceeding 120000 bytes is refused by the adapter before kimi is invoked.
