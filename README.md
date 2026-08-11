@@ -1,58 +1,88 @@
 # Relay
 
-Relay lets coding agents put changes into a real repository without you reading every one.
+Relay is a harness for running coding agents against a real repository. It is built around one
+assumption: an agent's account of its own work is not evidence. Everything below exists to
+replace that account with something checkable.
 
-One agent writes the code. A different agent, usually from a different vendor, reviews the exact
-diff that agent produced. The tests run against exactly that code, not against a description of
-it. Only then does a pull request open.
+It runs two loops.
 
-The whole design comes down to one sentence: an agent saying it worked is not evidence that it
-worked.
+**The outer loop is delivery.** A request becomes a one-line goal and a checkable definition of
+done. Anything larger than a single reversible change gets one written brief — what exists at the
+end that does not now, what is deliberately not being done, the decisions already made, the
+smallest run that would prove the approach wrong, and the slices it ships in. The brief is
+cross-reviewed, then the program runs end to end and you step in only at its checkpoints. Work is
+dispatched as approved specs, results are reviewed, pull requests open, and passing work is
+promoted.
 
-## How a change travels
+**The inner loop is the build.** A worker agent gets an isolated checkout and implements one
+spec. The harness — never the worker — runs the installed tests against the exact candidate
+commit. A second agent that did not write the code reads the exact diff and returns a structured
+verdict. If that verdict says revise, the work goes back, for a bounded number of rounds, each
+answered by exactly one revision.
 
-You approve a short spec — what should be true when the work is done.
+## The machinery that makes it hold
 
-A worker agent gets its own isolated copy of the repository and builds it. It never touches your
-working tree, and it runs as a separate account that cannot reach your home directory or your
-credentials.
+**Specs bind.** A spec is schema-validated and digest-bound, and high-risk work needs an approval
+file the orchestrator cannot write for itself. Editing the spec voids the approval.
 
-The harness, not the worker, runs the tests and records what actually happened. A worker's own
-account of its work counts for nothing.
+**Workers are isolated, and how much depends on which kind.** Every worker builds in its own git
+worktree, never your working tree. A worker driven through an external CLI runs as a separate
+operating-system identity that cannot reach the owner's home directory or credentials; a subagent
+worker runs inside the orchestrator's own session and shares its trust domain. `SECURITY.md` says
+which guarantee applies where, and what is still open.
 
-A reviewer agent that did not write the code reads the exact diff and returns a verdict. That
-verdict binds. If it says revise, the work goes back, up to a fixed number of rounds — then it
-stops and asks you rather than grinding.
+**The grader restores the installed tests.** A worker cannot pass by rewriting the assertion it
+failed: grading runs the tests as the repository has them, against the worker's exact commit, and
+refuses to grade at all if the tree it is grading has drifted.
 
-Work that passes opens a pull request against `ready-for-main`. Moving anything to `main` stays
-yours.
+**Verdicts are structured, validated, and narrow.** A review returns JSON checked against a
+pinned schema — a reviewer that emits prose and no verdict is not a pass. The verdict binds only
+the exact code it was shown; moved code means a fresh review.
 
-## What this asks of you
+**Nothing reviews its own work.** Review is routed to a different instance, and by default a
+different vendor, from the one that produced the artifact. The rule is enforced by the review
+tool, not by convention.
 
-Approve the spec at the start. Approve the promotion at the end. In between it runs unattended,
-and when something is genuinely unclear it stops and says so instead of guessing.
+**Failure has a budget.** Attempts against one spec are capped. A spec that fails structurally
+stops rather than looping, and an escalation carries the finding rather than the symptom. Review
+rounds are capped in code, because a cap written only in prose already lost once to a ten-round
+loop.
 
-Relay has run more than 500 production pull requests this way. The review step catches real
-defects before merge often enough to be the reason the rest is safe to leave alone.
+**Every attempt leaves replayable evidence.** The launch record, the result record, the raw
+transcripts and the review that bound it are all on disk, so any claim about what happened can be
+checked afterwards rather than believed.
+
+**Autonomy is a file, not a mood.** A grant names its scope, its gates and its risk classes, and
+deleting the file revokes it. A watchdog notices a session that has died or is blocked on your
+decision, and either resumes it or tells you.
+
+**The repository caps its own prose.** Standing documentation is allowlisted and line-capped by a
+test, because this repo once held roughly 39,000 lines of process prose against 4,000 lines of
+code and its owner stopped understanding his own system.
+
+## What reaches `main`
+
+Passing work opens a pull request against `ready-for-main`, which itself only changes through a
+pull request with CI green. Promotion to `main` is the owner's act, or the orchestrator's under a
+recorded grant — and that grant's gates are the promotion's own green CI plus a binding review
+PASS on that exact diff. No path merges to `main` on an agent's say-so.
 
 ## What it does not claim
 
-Relay is a reference implementation, not a product: Linux, GitHub, and the vendor CLIs you
+This is a working reference implementation, not a product: Linux, GitHub, and the vendor CLIs you
 already have. The isolation is real but bounded, and the boundaries are written down rather than
-implied — [SECURITY.md](SECURITY.md) says what the tests actually prove, what depends on how you
-deploy it, and what is still open.
+implied. [SECURITY.md](SECURITY.md) states what the tests actually prove, what depends on how you
+deploy it, and the known gaps.
 
 ## Where to look next
 
-[How Relay works](how-it-works.html) — the same flow, drawn.
+[How Relay works](how-it-works.html) — the same two loops, drawn.
+[BOOTSTRAP.md](BOOTSTRAP.md) — setup, from toolchain and GitHub access through worker isolation to
+the first job.
+[CLAUDE.md](CLAUDE.md) — the operating rulebook the agents follow, and its safety invariants.
+[AGENTS.md](AGENTS.md) — the commands and the exact role assignments.
 
-[BOOTSTRAP.md](BOOTSTRAP.md) — setup, from toolchain and GitHub access through worker isolation
-to the first job.
-
-[CLAUDE.md](CLAUDE.md) — the operating rulebook the agents follow.
-[AGENTS.md](AGENTS.md) — the commands and role assignments.
-
-Model choices live in `scripts/models.json`; the orchestrator is whichever supported CLI is
-running the session.
+Model and role configuration lives in `scripts/models.json`; the orchestrator is whichever
+supported CLI is running the session.
 
 MIT — see [LICENSE](LICENSE).
