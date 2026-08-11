@@ -7,9 +7,9 @@
 # stub codex binary (no network, no real Codex/Claude invoked):
 #   (a) a forged --author that disagrees with recorded provenance is REFUSED (exit 6), never routed;
 #   (b) a call with no provenance evidence at all is REFUSED (fail closed), never trusted;
-#   (c) a correctly-derived, matching --author still runs and routes through the normal cap/reviewer
-#       machinery (a claude-authored topic proceeds; a codex-authored topic is refused as self-review,
-#       exit 4 — not because the flag said so, but because the derivation agreed).
+#   (c) a correctly-derived, matching --author routes through the normal cap/reviewer machinery; a
+#       RECORDED author model runs even when it equals the reviewer's (instance-level rule 7, owner
+#       2026-08-09), while vendor-only provenance stays refused whole (exit 4, fail closed).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -29,9 +29,9 @@ cp -p scripts/models_check.py "$tmp/repo/scripts/models_check.py"
 # dispatch integrate grades from a write-stripped tree; cp -p carries that read-only mode into
 # this test's own scratch copy, which case 5 must rewrite — make the copy writable regardless.
 chmod u+w "$tmp/repo/scripts/models.json"
-# The self-review gate compares the artifact's recorded author MODEL with the reviewer's, so these
-# assertions pin the reviewer role instead of inheriting the owner's live config — otherwise
-# flipping models.json turns an exit-4 assertion into a silent pass.
+# The self-review gate keys on whether an author MODEL is on record at all, so these assertions pin
+# the reviewer role instead of inheriting the owner's live config — otherwise flipping models.json
+# changes which arm each fixture exercises and turns assertions into silent passes.
 pin_reviewer() { # $1 model
   python3 - "$tmp/repo/scripts/models.json" "$1" <<'PIN'
 import json, sys
@@ -158,19 +158,20 @@ grep -q 'stub review verdict' .orchestrator/reviews/real-claude-topic/round-1.md
   && ok "round 1 output came from the (stub) Codex reviewer, i.e. cross-vendor routing held" \
   || bad "round 1 output did not come from the stub reviewer"
 
-#    - codex-attempt evidence + matching --author codex is refused as self-review (exit 4, not 6):
-#      the derivation and the flag AGREE this time, so this exercises the vendor gate, not the
-#      mismatch gate — proving the fix didn't just relabel every refusal as a mismatch.
+#    - codex-attempt evidence + matching --author codex + a RECORDED worker_model equal to the
+#      reviewer's model RUNS: the self-review rule is instance-level (rule 7; owner 2026-08-09) and
+#      a fresh reviewer instance may share the author's model. The recorded model is what proves
+#      instance separation is decidable — contrast 3c, where no model is on record.
 scripts/review --topic real-codex-topic --author codex --context .orchestrator/attempts/SPEC-901/1/diff.patch "please review" >/dev/null 2>&1
 rc=$?
-[ "$rc" = 4 ] && ok "correctly-derived codex authorship is refused as self-review (exit 4)" \
-  || bad "correctly-derived codex authorship gave exit $rc, expected 4 (self-review vendor gate)"
-[ -e .orchestrator/reviews/real-codex-topic ] && bad "self-review refusal still created review state" \
-  || ok "self-review refusal writes nothing"
+[ "$rc" = 0 ] && ok "recorded same-model authorship runs under a fresh instance (exit 0)" \
+  || bad "recorded same-model authorship gave exit $rc, expected 0 (instance-level rule 7)"
+[ -s .orchestrator/reviews/real-codex-topic/round-1.md ] \
+  && ok "same-model review wrote its round-1 verdict" || bad "no round-1.md for the same-model review"
 
-# 3b. SAME VENDOR, DIFFERENT MODEL: the gate is model-level, matching the dispatcher's worker-diff
-#     rule, so a sol-authored attempt reviewed by luna runs. This is the case that lets one vendor
-#     supply both the orchestrator and its artifact reviewer.
+# 3b. SAME VENDOR, DIFFERENT MODEL: also runs — a recorded author model plus any fresh reviewer
+#     instance satisfies rule 7. This is the case that lets one vendor supply both the orchestrator
+#     and its artifact reviewer.
 pin_reviewer gpt-5.6-luna
 scripts/review --topic cross-model-topic --author codex --context .orchestrator/attempts/SPEC-901/1/diff.patch "please review" >/dev/null 2>&1
 rc=$?

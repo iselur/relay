@@ -5,9 +5,10 @@
 # loop. Only round-N.md files are rounds: sibling artifacts (dispositions, notes) never count.
 #
 # The reviewer this script invokes is the orchestrator_artifact_reviewer model in models.json; it
-# may review anything its own model did not author (see the model-level rule below).
+# may review anything with a RECORDED author model — its own model included, since every invocation
+# is a fresh instance (rule 7) — and refuses the whole vendor where no author model is on record.
 # B18: --author is NOT trusted as an assertion — a caller could mislabel a Codex-authored artifact
-# as --author claude and get it routed to a Codex reviewer, which is exactly self-review. So
+# as --author claude and get it routed past the vendor refusal on the caller's word alone. So
 # authorship is DERIVED from provenance this repo's dispatcher (scripts/dispatch.py) and
 # scripts/codex-plan already record on disk, which a CLI flag cannot forge:
 #   - a --context file under .orchestrator/attempts/<spec>/<n>/ is classified from THAT attempt's
@@ -37,9 +38,9 @@
 # has no frontmatter of its own, so a raw stream RENAMED off its reserved PLAN-NNN.* name loses the
 # only handle on its sibling and falls back to --author — the plan .md it came from does not.
 #
-# The reviewer's own MODEL is always refused as the derived/checked author (nothing grades its own
-# work), and the author's whole VENDOR is refused wherever no author model is on record. So one
-# vendor can hold both roles, on different models — set in scripts/models.json, never here.
+# The self-review rule is INSTANCE-level (rule 7): a fresh reviewer instance may share the author's
+# model. The author's whole VENDOR is refused wherever no author model is on record. So one vendor
+# can hold both roles, same model included — the pairing is set in scripts/models.json, never here.
 #
 # Usage: scripts/review --topic <slug> --author <claude|codex> --context FILE [--context FILE]...
 #        [--] [PROMPT...]
@@ -457,19 +458,16 @@ if (( ${#plan_ids[@]} == 1 )); then
 fi
 # --------------------------------------------------------------------------------------------------
 
-# B18 self-review guard: the reviewer must not be the artifact's own author. Recorded provenance
-# decides it at MODEL level, matching the dispatcher's worker-diff rule — a different model of the
-# same vendor is a different reviewer. Branches 3–5 record no author model, so provenance that
-# reaches only the vendor keeps refusing the whole vendor: the guard weakens only where the author
-# model is actually on record.
-if [[ "$derived" == "$REVIEWER_VENDOR" && ( "$derived_model" == "-" || "$derived_model" == "$MODEL" ) ]]; then
-  if [[ "$derived_model" == "-" ]]; then
-    echo "review: REFUSED — recorded provenance shows this is a $REVIEWER_VENDOR-authored artifact with no author model on record, and this review uses $REVIEWER_VENDOR model $MODEL." >&2
-  else
-    echo "review: REFUSED — recorded provenance shows this artifact was authored by $derived_model, which is the model this review uses." >&2
-  fi
+# B18 self-review guard, relaxed to INSTANCE level (CLAUDE.md rule 7; owner 2026-08-06, reaffirmed
+# 2026-08-09: Sol may review Sol). Every invocation of this script spawns a fresh reviewer instance,
+# so an artifact whose author MODEL is on record is never the reviewer's own context — even when the
+# model matches. What stays refused is vendor-only provenance (branches 3–5 record no author model):
+# there the asserted --author is the only word we have, a fallback derivation carries no model, and
+# fail-closed beats guessing (SECURITY.md gap 8).
+if [[ "$derived" == "$REVIEWER_VENDOR" && "$derived_model" == "-" ]]; then
+  echo "review: REFUSED — recorded provenance shows this is a $REVIEWER_VENDOR-authored artifact with no author model on record, and this review uses $REVIEWER_VENDOR model $MODEL." >&2
   for line in "${evidence_lines[@]}"; do echo "        evidence: $line" >&2; done
-  echo "        Self-review is not allowed (CLAUDE.md). Use a reviewer model the artifact's author is not." >&2
+  echo "        Without a recorded author model, instance separation cannot be shown (CLAUDE.md rule 7); use a reviewer of another vendor." >&2
   exit 4
 fi
 
