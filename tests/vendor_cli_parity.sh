@@ -397,8 +397,8 @@ run_review() {
 }
 
 rm -rf "$tmp/review-base/.orchestrator" "$tmp/review-cli/.orchestrator"
-printf 'codex review answer\n' >"$tmp/codex-review-output"
-printf '{"role":"assistant","content":"kimi review answer"}\n' >"$tmp/kimi-review-output"
+printf '## BLUF\nBottom line: The Codex review fixture passes.\nVerified evidence: The parity path returned this substantive review body.\nOpen findings: None.\nVERDICT: PASS\n' >"$tmp/codex-review-output"
+printf '{"role":"assistant","content":"## BLUF\\nBottom line: The Kimi review fixture passes.\\nVerified evidence: The parity path returned this substantive review body.\\nOpen findings: None.\\nVERDICT: PASS"}\n' >"$tmp/kimi-review-output"
 
 # With high effort, Codex argv, stdin, recovered answer, and observable status stay byte-identical.
 configure_review codex high
