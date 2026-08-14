@@ -1,0 +1,12 @@
+{
+  "spec_id": "SPEC-082",
+  "spec_digest": "043d29757b1c7783b1294c9b6a95983cd9c8c377e0412d37c3a1f104acf7daf9",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "approver": "val",
+  "risk_class": "high",
+  "timestamp": "2026-08-14T19:28:27+00:00",
+  "note": "Orchestrator-transcribed approval quoting the owner's instruction verbatim: \"No Claude as utility subagent - Luna instead\" (2026-08-14). The delegated spec changes only roles.utility_subagent.model to gpt-5.6-luna, retains default effort, and adds no fallback.",
+  "approved_scope": [
+    "scripts/models.json"
+  ]
+}
