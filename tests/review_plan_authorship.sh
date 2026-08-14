@@ -38,7 +38,7 @@ cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash
 cat >/dev/null   # consume the stdin prompt like the real CLI
 sleep "${CODEX_STUB_SLEEP:-0}"
-printf '## BLUF\nBottom line: stub review verdict passes the plan-authorship fixture.\nVerified evidence: The local reviewer stub produced this review round.\nOpen findings: None.\nVERDICT: PASS\n'
+printf '## BLUF\nBottom line: stub review verdict passes the plan-authorship fixture.\nVerified evidence: The local reviewer stub produced this review round.\nOpen findings: None.\nPASS\n'
 STUB
 chmod +x "$tmp/bin/codex"
 

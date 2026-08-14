@@ -30,7 +30,7 @@ chmod u+w "$tmp/repo/scripts/models.json"
 cat >"$tmp/bin/codex" <<'STUB'
 #!/usr/bin/env bash
 cat >/dev/null
-printf '## BLUF\nBottom line: stub codex verdict passes the routing fixture.\nVerified evidence: The Codex reviewer path returned this substantive review body.\nOpen findings: None.\nVERDICT: PASS\n'
+printf '## BLUF\nBottom line: stub codex verdict passes the routing fixture.\nVerified evidence: The Codex reviewer path returned this substantive review body.\nOpen findings: None.\nPASS\n'
 STUB
 chmod +x "$tmp/bin/codex"
 
@@ -42,7 +42,7 @@ cat >"$tmp/bin/kimi" <<'STUB'
 [[ -z ${KIMI_INVOKED_MARKER:-} ]] || : >"$KIMI_INVOKED_MARKER"
 # consume all flags; the real kimi accepts -p/-m/--output-format but we ignore them here
 printf '{"role":"user","content":"prompt"}\n'
-printf '{"role":"assistant","content":"## BLUF\\nBottom line: stub kimi verdict passes the routing fixture.\\nVerified evidence: The Kimi reviewer path returned this substantive review body.\\nOpen findings: None.\\nVERDICT: PASS"}\n'
+printf '{"role":"assistant","content":"## BLUF\\nBottom line: stub kimi verdict passes the routing fixture.\\nVerified evidence: The Kimi reviewer path returned this substantive review body.\\nOpen findings: None.\\nPASS"}\n'
 STUB
 chmod +x "$tmp/bin/kimi"
 
