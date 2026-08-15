@@ -16,5 +16,37 @@ for marker in "Intake:" "One workstream:" "Review cap:" "Communication:" "ONE br
   fi
 done
 
+if grep -Fq -- "Every high-risk dispatch needs an approval file from the owner, which the orchestrator never" CLAUDE.md; then
+  echo "  FAIL: old high-risk approval wording remains in CLAUDE.md"
+  fails=1
+else
+  echo "  ok: old high-risk approval wording absent"
+fi
+
+for marker in "authority is the owner's own words" "transcribes them verbatim in the note" "never originates one" "Editing the spec" "Unclassified or ambiguous work is high-risk" "nothing may classify it as lighter"; do
+  if grep -Fq -- "$marker" CLAUDE.md; then
+    echo "  ok: high-risk invariant clause present: $marker"
+  else
+    echo "  FAIL: high-risk invariant clause missing from CLAUDE.md: $marker"
+    fails=1
+  fi
+done
+
+if grep -Fq -- "and stops wherever a gate stops it (HALT, a spent cap, any human-required approval)." CLAUDE.md; then
+  echo "  FAIL: old autonomy-grant wording remains in CLAUDE.md"
+  fails=1
+else
+  echo "  ok: old autonomy-grant wording absent"
+fi
+
+for marker in "Under an autonomy grant the orchestrator finishes the job itself instead of pausing for owner" "answers findings under rule 3" '`ci` green' 'merges to `ready-for-main` through the' 'gated `./scripts/dispatch merge` or `dispatch integrate`' 'to `main` where granted' 'never a bare `gh pr merge`' "spent cap or stop-early" "rule-3 re-scope" "PROCEEDS" "telling the owner" "only HALT" "human-required act stops it" "a rule is never itself the blocker"; do
+  if grep -Fq -- "$marker" CLAUDE.md; then
+    echo "  ok: autonomy-grant invariant clause present: $marker"
+  else
+    echo "  FAIL: autonomy-grant invariant clause missing from CLAUDE.md: $marker"
+    fails=1
+  fi
+done
+
 [ "$fails" -eq 0 ] && echo "PASS rulebook_cap.sh" || echo "FAIL rulebook_cap.sh"
 exit "$fails"
