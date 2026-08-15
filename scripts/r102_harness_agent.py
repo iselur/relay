@@ -229,10 +229,12 @@ class RelayHarnessAgent(BaseAgent):
             return result, "", 0
         if isinstance(result, dict):
             return (str(result.get("stdout", "")), str(result.get("stderr", "")),
-                    int(result.get("returncode", result.get("exit_code", 0))))
+                    int(result.get("return_code", result.get("returncode",
+                                                               result.get("exit_code", 0)))))
         stdout = getattr(result, "stdout", "")
         stderr = getattr(result, "stderr", "")
-        code = getattr(result, "returncode", getattr(result, "exit_code", 0))
+        code = getattr(result, "return_code", getattr(
+            result, "returncode", getattr(result, "exit_code", 0)))
         return str(stdout or ""), str(stderr or ""), int(code or 0)
 
     @staticmethod
