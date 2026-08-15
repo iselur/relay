@@ -60,9 +60,9 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
   `ORCH_ALLOW_UNISOLATED=1` needs the owner's explicit instruction, and its use is recorded.
   Subagent workers run inside the orchestrator's own session and trust domain.
 - A test that did not run did not pass; a worker's prose is never a grade.
-- Every high-risk dispatch needs an approval file from the owner, which the orchestrator never
-  writes. Editing the spec voids the approval. Unclassified or ambiguous work is high-risk;
-  nothing may classify it as lighter.
+- Every high-risk dispatch needs an approval file whose authority is the owner's own words: the
+  orchestrator transcribes them verbatim in the note and never originates one. Editing the spec
+  voids it. Unclassified or ambiguous work is high-risk; nothing may classify it as lighter.
 - A safety-machinery change is never checked, approved, reviewed, or merged by the new version of
   itself: the installed version runs every gate, and the new one goes live only after separate
   approval and installation.
@@ -76,5 +76,5 @@ Run `./scripts/dispatch reconcile`; resume from state files, never ask the owner
   wrong thing. Interrupted work restarts as a fresh attempt; never finish it by hand.
 - Under an autonomy grant the orchestrator finishes the job itself instead of pausing for owner
   input: it answers findings under rule 3 and, `ci` green, merges to `ready-for-main` through the
-  gated `./scripts/dispatch merge` or `dispatch integrate` — never `main`, never a bare `gh pr merge` — and stops wherever a gate stops it (HALT, a spent cap, any human-required approval).
+  gated `./scripts/dispatch merge` or `dispatch integrate` — and to `main` where granted, never a bare `gh pr merge`. A spent cap or stop-early is answered by a rule-3 re-scope that PROCEEDS, telling the owner; only HALT or a human-required act stops it, and a rule is never itself the blocker (owner 2026-08-14).
   No grant file — untracked `AUTONOMY.local.json`, or the tracked `AUTONOMY.json` that ships disabled — means no autonomy.
