@@ -1,0 +1,18 @@
+{
+  "approved_scope": [
+    "tests/rulebook_cap.sh"
+  ],
+  "approver": "val",
+  "base_branch": "ready-for-main",
+  "instance_id": "36c5cff469466dcabbeb7346ee491fed",
+  "note": "Owner authority, verbatim:\n\"Yes, auto merge\"\n\"remove the clause-by-clause prose pinning from tests/rulebook_cap.sh, then promote the resulting ready-for-main to main.\"",
+  "reviewer_effort": "high",
+  "reviewer_model": "gpt-5.6-sol",
+  "risk_class": "high",
+  "spec_digest": "d938023b89d5bfdd3dc70a69ad751599876fef003c97e20df1f829456968957e",
+  "spec_digest_method": "sha256-file-bytes",
+  "spec_id": "SPEC-096",
+  "timestamp": "2026-08-16T05:02:17Z",
+  "worker_model": "gpt-5.6-luna",
+  "worker_reasoning_effort": "high"
+}
