@@ -1,0 +1,9 @@
+{
+  "spec_id": "SPEC-096",
+  "reason": "integrate stopped at SPEC-096-2: merge refused/failed (rc=14)",
+  "evidence": {
+    "stderr": "dispatch: required check 'ci' not green on PR #330; refuse.",
+    "integrated_so_far": []
+  },
+  "created": "2026-08-16T05:08:26Z"
+}
