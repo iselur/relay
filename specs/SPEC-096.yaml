@@ -1,0 +1,47 @@
+id: SPEC-096
+title: Remove brittle positive clause pins from the rulebook cap test
+risk_class: high
+depends_on: []
+objective: >
+  Delete exactly the two positive clause-presence loops from tests/rulebook_cap.sh while preserving
+  every other byte, so rulebook wording can change without disabling the retained heading and
+  superseded-wording protections.
+in_scope:
+  - tests/rulebook_cap.sh
+out_of_scope:
+  - everything else
+  - CLAUDE.md, scripts/models.json, fixtures, specs, approvals, and promotion machinery
+  - replacement tests, new machinery, adjacent cleanup, formatting, or wording changes
+acceptance_criteria:
+  - >
+    The only candidate diff is tests/rulebook_cap.sh, and that diff deletes exactly the complete
+    positive high-risk clause loop at pinned-base lines 26 through 34, explicitly including its
+    following separator blank line and the complete positive autonomy-grant clause loop at
+    pinned-base lines 42 through 50, explicitly including its following separator blank line. No
+    other byte changes.
+  - >
+    The final tests/rulebook_cap.sh SHA-256 is exactly
+    1dc9214bf8b24858a5de5bfe126fa2a4a287baba06889eb83e1e9765f6af6a80.
+  - >
+    The existing six-marker loop remains byte-identical and continues to check exactly Intake:,
+    One workstream:, Review cap:, Communication:, ONE brief, and Code discipline:.
+  - >
+    Both existing negative checks remain byte-identical: the test still rejects the superseded
+    high-risk sentence containing "approval file from the owner, which the orchestrator never"
+    and the superseded autonomy sentence containing "and stops wherever a gate stops it (HALT, a
+    spent cap, any human-required approval).".
+  - >
+    tests/rulebook_cap.sh contains no occurrence of "invariant clause present" and contains no
+    replacement positive clause-presence loop or equivalent clause-by-clause prose pinning.
+  - >
+    The shebang, header comment identifying tests/prose_cap.sh as the size-cap enforcer, shell
+    setup, failure accumulator, and final PASS/FAIL and exit lines remain byte-identical.
+  - >
+    Running ./tests/rulebook_cap.sh against the candidate exits 0 and prints PASS rulebook_cap.sh;
+    its retained marker and superseded-wording assertions are unchanged by this behavior-neutral
+    preparation/test cleanup.
+test_command: test "$(sha256sum tests/rulebook_cap.sh | cut -d' ' -f1)" = 1dc9214bf8b24858a5de5bfe126fa2a4a287baba06889eb83e1e9765f6af6a80 && ! grep -Fq 'invariant clause present' tests/rulebook_cap.sh && ./tests/rulebook_cap.sh
+hard_ceiling_hours: 1
+needs_network: false
+context:
+  - .orchestrator/plans/PROMOTION-2026-08-15.md

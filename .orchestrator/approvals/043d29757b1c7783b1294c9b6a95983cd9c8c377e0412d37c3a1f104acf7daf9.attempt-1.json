@@ -1,0 +1,10 @@
+{
+  "spec_id": "SPEC-082",
+  "spec_digest": "043d29757b1c7783b1294c9b6a95983cd9c8c377e0412d37c3a1f104acf7daf9",
+  "instance_id": "8df1bb382ccf098793c4ba37e9b2ec32",
+  "attempt": 1,
+  "approver": "val",
+  "risk_class": "high",
+  "timestamp": "2026-08-14T19:28:27+00:00",
+  "note": "Orchestrator-transcribed per-dispatch approval under the owner's verbatim instruction: \"No Claude as utility subagent - Luna instead\"."
+}

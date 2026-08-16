@@ -1,0 +1,52 @@
+id: SPEC-082
+title: Use Luna for utility subagents with no Claude fallback
+risk_class: high
+depends_on: []
+objective: >
+  Apply the owner's R131 instruction verbatim: "No Claude as utility subagent - Luna instead".
+  Change only roles.utility_subagent.model in scripts/models.json from claude-sonnet-4-6 to
+  gpt-5.6-luna. Preserve its default effort and every other role, alias, and vendor declaration.
+  The configuration schema permits only model and effort for this role, so selecting Luna is the
+  single utility-subagent route and introduces no fallback. Reuse the existing
+  vendor_map entry that already declares gpt-5.6-luna as codex; do not edit vendor_map.
+in_scope:
+  - scripts/models.json
+out_of_scope:
+  - scripts/models_check.py
+  - scripts/dispatch.py
+  - scripts/vendor_adapters.py
+  - scripts/codex-plan
+  - scripts/review
+  - tests/**
+  - AGENTS.md
+  - CLAUDE.md
+  - SECURITY.md
+  - .orchestrator/**
+  - everything else
+acceptance_criteria:
+  - >
+    scripts/models.json sets roles.utility_subagent exactly to
+    {"model": "gpt-5.6-luna", "effort": "default"}; it contains no fallback field or alternate
+    model for that role.
+  - >
+    The existing vendor_map entry for gpt-5.6-luna remains codex. No vendor_map or cli_aliases
+    entry is added, removed, or changed, including the retained Claude declarations needed to
+    classify other configured or recorded models.
+  - >
+    The only repository diff is the one model-string substitution in scripts/models.json; every
+    other role and configuration byte is unchanged.
+  - >
+    scripts/models_check.py accepts the complete configuration, reports gpt-5.6-luna for
+    roles.utility_subagent.model, reports default for roles.utility_subagent.effort, and reports
+    codex as the declared vendor for gpt-5.6-luna.
+  - The installed required test suite passes against the exact candidate commit.
+test_command: >-
+  ./scripts/models_check.py scripts/models.json &&
+  test "$(./scripts/models_check.py scripts/models.json get roles.utility_subagent.model)" =
+  gpt-5.6-luna &&
+  test "$(./scripts/models_check.py scripts/models.json get roles.utility_subagent.effort)" =
+  default &&
+  test "$(./scripts/models_check.py scripts/models.json vendor gpt-5.6-luna)" = codex
+hard_ceiling_hours: 1
+needs_network: false
+context: []

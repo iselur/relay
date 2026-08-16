@@ -1,0 +1,74 @@
+id: SPEC-078
+title: Review fixtures must stub a review, not a token (re-scope of SPEC-077 after stop-early)
+risk_class: high
+objective: >
+  RE-SCOPE (2026-08-14). SPEC-077 carried this same change and was stopped early after two
+  attempts. Neither failure was the worker's: it produced a clean candidate both times. Attempt 1
+  named `./scripts/test` as its regression command, which runs two tests that
+  `tests/execution-policy.tsv` assigns to the box-precondition phase and which therefore fail
+  under the codex-worker identity on the BASE as well (base_exit 1). Attempt 2 named the five
+  fixtures, which pass on the base, so the gate correctly refused a vacuous regression pair. The
+  design error was carrying a regression pair at all: this change fixes no defect, so no test can
+  fail before it and pass after. SPEC-043 and SPEC-056 both recorded that in their own approval
+  notes; SPEC-056 shipped this exact pattern. What is different here is therefore the SHAPE, not
+  the name — the regression pair is gone by design, and its absence is the point.
+
+  Five test fixtures stub the reviewer CLI with a script that prints a bare string —
+  `printf 'stub review verdict\n'` in tests/review_cap.sh, and the same shape in
+  tests/review_authorship.sh, tests/review_kimi.sh, tests/review_plan_authorship.sh and
+  tests/vendor_cli_parity.sh. Today scripts/review accepts that, so the fixtures pass.
+
+  SPEC-075 (PLAN-024 slice M8) makes a reply with no BLUF substance not a review round. Its
+  attempt 2 failed with every one of these five fixtures FAIL in the candidate-isolated phase,
+  and it could not have succeeded: that phase restores each required test from the INSTALLED
+  commit and runs it against the candidate, so a fixture edited inside SPEC-075 is discarded
+  and the installed bare-token stub is driven against code that now rejects bare tokens.
+  Attempt 1 stopped at the same wall for the honest reason (SPEC_BLOCKED, scope) and attempt 2
+  hit it structurally. This is the SPEC-055/056/057 shape exactly: the pin must move first, in
+  its own dispatch, before the behaviour that contradicts it can ship.
+
+  So this spec ships the fixture change ALONE and changes no production code. Replace each
+  stub's output with a substantive review body: a `## BLUF` heading, a nonempty bottom line, a
+  verified-evidence line, an open-findings line, and a final line reading exactly
+  `VERDICT: PASS` (or REVISE where that fixture's case requires a revision). The wording is
+  the fixture author's to choose; what matters is that the body is real enough to survive a
+  structural check and that the fixture asserts the same things it asserts today.
+
+  This must be behaviour-neutral against the INSTALLED scripts/review: every one of the five
+  fixtures passes before this change and passes after it, on installed code, for the same
+  reasons. It is a change to what the fixtures pretend a reviewer said, not to what they
+  check. Nothing in scripts/ is touched, and no assertion is weakened, removed, skipped, or
+  made conditional — a fixture that stops checking what it checked is a regression wearing a
+  green tick.
+in_scope:
+  - tests/review_cap.sh
+  - tests/review_authorship.sh
+  - tests/review_kimi.sh
+  - tests/review_plan_authorship.sh
+  - tests/vendor_cli_parity.sh
+out_of_scope:
+  - scripts/review
+  - scripts/dispatch.py
+  - scripts/vendor_adapters.py
+  - scripts/models.json
+  - CLAUDE.md
+  - everything else
+acceptance_criteria:
+  - >
+    Each of the five fixtures stubs a reviewer reply containing a `## BLUF` heading, a
+    nonempty bottom line, a verified-evidence line, an open-findings line, and a final line
+    reading exactly `VERDICT` followed by PASS or REVISE. No stub emits a bare token.
+  - >
+    Where a fixture's case needs the reviewer to have asked for a revision, its stub ends on
+    the REVISE form of that line; where the case needs a pass, the PASS form. The fixture's
+    existing expectations about which is which do not change.
+  - Every assertion present in each fixture before this change is present after it, with the
+    same expected outcome. No `ok:`/`FAIL:` case is deleted, renamed away, or made
+    conditional, and no test is skipped.
+  - All five fixtures pass against the installed scripts/review, unchanged — this is prep,
+    and it must be provable that it altered no behaviour of the code under test.
+  - No file outside tests/ is modified. `git diff --name-only` names only the five fixtures.
+  - The five fixtures pass under the worker identity, which is what the regression command runs.
+test_command: ./tests/review_cap.sh && ./tests/review_authorship.sh && ./tests/review_kimi.sh && ./tests/review_plan_authorship.sh && ./tests/vendor_cli_parity.sh
+# No regression_command, by design — see the RE-SCOPE paragraph above. The regression pair for
+# the behaviour this unblocks stays with SPEC-075, which carries the actual change.

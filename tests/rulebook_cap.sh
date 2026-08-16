@@ -16,5 +16,19 @@ for marker in "Intake:" "One workstream:" "Review cap:" "Communication:" "ONE br
   fi
 done
 
+if grep -Fq -- "Every high-risk dispatch needs an approval file from the owner, which the orchestrator never" CLAUDE.md; then
+  echo "  FAIL: old high-risk approval wording remains in CLAUDE.md"
+  fails=1
+else
+  echo "  ok: old high-risk approval wording absent"
+fi
+
+if grep -Fq -- "and stops wherever a gate stops it (HALT, a spent cap, any human-required approval)." CLAUDE.md; then
+  echo "  FAIL: old autonomy-grant wording remains in CLAUDE.md"
+  fails=1
+else
+  echo "  ok: old autonomy-grant wording absent"
+fi
+
 [ "$fails" -eq 0 ] && echo "PASS rulebook_cap.sh" || echo "FAIL rulebook_cap.sh"
 exit "$fails"
